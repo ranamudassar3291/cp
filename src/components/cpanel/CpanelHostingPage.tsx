@@ -253,7 +253,7 @@ export const CpanelHostingPage: React.FC<CpanelHostingPageProps> = ({
 }) => {
   const { currency, convertUsd, formatPrice, formatPriceString, countryName } =
     useCurrency();
-  const { addOrder, cmsPages, setOrderCheckoutDraft } = usePlatform();
+  const { addOrder, cmsPages, lastSearchedDomain, setOrderCheckoutDraft } = usePlatform();
   const pageCms = cmsPages.find((p) => p.id === 'cpanel-hosting');
   const [billingCycle, setBillingCycle] = useState<'yearly' | 'monthly'>('yearly');
   const [selectedPlan, setSelectedPlan] = useState<CpanelPlan | null>(null);
@@ -276,8 +276,14 @@ export const CpanelHostingPage: React.FC<CpanelHostingPageProps> = ({
       billingCycle: billingCycle === 'yearly' ? '1 Year' : '1 Month',
       datacenterId: 'us',
       datacenterLabel: 'Dallas, USA',
-      domainOption: 'register',
-      domainName: '',
+      domainOption: lastSearchedDomain ? lastSearchedDomain.mode : 'register',
+      domainName: lastSearchedDomain?.domain || '',
+      domainTld: lastSearchedDomain?.tld,
+      domainYears: lastSearchedDomain?.minYears,
+      domainPriceUsd: lastSearchedDomain?.priceUsd,
+      eppAuthCode: lastSearchedDomain?.eppAuthCode,
+      preselectedFromSite: true,
+      domainSearchedFromSite: Boolean(lastSearchedDomain),
       step: 1,
       sourceOrigin: 'public',
       updatedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',

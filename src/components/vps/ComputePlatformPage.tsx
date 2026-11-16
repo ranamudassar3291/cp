@@ -59,7 +59,7 @@ export const ComputePlatformPage: React.FC<ComputePlatformPageProps> = ({
   onNavigatePath,
 }) => {
   const { formatPrice, countryName } = useCurrency();
-  const { addOrder, cmsPages } = usePlatform();
+  const { addOrder, cmsPages, hostingPlans, lastSearchedDomain, setOrderCheckoutDraft } = usePlatform();
   const isN8n = mode === 'n8n';
   const pageCms = cmsPages.find((p) => p.id === (isN8n ? 'n8n-hosting' : 'vps-hosting'));
   const plans = isN8n ? N8N_PLANS : VPS_PLANS;
@@ -92,6 +92,36 @@ export const ComputePlatformPage: React.FC<ComputePlatformPageProps> = ({
     setSelectedRuntime(isN8n ? N8N_STACK_OPTIONS[0] : VPS_OS_OPTIONS[0]);
     setOrderSubmitted(false);
     setFormError('');
+    const targetCategory = isN8n ? 'n8n-hosting' : 'vps-hosting';
+    const matchedManaged = hostingPlans.find(
+      (hp) =>
+        hp.pageCategory === targetCategory &&
+        (hp.id === `plan-${plan.id}` || hp.id === plan.id || hp.name.toLowerCase() === plan.name.toLowerCase())
+    );
+    setOrderCheckoutDraft({
+      orderCategory: targetCategory,
+      planId: matchedManaged?.id || `plan-${plan.id}`,
+      planName: matchedManaged?.name || plan.name,
+      productType: isN8n ? 'n8n Hosting' : 'Unmanaged VPS',
+      billingCycle: '1 Month',
+      datacenterId: 'uk',
+      datacenterLabel: 'London, UK',
+      domainOption: lastSearchedDomain ? lastSearchedDomain.mode : 'later',
+      domainName: lastSearchedDomain?.domain || '',
+      domainTld: lastSearchedDomain?.tld,
+      domainYears: lastSearchedDomain?.minYears,
+      domainPriceUsd: lastSearchedDomain?.priceUsd,
+      eppAuthCode: lastSearchedDomain?.eppAuthCode,
+      preselectedFromSite: true,
+      domainSearchedFromSite: Boolean(lastSearchedDomain),
+      step: 1,
+      sourceOrigin: 'public',
+      updatedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
+    });
+    if (onNavigatePath) {
+      onNavigatePath(`/order/${targetCategory}`);
+      return;
+    }
     setTimeout(() => {
       scrollToElement('#compute-configurator');
     }, 60);

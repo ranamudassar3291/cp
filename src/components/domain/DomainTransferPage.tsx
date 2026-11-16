@@ -29,8 +29,9 @@ import {
   normalizeDomainInput,
 } from '../../utils/domainLookup';
 import { DomainPillarArtwork } from './DomainArtworkEmblems';
+import { DomainContactAddressSelector } from './DomainContactAddressSelector';
 import { useCurrency } from '../../context/CurrencyContext';
-import { usePlatform } from '../../context/PlatformContext';
+import { DomainContactAddress, usePlatform } from '../../context/PlatformContext';
 import { CmsExtraSections } from '../cms/CmsExtraSections';
 
 interface DomainTransferPageProps {
@@ -56,7 +57,14 @@ export const DomainTransferPage: React.FC<DomainTransferPageProps> = ({
   onNavigatePath,
 }) => {
   const { formatPrice } = useCurrency();
-  const { cmsPages, tldExtensions, setOrderCheckoutDraft } = usePlatform();
+  const {
+    cmsPages,
+    tldExtensions,
+    domainContactAddresses,
+    addOrder,
+    setOrderCheckoutDraft,
+    setLastSearchedDomain,
+  } = usePlatform();
   const pageCms = cmsPages.find((p) => p.id === 'domain-transfer');
   const [transferMode, setTransferMode] = useState<'single' | 'bulk'>('single');
 
@@ -75,9 +83,33 @@ export const DomainTransferPage: React.FC<DomainTransferPageProps> = ({
   const [dnsStrategy, setDnsStrategy] = useState<'preserve' | 'anycast'>(
     'preserve'
   );
-  const [transferEmail, setTransferEmail] = useState('');
+  const [transferEmail, setTransferEmail] = useState(
+    () =>
+      domainContactAddresses.find((c) => c.isDefault)?.email ||
+      domainContactAddresses[0]?.email ||
+      ''
+  );
   const [transferSubmitted, setTransferSubmitted] = useState(false);
   const [submitError, setSubmitError] = useState('');
+  const [selectedWhoisContact, setSelectedWhoisContact] =
+    useState<DomainContactAddress | null>(
+      () =>
+        domainContactAddresses.find((c) => c.isDefault) ||
+        domainContactAddresses[0] ||
+        null
+    );
+
+  useEffect(() => {
+    if (!selectedWhoisContact && domainContactAddresses.length > 0) {
+      const def =
+        domainContactAddresses.find((c) => c.isDefault) ||
+        domainContactAddresses[0];
+      setSelectedWhoisContact(def);
+      if (!transferEmail.trim()) {
+        setTransferEmail(def.email);
+      }
+    }
+  }, [domainContactAddresses, selectedWhoisContact, transferEmail]);
 
   // Bulk transfer state
   const [bulkInput, setBulkInput] = useState(
@@ -120,12 +152,23 @@ export const DomainTransferPage: React.FC<DomainTransferPageProps> = ({
       const live = await inspectDomainLive(cleanDomain, true);
       const adminTld = tldExtensions.find((t) => t.tld === tld && t.enabled);
       const pricing = getPricingForTld(tld);
+      const price = adminTld ? adminTld.transferUsd : pricing.transferPrice;
       setCheckedDomain({
         domain: cleanDomain,
         tld,
-        price: adminTld ? adminTld.transferUsd : pricing.transferPrice,
+        price,
         registered: !live.available,
         whois: live.whois,
+      });
+      setLastSearchedDomain({
+        domain: cleanDomain,
+        tld,
+        available: live.available,
+        priceUsd: price,
+        renewalUsd: adminTld ? adminTld.renewalUsd : pricing.renewalPrice,
+        minYears: 1,
+        mode: 'transfer',
+        searchedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
       });
     } catch {
       setCheckError('Could not complete live registry lookup. Please retry.');
@@ -157,7 +200,26 @@ export const DomainTransferPage: React.FC<DomainTransferPageProps> = ({
       setSubmitError('Please enter a valid contact email for transfer approvals.');
       return;
     }
+    if (!selectedWhoisContact) {
+      setSubmitError(
+        'Please select a saved WHOIS contact address or add a new address below.'
+      );
+      return;
+    }
     setSubmitError('');
+    setLastSearchedDomain({
+      domain: checkedDomain.domain,
+      tld: checkedDomain.tld,
+      available: !checkedDomain.registered,
+      priceUsd: checkedDomain.price,
+      renewalUsd:
+        tldExtensions.find((t) => t.tld === checkedDomain.tld && t.enabled)?.renewalUsd ||
+        getPricingForTld(checkedDomain.tld).renewalPrice,
+      minYears: 1,
+      mode: 'transfer',
+      eppAuthCode: eppCode.trim(),
+      searchedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
+    });
     setOrderCheckoutDraft({
       orderCategory: 'domain-transfer',
       planId: 'domain-transfer',
@@ -172,7 +234,9 @@ export const DomainTransferPage: React.FC<DomainTransferPageProps> = ({
       domainYears: 1,
       domainPriceUsd: checkedDomain.price,
       eppAuthCode: eppCode.trim(),
+      whoisContactId: selectedWhoisContact.id,
       domainUnlockedConfirmed: true,
+      domainSearchedFromSite: true,
       step: 2,
       sourceOrigin: 'public',
       updatedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
@@ -181,6 +245,27 @@ export const DomainTransferPage: React.FC<DomainTransferPageProps> = ({
       onNavigatePath('/order/domain-transfer');
       return;
     }
+    addOrder({
+      clientEmail: transferEmail.trim(),
+      clientName: `${selectedWhoisContact.firstName} ${selectedWhoisContact.lastName}`.trim(),
+      country: selectedWhoisContact.countryName,
+      productType: 'Domain Transfer',
+      planName: `${checkedDomain.tld} Domain Transfer (1 Year Extension Included)`,
+      domainOrHost: checkedDomain.domain,
+      billingCycle: '1 Year',
+      amountUsd: checkedDomain.price,
+      paymentMethod: 'Domain Transfer Checkout',
+      datacenter: 'Global Anycast DNS',
+      nameservers:
+        dnsStrategy === 'anycast'
+          ? ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']
+          : ['ns1.current-registrar.com', 'ns2.current-registrar.com'],
+      whoisPrivacy: true,
+      registrarLock: true,
+      autoRenew: true,
+      whoisContact: selectedWhoisContact,
+      status: 'pending',
+    });
     setTransferSubmitted(true);
   };
 
@@ -606,6 +691,20 @@ export const DomainTransferPage: React.FC<DomainTransferPageProps> = ({
                         </div>
                       </div>
 
+                      <DomainContactAddressSelector
+                        compact
+                        selectedContactId={selectedWhoisContact?.id || null}
+                        onSelectContact={(addr) => {
+                          setSelectedWhoisContact(addr);
+                          if (!transferEmail.trim()) {
+                            setTransferEmail(addr.email);
+                          }
+                          setSubmitError('');
+                        }}
+                        title="WHOIS Registrant Contact & Address"
+                        subtitle="Select your saved WHOIS address or click Add Address to enter your country & state once for transfers."
+                      />
+
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-1">
                         <div className="flex flex-wrap gap-4 text-xs text-slate-700">
                           <label className="inline-flex items-center gap-2 cursor-pointer">
@@ -807,7 +906,16 @@ export const DomainTransferPage: React.FC<DomainTransferPageProps> = ({
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {TLD_CATALOG.slice(0, 6).map((item) => (
+            {(tldExtensions.filter((t) => t.enabled).length > 0
+              ? tldExtensions.filter((t) => t.enabled).slice(0, 6).map((t) => ({
+                  tld: t.tld,
+                  transferPrice: t.transferUsd,
+                }))
+              : TLD_CATALOG.slice(0, 6).map((t) => ({
+                  tld: t.tld,
+                  transferPrice: t.transferPrice,
+                }))
+            ).map((item) => (
               <div
                 key={item.tld}
                 className="rounded-2xl border border-[#CBD5E1] bg-white p-7 flex flex-col justify-between hover:border-[#0E6B63] transition-colors"

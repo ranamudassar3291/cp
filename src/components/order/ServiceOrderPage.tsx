@@ -5,28 +5,32 @@ import {
   Building2,
   Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Cpu,
   CreditCard,
   Download,
-  FileText,
   Globe,
-  HelpCircle,
-  Info,
+  HardDrive,
+  Layers,
   Loader2,
   Lock,
   MapPin,
   Percent,
-  RefreshCw,
+  Receipt,
   Search,
   Server,
   ShieldCheck,
+  ShoppingCart,
   Smartphone,
-  Sparkles,
   Tag,
   Wallet,
+  Workflow,
   X,
-  XCircle,
 } from 'lucide-react';
 import {
+  DomainContactAddress,
   ManagedHostingPlanRecord,
   OrderCheckoutDraft,
   PaymentGatewayKind,
@@ -37,17 +41,27 @@ import {
 } from '../../context/PlatformContext';
 import { useCurrency } from '../../context/CurrencyContext';
 import { SHARED_DATACENTERS } from '../../data/sharedHostingData';
-import { inspectDomainLive, normalizeDomainInput } from '../../utils/domainLookup';
+import {
+  getPricingForTld,
+  inspectDomainLive,
+  normalizeDomainInput,
+} from '../../utils/domainLookup';
 import { applyPageSeoMetadata } from '../../utils/seoManager';
 import { downloadInvoicePdf } from '../../utils/invoicePdfGenerator';
+import { DomainContactAddressSelector } from '../domain/DomainContactAddressSelector';
 
 export type OrderCategory =
+  | 'catalog'
   | 'shared-hosting'
   | 'wordpress-hosting'
   | 'windows-hosting'
   | 'cpanel-hosting'
+  | 'vps-hosting'
+  | 'n8n-hosting'
   | 'domain-registration'
   | 'domain-transfer';
+
+type ConcreteOrderCategory = Exclude<OrderCategory, 'catalog'>;
 
 interface ServiceOrderPageProps {
   orderCategory?: OrderCategory;
@@ -81,6 +95,17 @@ const BILLING_PERIODS: {
   { id: '2 Years', label: '2 Years', sublabel: 'Multi-year lock + 10% off', badge: 'Save 10%' },
   { id: '4 Years', label: '4 Years', sublabel: 'Maximum savings + 20% off', badge: 'Best Value · 20%' },
 ];
+
+const CATEGORY_LABELS: Record<ConcreteOrderCategory, string> = {
+  'shared-hosting': 'Linux Shared Cloud Hosting',
+  'wordpress-hosting': 'WordPress Web Hosting',
+  'windows-hosting': 'Windows IIS Web Hosting',
+  'cpanel-hosting': 'cPanel NVMe Web Hosting',
+  'vps-hosting': 'Unmanaged KVM VPS Hosting',
+  'n8n-hosting': 'n8n Automation Hosting',
+  'domain-registration': 'Domain Registration',
+  'domain-transfer': 'Domain Transfer',
+};
 
 function computePlanCyclePrice(
   plan: ManagedHostingPlanRecord,
@@ -136,9 +161,46 @@ function renderGatewayIcon(kind: PaymentGatewayKind) {
   return <Wallet className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />;
 }
 
+function CatalogProductEmblem({ category }: { category: ConcreteOrderCategory }) {
+  const regionTag =
+    category === 'wordpress-hosting' || category === 'windows-hosting'
+      ? 'UK'
+      : category === 'cpanel-hosting'
+      ? 'USA'
+      : 'GLOBAL';
+
+  return (
+    <div className="relative w-20 h-20 mx-auto rounded-2xl bg-[#F8FAFC] border border-[#E2E8F0] flex items-center justify-center">
+      {category === 'shared-hosting' && (
+        <Server className="w-9 h-9 text-slate-400" strokeWidth={1.6} aria-hidden="true" />
+      )}
+      {category === 'wordpress-hosting' && (
+        <Layers className="w-9 h-9 text-slate-400" strokeWidth={1.6} aria-hidden="true" />
+      )}
+      {category === 'windows-hosting' && (
+        <HardDrive className="w-9 h-9 text-slate-400" strokeWidth={1.6} aria-hidden="true" />
+      )}
+      {category === 'cpanel-hosting' && (
+        <ShieldCheck className="w-9 h-9 text-slate-400" strokeWidth={1.6} aria-hidden="true" />
+      )}
+      {category === 'vps-hosting' && (
+        <Cpu className="w-9 h-9 text-slate-400" strokeWidth={1.6} aria-hidden="true" />
+      )}
+      {category === 'n8n-hosting' && (
+        <Workflow className="w-9 h-9 text-slate-400" strokeWidth={1.6} aria-hidden="true" />
+      )}
+      {(category === 'domain-registration' || category === 'domain-transfer') && (
+        <Globe className="w-9 h-9 text-slate-400" strokeWidth={1.6} aria-hidden="true" />
+      )}
+      <span className="absolute -bottom-1.5 -right-1.5 px-1.5 py-0.5 rounded bg-white border border-[#E2E8F0] font-mono text-[10px] font-bold text-[#0E6B63]">
+        {regionTag}
+      </span>
+    </div>
+  );
+}
+
 export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
-  orderCategory = 'shared-hosting',
-  onNavigateHome,
+  orderCategory = 'catalog',
   onBackToSharedHosting,
   onRequireLogin,
   onRequireRegister,
@@ -152,36 +214,77 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
     invoices,
     invoiceTemplateConfig,
     orderCheckoutDraft,
+    lastSearchedDomain,
+    domainContactAddresses,
     setOrderCheckoutDraft,
     clearOrderCheckoutDraft,
+    setLastSearchedDomain,
     setPendingPostAuthPath,
     validatePromoCode,
     recordPromoCodeUsage,
     addOrder,
+    payClientOrderInvoice,
   } = usePlatform();
-  const { formatPrice } = useCurrency();
+  const { currency, rate, formatPrice } = useCurrency();
 
-  // Active Category (from prop or draft)
-  const [activeCategory, setActiveCategory] = useState<OrderCategory>(() => {
-    return orderCheckoutDraft?.orderCategory || orderCategory;
+  const hasValidDraftForCategory = Boolean(
+    orderCheckoutDraft &&
+      orderCheckoutDraft.orderCategory &&
+      orderCheckoutDraft.orderCategory !== 'catalog' &&
+      (orderCategory === 'catalog' || orderCheckoutDraft.orderCategory === orderCategory)
+  );
+
+  // Determine whether we start in Upmind Store Catalog or Focused Single-Item Checkout
+  const [viewMode, setViewMode] = useState<'catalog' | 'checkout'>(() => {
+    if (orderCategory === 'catalog') {
+      return hasValidDraftForCategory && orderCheckoutDraft?.step && orderCheckoutDraft.step > 1
+        ? 'checkout'
+        : 'catalog';
+    }
+    return 'checkout';
+  });
+
+  // Catalog sidebar filter state (Upmind-style)
+  const [catalogCategory, setCatalogCategory] = useState<ConcreteOrderCategory>('shared-hosting');
+  const [catalogCategorySearch, setCatalogCategorySearch] = useState('');
+  const [catalogProductSearch, setCatalogProductSearch] = useState('');
+  const [hostingGroupOpen, setHostingGroupOpen] = useState(true);
+  const [domainGroupOpen, setDomainGroupOpen] = useState(true);
+
+  // Active concrete checkout category
+  const [activeCategory, setActiveCategory] = useState<ConcreteOrderCategory>(() => {
+    if (orderCategory !== 'catalog') return orderCategory;
+    if (
+      orderCheckoutDraft?.orderCategory &&
+      orderCheckoutDraft.orderCategory !== 'catalog'
+    ) {
+      return orderCheckoutDraft.orderCategory;
+    }
+    return 'shared-hosting';
   });
 
   useEffect(() => {
-    if (orderCategory && orderCategory !== activeCategory && !orderCheckoutDraft?.orderCategory) {
+    if (orderCategory === 'catalog') {
+      setViewMode('catalog');
+    } else {
       setActiveCategory(orderCategory);
+      setViewMode('checkout');
     }
   }, [orderCategory]);
 
-  const isWpOrWin = activeCategory === 'wordpress-hosting' || activeCategory === 'windows-hosting';
+  const isWpOrWin =
+    activeCategory === 'wordpress-hosting' || activeCategory === 'windows-hosting';
   const isCpanel = activeCategory === 'cpanel-hosting';
-  const isDomainOnly = activeCategory === 'domain-registration' || activeCategory === 'domain-transfer';
+  const isCompute = activeCategory === 'vps-hosting' || activeCategory === 'n8n-hosting';
+  const isDomainOnly =
+    activeCategory === 'domain-registration' || activeCategory === 'domain-transfer';
 
   const categoryPlans = useMemo(() => {
-    const targetCat = isWpOrWin ? activeCategory : isCpanel ? 'cpanel-hosting' : 'shared-hosting';
+    const targetCat = isDomainOnly ? 'shared-hosting' : activeCategory;
     const filtered = hostingPlans.filter((p) => p.pageCategory === targetCat && p.enabled);
     if (filtered.length > 0) return filtered;
     return hostingPlans.filter((p) => p.pageCategory === 'shared-hosting' && p.enabled);
-  }, [hostingPlans, activeCategory, isWpOrWin, isCpanel]);
+  }, [hostingPlans, activeCategory, isDomainOnly]);
 
   const enabledTlds = useMemo(
     () => tldExtensions.filter((t) => t.enabled),
@@ -200,13 +303,12 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
     if (orderCheckoutDraft?.planId) {
       const byId = categoryPlans.find((p) => p.id === orderCheckoutDraft.planId);
       if (byId) return byId;
+      const globalById = hostingPlans.find((p) => p.id === orderCheckoutDraft.planId);
+      if (globalById) return globalById;
     }
     return categoryPlans.find((p) => p.popular) ?? categoryPlans[0] ?? hostingPlans[0];
   }, [orderCheckoutDraft, categoryPlans, hostingPlans]);
 
-  // Stepper steps:
-  // For Hosting: 1 (Billing Period) -> 2 (Domain & Nameservers) -> 3 (Review & Promo) -> 4 (Payment)
-  // For Domain-Only: 2 (Domain & Nameservers) -> 3 (Review & Promo) -> 4 (Payment)
   const [step, setStep] = useState<1 | 2 | 3 | 4>(() => {
     if (isDomainOnly) return 2;
     if (orderCheckoutDraft?.step) {
@@ -216,17 +318,26 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
     return 1;
   });
 
+  useEffect(() => {
+    if (isDomainOnly && step === 1) {
+      setStep(2);
+    }
+  }, [isDomainOnly, step]);
+
   const [selectedPlanId, setSelectedPlanId] = useState<string>(
     initialPlan?.id || 'plan-shared-velocity'
   );
+
+  useEffect(() => {
+    if (orderCheckoutDraft?.planId) {
+      setSelectedPlanId(orderCheckoutDraft.planId);
+    }
+  }, [orderCheckoutDraft?.planId]);
+
   const [billingCycle, setBillingCycle] = useState<BillingPeriodOption>(
     orderCheckoutDraft?.billingCycle || '1 Year'
   );
 
-  // Datacenter location logic:
-  // Strict UK for WordPress & Windows
-  // Strict USA for cPanel
-  // UK/US/SG for Shared Cloud
   const [datacenterId, setDatacenterId] = useState<'uk' | 'us' | 'sg'>(() => {
     if (isWpOrWin) return 'uk';
     if (isCpanel) return 'us';
@@ -241,12 +352,16 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
     }
   }, [isWpOrWin, isCpanel, datacenterId]);
 
-  // Domain configuration state
-  const [domainOption, setDomainOption] = useState<'register' | 'transfer' | 'existing' | 'later'>(() => {
-    if (activeCategory === 'domain-transfer') return 'transfer';
-    if (activeCategory === 'domain-registration') return 'register';
-    return orderCheckoutDraft?.domainOption || 'register';
-  });
+  // Domain configuration state — auto-inherit draft OR lastSearchedDomain so user never searches twice!
+  const [domainOption, setDomainOption] = useState<'register' | 'transfer' | 'existing' | 'later'>(
+    () => {
+      if (activeCategory === 'domain-transfer') return 'transfer';
+      if (activeCategory === 'domain-registration') return 'register';
+      if (orderCheckoutDraft?.domainOption) return orderCheckoutDraft.domainOption;
+      if (lastSearchedDomain) return lastSearchedDomain.mode;
+      return 'register';
+    }
+  );
 
   useEffect(() => {
     if (activeCategory === 'domain-transfer') {
@@ -261,22 +376,39 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
   const [domainResults, setDomainResults] = useState<DomainCheckCandidate[]>([]);
   const [domainSearchError, setDomainSearchError] = useState('');
 
+  // Control whether the domain search input is hidden because user already searched on site
+  const [showDomainSearchBox, setShowDomainSearchBox] = useState<boolean>(() => {
+    if (orderCheckoutDraft?.domainOption === 'register' && orderCheckoutDraft.domainName) {
+      return false;
+    }
+    if (lastSearchedDomain?.mode === 'register' && lastSearchedDomain.domain) {
+      return false;
+    }
+    return true;
+  });
+
   // Domain Transfer state
-  const [transferDomainInput, setTransferDomainInput] = useState(
-    orderCheckoutDraft?.domainOption === 'transfer' ? orderCheckoutDraft.domainName : ''
-  );
+  const [transferDomainInput, setTransferDomainInput] = useState(() => {
+    if (orderCheckoutDraft?.domainOption === 'transfer' && orderCheckoutDraft.domainName) {
+      return orderCheckoutDraft.domainName;
+    }
+    if (lastSearchedDomain?.mode === 'transfer' && lastSearchedDomain.domain) {
+      return lastSearchedDomain.domain;
+    }
+    return '';
+  });
   const [domainUnlockedChecked, setDomainUnlockedChecked] = useState(
     orderCheckoutDraft?.domainUnlockedConfirmed !== undefined
       ? orderCheckoutDraft.domainUnlockedConfirmed
       : false
   );
   const [eppAuthCode, setEppAuthCode] = useState(
-    orderCheckoutDraft?.eppAuthCode || ''
+    orderCheckoutDraft?.eppAuthCode || lastSearchedDomain?.eppAuthCode || ''
   );
   const [showEppSecret, setShowEppSecret] = useState(false);
   const [transferStrategy, setTransferStrategy] = useState<'preserve' | 'cloud'>('preserve');
 
-  // Hostinger-style Nameservers state
+  // Nameservers state
   const [nameserversType, setNameserversType] = useState<'default' | 'custom'>(
     orderCheckoutDraft?.nameserversType || 'default'
   );
@@ -286,12 +418,44 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
   const [customNs2, setCustomNs2] = useState(
     orderCheckoutDraft?.nameservers?.[1] || 'ns2.cpcloudhost.com'
   );
-  const [showExtraNs, setShowExtraNs] = useState(false);
-  const [customNs3, setCustomNs3] = useState('');
-  const [customNs4, setCustomNs4] = useState('');
   const [whoisPrivacyEnabled, setWhoisPrivacyEnabled] = useState(
     orderCheckoutDraft?.whoisPrivacy !== undefined ? orderCheckoutDraft.whoisPrivacy : true
   );
+  const [selectedWhoisContact, setSelectedWhoisContact] =
+    useState<DomainContactAddress | null>(() => {
+      if (orderCheckoutDraft?.whoisContactId) {
+        const found = domainContactAddresses.find(
+          (c) => c.id === orderCheckoutDraft.whoisContactId
+        );
+        if (found) return found;
+      }
+      return (
+        domainContactAddresses.find((c) => c.isDefault) ||
+        domainContactAddresses[0] ||
+        null
+      );
+    });
+
+  useEffect(() => {
+    if (orderCheckoutDraft?.whoisContactId) {
+      const matched = domainContactAddresses.find(
+        (c) => c.id === orderCheckoutDraft.whoisContactId
+      );
+      if (matched) {
+        setSelectedWhoisContact(matched);
+        return;
+      }
+    }
+    if (!selectedWhoisContact && domainContactAddresses.length > 0) {
+      setSelectedWhoisContact(
+        domainContactAddresses.find((c) => c.isDefault) || domainContactAddresses[0]
+      );
+    }
+  }, [
+    orderCheckoutDraft?.whoisContactId,
+    domainContactAddresses,
+    selectedWhoisContact,
+  ]);
 
   const [selectedNewDomain, setSelectedNewDomain] = useState<DomainCheckCandidate | null>(() => {
     if (
@@ -299,18 +463,107 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
       orderCheckoutDraft.domainName &&
       orderCheckoutDraft.domainTld
     ) {
+      const matchedTld = enabledTlds.find(
+        (t) => t.tld.toLowerCase() === orderCheckoutDraft.domainTld?.toLowerCase()
+      );
+      const fallbackPrice =
+        orderCheckoutDraft.domainPriceUsd ||
+        (matchedTld
+          ? matchedTld.minYears === 2
+            ? matchedTld.year2Usd
+            : matchedTld.year1Usd
+          : 12.99);
       return {
         domain: orderCheckoutDraft.domainName,
         tld: orderCheckoutDraft.domainTld,
         minYears: orderCheckoutDraft.domainYears === 2 ? 2 : 1,
-        priceUsd: orderCheckoutDraft.domainPriceUsd || 0,
-        renewalUsd: orderCheckoutDraft.domainPriceUsd || 0,
+        priceUsd: fallbackPrice,
+        renewalUsd: matchedTld?.renewalUsd || fallbackPrice,
+        available: true,
+        popular: true,
+      };
+    }
+    if (lastSearchedDomain && lastSearchedDomain.mode === 'register' && lastSearchedDomain.available) {
+      return {
+        domain: lastSearchedDomain.domain,
+        tld: lastSearchedDomain.tld,
+        minYears: lastSearchedDomain.minYears,
+        priceUsd: lastSearchedDomain.priceUsd,
+        renewalUsd: lastSearchedDomain.renewalUsd,
         available: true,
         popular: true,
       };
     }
     return null;
   });
+
+  // Sync if draft or lastSearchedDomain updates externally
+  useEffect(() => {
+    if (
+      orderCheckoutDraft?.domainOption === 'register' &&
+      orderCheckoutDraft.domainName &&
+      orderCheckoutDraft.domainTld
+    ) {
+      const matchedTld = enabledTlds.find(
+        (t) => t.tld.toLowerCase() === orderCheckoutDraft.domainTld?.toLowerCase()
+      );
+      const priceUsd =
+        orderCheckoutDraft.domainPriceUsd ||
+        (matchedTld
+          ? matchedTld.minYears === 2
+            ? matchedTld.year2Usd
+            : matchedTld.year1Usd
+          : 12.99);
+      setSelectedNewDomain({
+        domain: orderCheckoutDraft.domainName,
+        tld: orderCheckoutDraft.domainTld,
+        minYears: orderCheckoutDraft.domainYears === 2 ? 2 : 1,
+        priceUsd,
+        renewalUsd: matchedTld?.renewalUsd || priceUsd,
+        available: true,
+        popular: true,
+      });
+      setShowDomainSearchBox(false);
+    } else if (
+      !selectedNewDomain &&
+      lastSearchedDomain &&
+      lastSearchedDomain.mode === 'register' &&
+      lastSearchedDomain.available
+    ) {
+      setSelectedNewDomain({
+        domain: lastSearchedDomain.domain,
+        tld: lastSearchedDomain.tld,
+        minYears: lastSearchedDomain.minYears,
+        priceUsd: lastSearchedDomain.priceUsd,
+        renewalUsd: lastSearchedDomain.renewalUsd,
+        available: true,
+        popular: true,
+      });
+      setShowDomainSearchBox(false);
+    }
+    if (orderCheckoutDraft?.domainOption === 'transfer' && orderCheckoutDraft.domainName) {
+      setDomainOption('transfer');
+      setTransferDomainInput(orderCheckoutDraft.domainName);
+      if (orderCheckoutDraft.eppAuthCode) {
+        setEppAuthCode(orderCheckoutDraft.eppAuthCode);
+      }
+      if (orderCheckoutDraft.domainUnlockedConfirmed !== undefined) {
+        setDomainUnlockedChecked(orderCheckoutDraft.domainUnlockedConfirmed);
+      }
+    } else if (!transferDomainInput && lastSearchedDomain?.mode === 'transfer' && lastSearchedDomain.domain) {
+      setTransferDomainInput(lastSearchedDomain.domain);
+      if (lastSearchedDomain.eppAuthCode) {
+        setEppAuthCode(lastSearchedDomain.eppAuthCode);
+      }
+    }
+  }, [
+    orderCheckoutDraft?.domainName,
+    orderCheckoutDraft?.domainTld,
+    orderCheckoutDraft?.domainOption,
+    orderCheckoutDraft?.eppAuthCode,
+    orderCheckoutDraft?.domainUnlockedConfirmed,
+    lastSearchedDomain,
+  ]);
 
   const [existingDomainInput, setExistingDomainInput] = useState(
     orderCheckoutDraft?.domainOption === 'existing' ? orderCheckoutDraft.domainName : ''
@@ -329,6 +582,11 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
   );
   const [transactionRef, setTransactionRef] = useState('');
   const [paymentError, setPaymentError] = useState('');
+  const [postOrderGatewayId, setPostOrderGatewayId] = useState<string>('');
+  const [postOrderDetailsNote, setPostOrderDetailsNote] = useState('');
+  const [postOrderPaymentSubmitted, setPostOrderPaymentSubmitted] = useState(false);
+  const [postOrderPaymentError, setPostOrderPaymentError] = useState('');
+  const [copiedAccountField, setCopiedAccountField] = useState<string | null>(null);
   const [completedOrders, setCompletedOrders] = useState<{
     orderId: string;
     invoiceId: string;
@@ -342,23 +600,37 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
   } | null>(null);
 
   useEffect(() => {
-    const titles: Record<OrderCategory, string> = {
+    if (viewMode === 'catalog') {
+      applyPageSeoMetadata({
+        title: 'Storefront & Service Catalog | cpcloudhost.com',
+        description:
+          'Browse cloud hosting, managed WordPress, cPanel, Windows IIS, KVM VPS, n8n nodes, and domain services in your local currency.',
+        canonicalPath: '/order',
+        ogType: 'website',
+        jsonLd: null,
+      });
+      return;
+    }
+
+    const titles: Record<ConcreteOrderCategory, string> = {
       'shared-hosting': 'Order Shared Cloud Hosting | cpcloudhost.com',
       'wordpress-hosting': 'Order Managed WordPress Hosting (UK Datacenter) | cpcloudhost.com',
       'windows-hosting': 'Order Windows IIS Web Hosting (UK Datacenter) | cpcloudhost.com',
       'cpanel-hosting': 'Order cPanel NVMe Web Hosting (USA Datacenter) | cpcloudhost.com',
+      'vps-hosting': 'Order Unmanaged KVM VPS | cpcloudhost.com',
+      'n8n-hosting': 'Order Dedicated n8n Automation Node | cpcloudhost.com',
       'domain-registration': 'Register Domain Name | cpcloudhost.com',
       'domain-transfer': 'Transfer Domain & 1-Year Extension | cpcloudhost.com',
     };
     applyPageSeoMetadata({
       title: titles[activeCategory] || 'Order Web Services | cpcloudhost.com',
       description:
-        'International checkout portal with live domain search, Hostinger-style Anycast nameservers, local payments (EasyPaisa/JazzCash), and automated invoicing.',
+        'Enterprise cloud checkout portal with live domain search, Anycast nameservers, local currency billing, and automated invoicing.',
       canonicalPath: `/order/${activeCategory}`,
       ogType: 'website',
       jsonLd: null,
     });
-  }, [activeCategory]);
+  }, [activeCategory, viewMode]);
 
   useEffect(() => {
     if (!selectedGatewayId && enabledGateways.length > 0) {
@@ -382,8 +654,7 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
       return SHARED_DATACENTERS.find((dc) => dc.id === 'us') ?? SHARED_DATACENTERS[1];
     }
     return (
-      SHARED_DATACENTERS.find((dc) => dc.id === datacenterId) ??
-      SHARED_DATACENTERS[0]
+      SHARED_DATACENTERS.find((dc) => dc.id === datacenterId) ?? SHARED_DATACENTERS[0]
     );
   }, [datacenterId, isWpOrWin, isCpanel]);
 
@@ -411,7 +682,7 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
 
   const transferPriceUsd = detectedTransferTld
     ? detectedTransferTld.transferUsd || detectedTransferTld.year1Usd
-    : 11.99;
+    : getPricingForTld('.com').transferPrice;
 
   const domainPriceUsd =
     domainOption === 'register' && selectedNewDomain
@@ -432,9 +703,31 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
   // Auto-advance to Step 4 if returning authenticated
   useEffect(() => {
     if (currentUser && orderCheckoutDraft?.step === 4 && step !== 4 && !completedOrders) {
+      setViewMode('checkout');
       setStep(4);
     }
   }, [currentUser, orderCheckoutDraft, step, completedOrders]);
+
+  const resolveProductType = (cat: ConcreteOrderCategory): PlatformOrder['productType'] => {
+    switch (cat) {
+      case 'wordpress-hosting':
+        return 'Managed WordPress';
+      case 'windows-hosting':
+        return 'Windows Hosting';
+      case 'cpanel-hosting':
+        return 'cPanel Hosting';
+      case 'vps-hosting':
+        return 'Unmanaged VPS';
+      case 'n8n-hosting':
+        return 'n8n Hosting';
+      case 'domain-registration':
+        return 'Domain Registration';
+      case 'domain-transfer':
+        return 'Domain Transfer';
+      default:
+        return 'Shared Cloud';
+    }
+  };
 
   const persistDraft = (nextStep: 1 | 2 | 3 | 4) => {
     const draft: OrderCheckoutDraft = {
@@ -445,18 +738,7 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
           ? 'Domain Transfer'
           : 'Domain Registration'
         : activePlan.name,
-      productType:
-        activeCategory === 'wordpress-hosting'
-          ? 'Managed WordPress'
-          : activeCategory === 'windows-hosting'
-          ? 'Windows Hosting'
-          : activeCategory === 'cpanel-hosting'
-          ? 'cPanel Hosting'
-          : activeCategory === 'domain-registration'
-          ? 'Domain Registration'
-          : activeCategory === 'domain-transfer'
-          ? 'Domain Transfer'
-          : 'Shared Cloud',
+      productType: resolveProductType(activeCategory),
       billingCycle,
       datacenterId: activeDatacenter.id,
       datacenterLabel: activeDatacenter.city,
@@ -484,12 +766,141 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
           ? ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']
           : [customNs1.trim() || 'ns1.cpcloudhost.com', customNs2.trim() || 'ns2.cpcloudhost.com'],
       whoisPrivacy: whoisPrivacyEnabled,
+      whoisContactId: selectedWhoisContact?.id,
       eppAuthCode: domainOption === 'transfer' ? eppAuthCode : undefined,
       domainUnlockedConfirmed: domainOption === 'transfer' ? domainUnlockedChecked : undefined,
+      preselectedFromSite: true,
+      domainSearchedFromSite: Boolean(selectedNewDomain || lastSearchedDomain),
       step: nextStep,
       updatedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
     };
     setOrderCheckoutDraft(draft);
+  };
+
+  // Catalog data computation (Upmind-style left category tree + counts)
+  const catalogHostingCategories = useMemo(() => {
+    const defs: { id: ConcreteOrderCategory; label: string; regionNote: string }[] = [
+      { id: 'shared-hosting', label: 'Linux Shared Cloud', regionNote: 'UK · US · Singapore' },
+      { id: 'wordpress-hosting', label: 'WordPress Web Hosting', regionNote: 'London UK Edge' },
+      { id: 'windows-hosting', label: 'Windows Web Hosting', regionNote: 'London UK IIS 10' },
+      { id: 'cpanel-hosting', label: 'cPanel NVMe Hosting', regionNote: 'Dallas USA NVMe' },
+      { id: 'vps-hosting', label: 'KVM VPS Hosting', regionNote: 'UK · US · Singapore' },
+      { id: 'n8n-hosting', label: 'n8n Automation Hosting', regionNote: 'UK · US · Singapore' },
+    ];
+    return defs.map((def) => ({
+      ...def,
+      plans: hostingPlans.filter((p) => p.pageCategory === def.id && p.enabled),
+    }));
+  }, [hostingPlans]);
+
+  const catalogDomainCategories = useMemo(
+    () => [
+      { id: 'domain-registration' as const, label: 'Domain Registration', count: enabledTlds.length },
+      { id: 'domain-transfer' as const, label: 'Domain Transfer', count: enabledTlds.length },
+    ],
+    [enabledTlds.length]
+  );
+
+  const filteredHostingCats = useMemo(() => {
+    const q = catalogCategorySearch.trim().toLowerCase();
+    if (!q) return catalogHostingCategories;
+    return catalogHostingCategories.filter(
+      (c) => c.label.toLowerCase().includes(q) || c.regionNote.toLowerCase().includes(q)
+    );
+  }, [catalogHostingCategories, catalogCategorySearch]);
+
+  const filteredDomainCats = useMemo(() => {
+    const q = catalogCategorySearch.trim().toLowerCase();
+    if (!q) return catalogDomainCategories;
+    return catalogDomainCategories.filter((c) => c.label.toLowerCase().includes(q));
+  }, [catalogDomainCategories, catalogCategorySearch]);
+
+  const activeCatalogPlans = useMemo(() => {
+    const catObj = catalogHostingCategories.find((c) => c.id === catalogCategory);
+    const list = catObj ? catObj.plans : [];
+    const q = catalogProductSearch.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter(
+      (p) =>
+        p.name.toLowerCase().includes(q) ||
+        p.audience.toLowerCase().includes(q) ||
+        p.tagline.toLowerCase().includes(q) ||
+        p.storage.toLowerCase().includes(q)
+    );
+  }, [catalogHostingCategories, catalogCategory, catalogProductSearch]);
+
+  const handleSelectPlanFromCatalog = (
+    cat: ConcreteOrderCategory,
+    plan: ManagedHostingPlanRecord
+  ) => {
+    setActiveCategory(cat);
+    setSelectedPlanId(plan.id);
+    setBillingCycle(cat === 'vps-hosting' || cat === 'n8n-hosting' ? '1 Month' : '1 Year');
+    if (cat === 'wordpress-hosting' || cat === 'windows-hosting') {
+      setDatacenterId('uk');
+    } else if (cat === 'cpanel-hosting') {
+      setDatacenterId('us');
+    }
+    if (lastSearchedDomain) {
+      setDomainOption(lastSearchedDomain.mode);
+      if (lastSearchedDomain.mode === 'register' && lastSearchedDomain.available) {
+        setSelectedNewDomain({
+          domain: lastSearchedDomain.domain,
+          tld: lastSearchedDomain.tld,
+          minYears: lastSearchedDomain.minYears,
+          priceUsd: lastSearchedDomain.priceUsd,
+          renewalUsd: lastSearchedDomain.renewalUsd,
+          available: true,
+          popular: true,
+        });
+        setShowDomainSearchBox(false);
+      } else if (lastSearchedDomain.mode === 'transfer') {
+        setTransferDomainInput(lastSearchedDomain.domain);
+      }
+    } else {
+      setDomainOption(cat === 'vps-hosting' || cat === 'n8n-hosting' ? 'later' : 'register');
+    }
+    setCompletedOrders(null);
+    setStep(1);
+    setViewMode('checkout');
+    if (typeof window !== 'undefined') {
+      window.history.replaceState(null, '', `/order/${cat}${window.location.search}`);
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleSelectDomainFromCatalog = (
+    mode: 'register' | 'transfer',
+    candidate?: DomainCheckCandidate,
+    transferDomain?: string
+  ) => {
+    const cat: ConcreteOrderCategory =
+      mode === 'transfer' ? 'domain-transfer' : 'domain-registration';
+    setActiveCategory(cat);
+    setDomainOption(mode);
+    if (mode === 'register' && candidate) {
+      setSelectedNewDomain(candidate);
+      setShowDomainSearchBox(false);
+      setLastSearchedDomain({
+        domain: candidate.domain,
+        tld: candidate.tld,
+        available: candidate.available,
+        priceUsd: candidate.priceUsd,
+        renewalUsd: candidate.renewalUsd,
+        minYears: candidate.minYears,
+        mode: 'register',
+        searchedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
+      });
+    } else if (mode === 'transfer' && transferDomain) {
+      setTransferDomainInput(transferDomain);
+    }
+    setCompletedOrders(null);
+    setStep(2);
+    setViewMode('checkout');
+    if (typeof window !== 'undefined') {
+      window.history.replaceState(null, '', `/order/${cat}${window.location.search}`);
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleDomainSearch = async (e: React.FormEvent) => {
@@ -511,7 +922,6 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
     const { baseLabel, tld: typedTld } = normalizeDomainInput(raw);
     const cleanBase = (baseLabel || raw.replace(/[^a-z0-9-]/gi, '').toLowerCase()) || 'mybrand';
 
-    // Prioritize typed TLD first, then popular, then catalog order — strictly TOP 5
     const orderedTlds: TldExtensionRecord[] = [...enabledTlds]
       .sort((a, b) => {
         if (a.tld.toLowerCase() === typedTld.toLowerCase()) return -1;
@@ -539,6 +949,18 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
         })
       );
       setDomainResults(checks);
+      if (checks[0]) {
+        setLastSearchedDomain({
+          domain: checks[0].domain,
+          tld: checks[0].tld,
+          available: checks[0].available,
+          priceUsd: checks[0].priceUsd,
+          renewalUsd: checks[0].renewalUsd,
+          minYears: checks[0].minYears,
+          mode: checks[0].available ? 'register' : 'transfer',
+          searchedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
+        });
+      }
     } catch {
       setDomainSearchError('Unable to complete live DNS/RDAP registry lookup.');
     } finally {
@@ -579,6 +1001,16 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
         return;
       }
       setExistingDomainInput(clean);
+    }
+
+    if (
+      (domainOption === 'register' || domainOption === 'transfer') &&
+      !selectedWhoisContact
+    ) {
+      setStep2Error(
+        'Please select or add a WHOIS Registrant Contact & Address below before continuing.'
+      );
+      return;
     }
 
     persistDraft(3);
@@ -643,12 +1075,6 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
       setPaymentError('Please select a payment method.');
       return;
     }
-    if (selectedGateway.requiresTransactionId && transactionRef.trim().length < 4) {
-      setPaymentError(
-        `Enter your ${selectedGateway.name} Transaction ID / Reference to submit your order.`
-      );
-      return;
-    }
     setPaymentError('');
 
     const resolvedDomainHost =
@@ -663,21 +1089,13 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
     const hostingDiscount = appliedPromo?.scope === 'hosting' ? promoDiscountUsd : 0;
     const domainDiscount = appliedPromo?.scope === 'domain' ? promoDiscountUsd : 0;
 
-    const resolvedProductType: PlatformOrder['productType'] =
-      activeCategory === 'wordpress-hosting'
-        ? 'Managed WordPress'
-        : activeCategory === 'windows-hosting'
-        ? 'Windows Hosting'
-        : activeCategory === 'cpanel-hosting'
-        ? 'cPanel Hosting'
-        : 'Shared Cloud';
+    const resolvedProductType = resolveProductType(activeCategory);
 
     let primaryOrderId = '';
     let primaryInvoiceId = '';
     let secondaryOrderId: string | undefined;
     let secondaryInvoiceId: string | undefined;
 
-    // Case 1: Standalone Domain-Only Order
     if (isDomainOnly) {
       const isTransfer = activeCategory === 'domain-transfer' || domainOption === 'transfer';
       const netAmount = Math.max(0, Number((domainPriceUsd - domainDiscount).toFixed(2)));
@@ -702,16 +1120,16 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
             ? ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']
             : [customNs1.trim() || 'ns1.cpcloudhost.com', customNs2.trim() || 'ns2.cpcloudhost.com'],
         whoisPrivacy: whoisPrivacyEnabled,
+        whoisContact: selectedWhoisContact || undefined,
         registrarLock: true,
         autoRenew: true,
         promoCode: appliedPromo?.code,
         discountUsd: domainDiscount || undefined,
-        transactionRef: transactionRef.trim() || undefined,
         notes: isTransfer
           ? `EPP Auth Code Verified (${eppAuthCode.trim()}). Client confirmed domain unlocked. Strategy: ${
               transferStrategy === 'cloud' ? 'CPCloudHost Anycast' : 'Preserve Current'
             }.`
-          : `Hostinger-style Domain Registration. Nameservers: ${
+          : `Domain Registration. Nameservers: ${
               nameserversType === 'default'
                 ? 'CPCloudHost Anycast'
                 : `Custom (${customNs1}, ${customNs2})`
@@ -720,7 +1138,6 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
       primaryOrderId = order.id;
       primaryInvoiceId = invoice?.id || order.id.replace('ORD-', 'INV-');
     } else {
-      // Case 2: Hosting Order (with optional Domain Registration or Transfer bundled)
       const netHostingAmount = Math.max(
         0,
         Number((hostingPricing.priceUsd - hostingDiscount).toFixed(2))
@@ -742,19 +1159,17 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
         serverPackageName: activePlan.serverPackageName,
         promoCode: appliedPromo?.scope === 'hosting' ? appliedPromo.code : undefined,
         discountUsd: hostingDiscount || undefined,
-        transactionRef: transactionRef.trim() || undefined,
         nameservers:
           nameserversType === 'default'
             ? ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']
             : [customNs1.trim() || 'ns1.cpcloudhost.com', customNs2.trim() || 'ns2.cpcloudhost.com'],
-        notes: `Order via ${selectedGateway.name}${
+        notes: `Order placed via ${selectedGateway.name}${
           domainOption === 'later' ? ' · Staging container assigned' : ''
-        }${transactionRef.trim() ? ` · TID: ${transactionRef.trim()}` : ''}`,
+        }`,
       });
       primaryOrderId = hostingOrder.id;
       primaryInvoiceId = hostingInvoice?.id || hostingOrder.id.replace('ORD-', 'INV-');
 
-      // Create bundled domain registration order if registered
       if (domainOption === 'register' && selectedNewDomain) {
         const netDomainAmount = Math.max(
           0,
@@ -778,11 +1193,11 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
               ? ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']
               : [customNs1.trim() || 'ns1.cpcloudhost.com', customNs2.trim() || 'ns2.cpcloudhost.com'],
           whoisPrivacy: whoisPrivacyEnabled,
+          whoisContact: selectedWhoisContact || undefined,
           registrarLock: true,
           autoRenew: true,
           promoCode: appliedPromo?.scope === 'domain' ? appliedPromo.code : undefined,
           discountUsd: domainDiscount || undefined,
-          transactionRef: transactionRef.trim() || undefined,
           notes: `Bundled with ${resolvedProductType} order ${hostingOrder.id}`,
         });
         secondaryOrderId = domOrder.id;
@@ -810,9 +1225,11 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
               ? ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']
               : ['ns1.current-registrar.com', 'ns2.current-registrar.com'],
           whoisPrivacy: whoisPrivacyEnabled,
+          whoisContact: selectedWhoisContact || undefined,
+          registrarLock: true,
+          autoRenew: true,
           promoCode: appliedPromo?.scope === 'domain' ? appliedPromo.code : undefined,
           discountUsd: domainDiscount || undefined,
-          transactionRef: transactionRef.trim() || undefined,
           notes: `Bundled transfer with ${resolvedProductType} order ${hostingOrder.id}. EPP Verified: ${eppAuthCode.trim()}`,
         });
         secondaryOrderId = transOrder.id;
@@ -826,6 +1243,12 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
 
     clearOrderCheckoutDraft();
     setPendingPostAuthPath(null);
+
+    setPostOrderGatewayId(selectedGateway.id);
+    setTransactionRef('');
+    setPostOrderDetailsNote('');
+    setPostOrderPaymentSubmitted(false);
+    setPostOrderPaymentError('');
 
     setCompletedOrders({
       orderId: primaryOrderId,
@@ -846,35 +1269,63 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-[#0F172A]">
-      {/* Compact Header */}
+      {/* Clean Single-Row Breadcrumb Header (Zero Category Tab Bar) */}
       <header className="bg-white border-b border-[#E2E8F0]">
         <div className="max-w-[1200px] mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 min-w-0">
             <button
               type="button"
-              onClick={onBackToSharedHosting}
+              onClick={() => {
+                if (orderCategory === 'catalog' && viewMode === 'checkout' && !completedOrders) {
+                  setViewMode('catalog');
+                  setCatalogCategory(activeCategory);
+                } else {
+                  onBackToSharedHosting();
+                }
+              }}
               className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-[#0E6B63] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <ArrowLeft className="w-4 h-4" aria-hidden="true" />
-              <span>Back to Plans</span>
+              <span>
+                {viewMode === 'catalog'
+                  ? 'Back'
+                  : orderCategory === 'catalog'
+                  ? 'Back to Catalog'
+                  : 'Back to Plans'}
+              </span>
             </button>
             <span className="text-slate-300">/</span>
             <span className="font-display text-sm sm:text-base font-bold text-[#0F172A] truncate">
-              {activeCategory === 'wordpress-hosting'
-                ? 'Managed WordPress Hosting Order'
-                : activeCategory === 'windows-hosting'
-                ? 'Windows IIS Hosting Order (UK Datacenter)'
-                : activeCategory === 'cpanel-hosting'
-                ? 'cPanel Web Hosting Order (USA Datacenter)'
-                : activeCategory === 'domain-registration'
-                ? 'Domain Registration Portal'
-                : activeCategory === 'domain-transfer'
-                ? 'Domain Transfer Portal'
-                : 'Shared Cloud Hosting Order'}
+              {viewMode === 'catalog'
+                ? 'Enterprise Service Catalog'
+                : CATEGORY_LABELS[activeCategory]}
             </span>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 shrink-0">
+            <span className="hidden sm:inline-flex items-center gap-1.5 text-xs font-mono font-semibold text-slate-600 px-2.5 py-1 rounded-lg bg-[#F8FAFC] border border-[#E2E8F0]">
+              <Globe className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+              <span>
+                {currency.code} ({currency.symbol})
+              </span>
+            </span>
+
+            {viewMode === 'checkout' && !completedOrders && (
+              <button
+                type="button"
+                onClick={() => {
+                  setViewMode('catalog');
+                  setCatalogCategory(activeCategory);
+                  if (typeof window !== 'undefined') {
+                    window.history.replaceState(null, '', `/order${window.location.search}`);
+                  }
+                }}
+                className="hidden md:inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-[#0E6B63] whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <span>Browse Catalog</span>
+              </button>
+            )}
+
             {currentUser ? (
               <button
                 type="button"
@@ -888,8 +1339,12 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  persistDraft(step);
-                  setPendingPostAuthPath(`/order/${activeCategory}`);
+                  if (viewMode === 'checkout') {
+                    persistDraft(step);
+                    setPendingPostAuthPath(`/order/${activeCategory}`);
+                  } else {
+                    setPendingPostAuthPath('/order');
+                  }
                   onRequireLogin();
                 }}
                 className="text-xs font-semibold text-[#0E6B63] hover:underline whitespace-nowrap shrink-0 cursor-pointer"
@@ -901,181 +1356,785 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
         </div>
       </header>
 
-      {/* Top Category Switcher Tabs */}
-      <div className="bg-white border-b border-[#E2E8F0]">
-        <div className="max-w-[1200px] mx-auto px-4 sm:px-6">
-          <div className="flex items-center gap-1 overflow-x-auto py-2 text-xs font-semibold no-scrollbar">
-            {[
-              { id: 'shared-hosting' as const, label: 'Shared Cloud' },
-              { id: 'wordpress-hosting' as const, label: 'WordPress (UK)' },
-              { id: 'windows-hosting' as const, label: 'Windows IIS (UK)' },
-              { id: 'cpanel-hosting' as const, label: 'cPanel (USA)' },
-              { id: 'domain-registration' as const, label: 'Register Domain' },
-              { id: 'domain-transfer' as const, label: 'Transfer Domain' },
-            ].map((tab) => {
-              const isSelected = activeCategory === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => {
-                    setActiveCategory(tab.id);
-                    if (tab.id === 'domain-registration' || tab.id === 'domain-transfer') {
-                      setStep(2);
-                      setDomainOption(tab.id === 'domain-transfer' ? 'transfer' : 'register');
-                    } else {
-                      setStep(1);
-                    }
-                  }}
-                  className={`px-3.5 py-1.5 rounded-lg whitespace-nowrap transition-colors cursor-pointer ${
-                    isSelected
-                      ? 'bg-[#0E6B63] text-white shadow-sm'
-                      : 'text-slate-600 hover:text-[#0F172A] hover:bg-slate-100'
-                  }`}
-                >
-                  {tab.label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
       <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-8 lg:py-10">
         {completedOrders ? (
-          /* ======================== ORDER CONFIRMATION VIEW ======================== */
-          <div className="max-w-2xl mx-auto bg-white border border-[#E2E8F0] rounded-2xl p-6 sm:p-8 space-y-6">
-            <div className="flex items-start gap-4">
-              <div className="w-11 h-11 rounded-xl bg-[#F2FAF8] border border-[#0E6B63]/25 flex items-center justify-center shrink-0">
-                <CheckCircle2 className="w-6 h-6 text-[#16A34A]" aria-hidden="true" />
-              </div>
-              <div>
-                <p className="text-xs font-semibold text-[#16A34A]">
-                  Order Submitted &amp; Automated Invoice Generated
-                </p>
-                <h1 className="font-display text-2xl font-extrabold text-[#0F172A] mt-0.5">
-                  Thank you, {currentUser?.name || 'Client'}
-                </h1>
-                <p className="text-xs sm:text-sm text-slate-600 mt-1 leading-relaxed">
-                  Your order for <strong className="text-[#0F172A]">{completedOrders.productName}</strong> has been logged in our queue for{' '}
-                  <strong className="text-[#0F172A]">{completedOrders.datacenter}</strong>.
-                  Settle your invoice via your chosen payment method to activate automated provisioning.
-                </p>
-              </div>
-            </div>
+          /* ======================== POST-ORDER INVOICE & PAYMENT SUBMISSION VIEW ======================== */
+          (() => {
+            const activePostGateway =
+              enabledGateways.find((g) => g.id === postOrderGatewayId) || selectedGateway;
+            const handleSubmitPostOrderPayment = (e: React.FormEvent) => {
+              e.preventDefault();
+              if (!activePostGateway) return;
+              if (activePostGateway.requiresTransactionId && transactionRef.trim().length < 4) {
+                setPostOrderPaymentError(
+                  `Please enter your ${activePostGateway.name} Transaction ID / Reference (at least 4 characters).`
+                );
+                return;
+              }
+              setPostOrderPaymentError('');
+              const res = payClientOrderInvoice(
+                completedOrders.invoiceId,
+                activePostGateway.name,
+                {
+                  transactionRef: transactionRef.trim() || undefined,
+                  paymentDetailsNote: postOrderDetailsNote.trim() || undefined,
+                }
+              );
+              if (completedOrders.secondaryInvoiceId) {
+                payClientOrderInvoice(
+                  completedOrders.secondaryInvoiceId,
+                  activePostGateway.name,
+                  {
+                    transactionRef: transactionRef.trim() || undefined,
+                    paymentDetailsNote: postOrderDetailsNote.trim() || undefined,
+                  }
+                );
+              }
+              if (!res) {
+                setPostOrderPaymentError('Please sign in to submit payment details.');
+                return;
+              }
+              setPostOrderPaymentSubmitted(true);
+            };
 
-            <div className="border border-[#E2E8F0] rounded-xl bg-[#F8FAFC] p-4 space-y-2.5 text-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-slate-500">Order Reference</span>
-                <span className="font-mono font-bold text-[#0F172A]">
-                  {completedOrders.orderId}
+            return (
+              <div className="max-w-3xl mx-auto space-y-5">
+                <div className="bg-white border border-[#E2E8F0] rounded-2xl p-6 sm:p-8 space-y-6">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div className="flex items-start gap-4">
+                      <div className="w-11 h-11 rounded-xl bg-[#F2FAF8] border border-[#0E6B63]/25 flex items-center justify-center shrink-0">
+                        <CheckCircle2 className="w-6 h-6 text-[#16A34A]" aria-hidden="true" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-[#16A34A]">
+                          Order Completed &amp; Official Invoice Generated
+                        </p>
+                        <h1 className="font-display text-2xl font-extrabold text-[#0F172A] mt-0.5">
+                          Thank you, {currentUser?.name || 'Client'}
+                        </h1>
+                        <p className="text-xs sm:text-sm text-slate-600 mt-1 leading-relaxed">
+                          Your order for <strong className="text-[#0F172A]">{completedOrders.productName}</strong> is logged for{' '}
+                          <strong className="text-[#0F172A]">{completedOrders.datacenter}</strong>.
+                          Submit your payment reference below or open your dedicated invoice page anytime.
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => onOpenDashboard(`/dashboard/billing/${completedOrders.invoiceId}`)}
+                      className="min-h-[44px] inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs sm:text-sm font-semibold whitespace-nowrap cursor-pointer transition-colors"
+                    >
+                      <Receipt className="w-4 h-4" aria-hidden="true" />
+                      <span>View Invoice ({completedOrders.invoiceId})</span>
+                    </button>
+                  </div>
+
+                  <div className="border border-[#E2E8F0] rounded-xl bg-[#F8FAFC] p-4 space-y-2.5 text-xs">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-slate-500">Order Reference</span>
+                      <span className="font-mono font-bold text-[#0F172A]">
+                        {completedOrders.orderId}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-slate-500">Generated Invoice Number</span>
+                      <span className="font-mono font-semibold text-[#0E6B63]">
+                        {completedOrders.invoiceId}
+                      </span>
+                    </div>
+                    {completedOrders.secondaryOrderId && (
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-slate-500">Bundled Domain Order</span>
+                        <span className="font-mono font-semibold text-[#0F172A]">
+                          {completedOrders.secondaryOrderId} ({completedOrders.secondaryInvoiceId})
+                        </span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-slate-500">Domain / Host Reference</span>
+                      <span className="font-mono font-semibold text-[#0F172A] truncate">
+                        {completedOrders.domainName}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-slate-500">Datacenter Region</span>
+                      <span className="font-semibold text-[#0F172A]">
+                        {completedOrders.datacenter}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 pt-2 border-t border-[#E2E8F0]">
+                      <span className="font-semibold text-[#0F172A]">Total Invoice Balance Due</span>
+                      <span className="font-mono tabular-nums text-base font-extrabold text-[#0E6B63]">
+                        {formatPrice(completedOrders.totalPaidUsd)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Post-Order Payment Submission (Shown ONLY after order & invoice are generated) */}
+                  {postOrderPaymentSubmitted ? (
+                    <div className="rounded-xl border border-emerald-200 bg-[#F2FAF8] p-5 space-y-3">
+                      <div className="flex items-center gap-2 text-xs font-bold text-[#16A34A]">
+                        <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden="true" />
+                        <span>Payment Details Submitted for Invoice {completedOrders.invoiceId}</span>
+                      </div>
+                      <p className="text-xs text-slate-700 leading-relaxed">
+                        Your payment reference{' '}
+                        {transactionRef.trim() ? (
+                          <span className="font-mono font-bold text-[#0F172A]">{transactionRef.trim()}</span>
+                        ) : (
+                          'has been'
+                        )}{' '}
+                        logged under <strong>{activePostGateway?.name}</strong>. Billing verification &amp; automated provisioning will proceed shortly.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => onOpenDashboard(`/dashboard/billing/${completedOrders.invoiceId}`)}
+                        className="min-h-[42px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+                      >
+                        <Receipt className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Open Dedicated Invoice Page</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <form
+                      onSubmit={handleSubmitPostOrderPayment}
+                      className="rounded-xl border border-[#CBD5E1] bg-white p-5 space-y-4 text-xs"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                        <div>
+                          <h2 className="font-display text-sm font-bold text-[#0F172A]">
+                            Submit Payment Details for Invoice {completedOrders.invoiceId}
+                          </h2>
+                          <p className="text-[11px] text-slate-500 mt-0.5">
+                            Transfer the invoice total using the gateway account below and enter your Transaction ID (TID). You can also submit this later from your invoice page.
+                          </p>
+                        </div>
+                        {activePostGateway && (
+                          <span className="font-mono text-[11px] font-semibold text-[#0E6B63]">
+                            {activePostGateway.currencyHint}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        {enabledGateways.map((gw) => {
+                          const isSelected = activePostGateway?.id === gw.id;
+                          return (
+                            <button
+                              key={gw.id}
+                              type="button"
+                              onClick={() => {
+                                setPostOrderGatewayId(gw.id);
+                                setPostOrderPaymentError('');
+                              }}
+                              className={`p-3 rounded-xl border text-left transition-colors cursor-pointer ${
+                                isSelected
+                                  ? 'border-[#0E6B63] bg-[#F4FAF9] ring-1 ring-[#0E6B63]'
+                                  : 'border-[#E2E8F0] bg-white hover:border-slate-300'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="inline-flex items-center gap-1.5 font-bold text-[#0F172A]">
+                                  {renderGatewayIcon(gw.kind)}
+                                  <span>{gw.name}</span>
+                                </span>
+                                {isSelected && (
+                                  <CheckCircle2 className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                                )}
+                              </div>
+                              <p className="text-[11px] text-slate-500 mt-1">{gw.bankOrProviderName}</p>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {activePostGateway &&
+                        (activePostGateway.accountTitle || activePostGateway.accountNumber || activePostGateway.instructions) && (
+                          <div className="p-3.5 bg-[#F8FAFC] rounded-xl border border-[#E2E8F0] space-y-2">
+                            {activePostGateway.accountTitle && (
+                              <p className="text-slate-600">
+                                Account Title:{' '}
+                                <strong className="text-[#0F172A]">{activePostGateway.accountTitle}</strong>
+                              </p>
+                            )}
+                            {activePostGateway.accountNumber && (
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <p className="text-slate-600">
+                                  Account / Wallet / IBAN:{' '}
+                                  <strong className="text-[#0E6B63] font-mono">
+                                    {activePostGateway.accountNumber}
+                                  </strong>
+                                </p>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    navigator.clipboard?.writeText(activePostGateway.accountNumber || '');
+                                    setCopiedAccountField(activePostGateway.id);
+                                    setTimeout(() => setCopiedAccountField(null), 1800);
+                                  }}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-[#CBD5E1] bg-white text-[11px] font-semibold text-[#0F172A] hover:border-[#0E6B63] cursor-pointer"
+                                >
+                                  {copiedAccountField === activePostGateway.id ? (
+                                    <>
+                                      <Check className="w-3 h-3 text-[#16A34A]" aria-hidden="true" />
+                                      <span>Copied</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Copy className="w-3 h-3" aria-hidden="true" />
+                                      <span>Copy</span>
+                                    </>
+                                  )}
+                                </button>
+                              </div>
+                            )}
+                            {activePostGateway.instructions && (
+                              <p className="text-[11px] text-slate-600 leading-relaxed">
+                                {activePostGateway.instructions}
+                              </p>
+                            )}
+                          </div>
+                        )}
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
+                            Transaction ID / Reference (TID){' '}
+                            {activePostGateway?.requiresTransactionId ? '*' : '(Optional)'}
+                          </label>
+                          <input
+                            type="text"
+                            value={transactionRef}
+                            onChange={(e) => {
+                              setTransactionRef(e.target.value);
+                              setPostOrderPaymentError('');
+                            }}
+                            placeholder="e.g. TRX-98234190 or sender mobile"
+                            className="w-full min-h-[42px] px-3.5 py-2 text-xs font-mono bg-white border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
+                            Sender / Payment Details Note (Optional)
+                          </label>
+                          <input
+                            type="text"
+                            value={postOrderDetailsNote}
+                            onChange={(e) => setPostOrderDetailsNote(e.target.value)}
+                            placeholder="e.g. Sent from HBL account / sender name"
+                            className="w-full min-h-[42px] px-3.5 py-2 text-xs bg-white border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
+                          />
+                        </div>
+                      </div>
+
+                      {postOrderPaymentError && (
+                        <p className="text-xs font-semibold text-[#DC2626] bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                          {postOrderPaymentError}
+                        </p>
+                      )}
+
+                      <div className="flex flex-wrap items-center justify-end gap-3">
+                        <button
+                          type="submit"
+                          className="min-h-[44px] inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-[#0F172A] hover:bg-[#0E6B63] text-white text-xs sm:text-sm font-semibold whitespace-nowrap cursor-pointer transition-colors"
+                        >
+                          <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
+                          <span>Submit Payment Proof</span>
+                        </button>
+                      </div>
+                    </form>
+                  )}
+
+                  <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-[#E2E8F0]">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const targetInv =
+                          invoices.find(
+                            (i) =>
+                              i.id === completedOrders.invoiceId ||
+                              i.id === completedOrders.secondaryInvoiceId
+                          ) || invoices[0];
+                        if (targetInv) {
+                          downloadInvoicePdf(
+                            targetInv,
+                            invoiceTemplateConfig,
+                            paymentMethods,
+                            {
+                              code: currency.code,
+                              symbol: currency.symbol,
+                              rate,
+                              decimals: currency.decimals,
+                              spaceAfterSymbol: currency.spaceAfterSymbol,
+                              formattedTotal: formatPrice(targetInv.amountUsd),
+                            }
+                          );
+                        }
+                      }}
+                      className="flex-1 min-h-[44px] inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl border border-[#CBD5E1] bg-white hover:border-[#0E6B63] text-[#0F172A] text-sm font-semibold whitespace-nowrap cursor-pointer transition-colors"
+                    >
+                      <Download className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                      <span>Download PDF Invoice</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => onOpenDashboard(`/dashboard/billing/${completedOrders.invoiceId}`)}
+                      className="flex-1 min-h-[44px] inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl border border-[#0E6B63] bg-[#F2FAF8] hover:bg-[#E2ECE9] text-[#0E6B63] text-sm font-semibold whitespace-nowrap cursor-pointer transition-colors"
+                    >
+                      <Receipt className="w-4 h-4" aria-hidden="true" />
+                      <span>Open Invoice &amp; Pay</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => onOpenDashboard('/dashboard/services')}
+                      className="flex-1 min-h-[44px] inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-sm font-semibold whitespace-nowrap cursor-pointer transition-colors"
+                    >
+                      <span>My Services</span>
+                      <ArrowRight className="w-4 h-4" aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()
+        ) : viewMode === 'catalog' ? (
+          /* ======================== UPMIND ENTERPRISE CATALOG VIEW ======================== */
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+            {/* LEFT SIDEBAR: CATEGORIES (Upmind-Style) */}
+            <aside className="lg:col-span-3 space-y-4">
+              <div className="border-b border-[#E2E8F0] pb-2.5">
+                <h2 className="text-xs font-bold tracking-wider uppercase text-[#0F172A]">
+                  Categories
+                </h2>
+              </div>
+
+              <div className="relative">
+                <Search
+                  className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                  aria-hidden="true"
+                />
+                <input
+                  type="text"
+                  value={catalogCategorySearch}
+                  onChange={(e) => setCatalogCategorySearch(e.target.value)}
+                  placeholder="Category search"
+                  className="w-full min-h-[38px] pl-9 pr-3 py-1.5 text-xs bg-white border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
+                />
+              </div>
+
+              <nav aria-label="Service categories" className="space-y-3 text-sm">
+                {/* Hosting Category Group */}
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setHostingGroupOpen(!hostingGroupOpen)}
+                    className="w-full flex items-center justify-between py-1.5 text-left text-xs font-bold uppercase tracking-wide text-slate-600 hover:text-[#0F172A] cursor-pointer"
+                  >
+                    <span className="inline-flex items-center gap-1.5">
+                      {hostingGroupOpen ? (
+                        <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" />
+                      ) : (
+                        <ChevronRight className="w-3.5 h-3.5" aria-hidden="true" />
+                      )}
+                      <span>Hosting</span>
+                    </span>
+                    <span className="font-mono tabular-nums text-[11px] text-slate-400">
+                      {filteredHostingCats.reduce((acc, c) => acc + c.plans.length, 0)}
+                    </span>
+                  </button>
+
+                  {hostingGroupOpen && (
+                    <ul className="mt-1 space-y-0.5 pl-2">
+                      {filteredHostingCats.map((cat) => {
+                        const isSelected = catalogCategory === cat.id;
+                        return (
+                          <li key={cat.id}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCatalogCategory(cat.id);
+                                setCatalogProductSearch('');
+                              }}
+                              className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-left text-xs transition-colors cursor-pointer ${
+                                isSelected
+                                  ? 'bg-[#E6F4F2] text-[#0E6B63] font-bold'
+                                  : 'text-slate-700 hover:bg-slate-100 font-medium'
+                              }`}
+                            >
+                              <span className="truncate">{cat.label}</span>
+                              <span
+                                className={`font-mono tabular-nums text-[11px] shrink-0 ${
+                                  isSelected ? 'text-[#0E6B63]' : 'text-slate-400'
+                                }`}
+                              >
+                                {cat.plans.length}
+                              </span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+
+                {/* Domains Category Group */}
+                <div className="pt-2 border-t border-[#E2E8F0]">
+                  <button
+                    type="button"
+                    onClick={() => setDomainGroupOpen(!domainGroupOpen)}
+                    className="w-full flex items-center justify-between py-1.5 text-left text-xs font-bold uppercase tracking-wide text-slate-600 hover:text-[#0F172A] cursor-pointer"
+                  >
+                    <span className="inline-flex items-center gap-1.5">
+                      {domainGroupOpen ? (
+                        <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" />
+                      ) : (
+                        <ChevronRight className="w-3.5 h-3.5" aria-hidden="true" />
+                      )}
+                      <span>Domains</span>
+                    </span>
+                    <span className="font-mono tabular-nums text-[11px] text-slate-400">
+                      {filteredDomainCats.length}
+                    </span>
+                  </button>
+
+                  {domainGroupOpen && (
+                    <ul className="mt-1 space-y-0.5 pl-2">
+                      {filteredDomainCats.map((cat) => {
+                        const isSelected = catalogCategory === cat.id;
+                        return (
+                          <li key={cat.id}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCatalogCategory(cat.id);
+                                setCatalogProductSearch('');
+                              }}
+                              className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-left text-xs transition-colors cursor-pointer ${
+                                isSelected
+                                  ? 'bg-[#E6F4F2] text-[#0E6B63] font-bold'
+                                  : 'text-slate-700 hover:bg-slate-100 font-medium'
+                              }`}
+                            >
+                              <span className="truncate">{cat.label}</span>
+                              <span
+                                className={`font-mono tabular-nums text-[11px] shrink-0 ${
+                                  isSelected ? 'text-[#0E6B63]' : 'text-slate-400'
+                                }`}
+                              >
+                                {cat.count}
+                              </span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              </nav>
+            </aside>
+
+            {/* RIGHT MAIN AREA: SELECTED CATEGORY PRODUCTS (Upmind-Style) */}
+            <main className="lg:col-span-9 space-y-6">
+              <div className="border-b border-[#E2E8F0] pb-2.5 flex flex-wrap items-center justify-between gap-3">
+                <h1 className="text-xs sm:text-sm font-bold tracking-wider uppercase text-[#0F172A]">
+                  {CATEGORY_LABELS[catalogCategory]}
+                </h1>
+                <span className="text-xs text-slate-500">
+                  Showing prices in <strong className="text-[#0F172A]">{currency.code}</strong>
                 </span>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-slate-500">Generated Invoice Number</span>
-                <span className="font-mono font-semibold text-[#0E6B63]">
-                  {completedOrders.invoiceId}
-                </span>
-              </div>
-              {completedOrders.secondaryOrderId && (
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500">Bundled Domain Order</span>
-                  <span className="font-mono font-semibold text-[#0F172A]">
-                    {completedOrders.secondaryOrderId} ({completedOrders.secondaryInvoiceId})
-                  </span>
+
+              {catalogCategory !== 'domain-registration' &&
+              catalogCategory !== 'domain-transfer' ? (
+                <>
+                  {/* Product Search Input */}
+                  <div className="relative">
+                    <Search
+                      className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                      aria-hidden="true"
+                    />
+                    <input
+                      type="text"
+                      value={catalogProductSearch}
+                      onChange={(e) => setCatalogProductSearch(e.target.value)}
+                      placeholder="Product search"
+                      className="w-full min-h-[42px] pl-10 pr-4 py-2 text-sm bg-white border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
+                    />
+                  </div>
+
+                  {/* 3-Column Clean Product Grid (Only Plans in Selected Category) */}
+                  {activeCatalogPlans.length === 0 ? (
+                    <div className="bg-white border border-[#E2E8F0] rounded-xl p-10 text-center">
+                      <p className="text-sm font-semibold text-[#0F172A]">
+                        No matching plans in {CATEGORY_LABELS[catalogCategory]}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setCatalogProductSearch('')}
+                        className="mt-3 text-xs font-semibold text-[#0E6B63] hover:underline cursor-pointer"
+                      >
+                        Clear search filter
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                      {activeCatalogPlans.map((plan) => (
+                        <article
+                          key={plan.id}
+                          className="bg-white border border-[#E2E8F0] rounded-xl p-5 flex flex-col justify-between hover:border-[#0E6B63]/60 transition-colors"
+                        >
+                          <div>
+                            <div className="py-4">
+                              <CatalogProductEmblem category={catalogCategory} />
+                            </div>
+
+                            <h3 className="font-display text-base font-bold text-[#0F172A] mt-2">
+                              {plan.name}
+                            </h3>
+                            <p className="font-mono tabular-nums text-xs font-semibold text-slate-600 mt-1">
+                              From {formatPrice(plan.monthlyPrice)} a month
+                            </p>
+                            <p className="text-xs text-slate-500 mt-2.5 leading-relaxed">
+                              {plan.audience} · {plan.storage} · {plan.backups}
+                            </p>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => handleSelectPlanFromCatalog(catalogCategory, plan)}
+                            className="mt-5 w-full min-h-[40px] inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold whitespace-nowrap cursor-pointer transition-colors"
+                          >
+                            <ShoppingCart className="w-3.5 h-3.5" aria-hidden="true" />
+                            <span>Add to cart</span>
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : catalogCategory === 'domain-registration' ? (
+                /* Domain Registration inside Catalog */
+                <div className="space-y-5">
+                  {lastSearchedDomain && lastSearchedDomain.mode === 'register' && lastSearchedDomain.available && (
+                    <div className="bg-white border border-[#0E6B63] rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <p className="text-xs font-semibold text-[#0E6B63]">
+                          Already Searched on Site · Ready to Register
+                        </p>
+                        <p className="font-mono text-lg font-bold text-[#0F172A] mt-0.5">
+                          {lastSearchedDomain.domain}
+                        </p>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          {lastSearchedDomain.minYears === 2 ? '2 Years Term' : '1 Year Term'} · Renews at{' '}
+                          {formatPrice(lastSearchedDomain.renewalUsd)}/yr
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-4 shrink-0">
+                        <span className="font-mono tabular-nums text-lg font-extrabold text-[#0F172A]">
+                          {formatPrice(lastSearchedDomain.priceUsd)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleSelectDomainFromCatalog('register', {
+                              domain: lastSearchedDomain.domain,
+                              tld: lastSearchedDomain.tld,
+                              minYears: lastSearchedDomain.minYears,
+                              priceUsd: lastSearchedDomain.priceUsd,
+                              renewalUsd: lastSearchedDomain.renewalUsd,
+                              available: true,
+                              popular: true,
+                            })
+                          }
+                          className="min-h-[40px] inline-flex items-center gap-2 px-5 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold whitespace-nowrap cursor-pointer"
+                        >
+                          <ShoppingCart className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>Add to cart</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  <form onSubmit={handleDomainSearch} className="flex flex-col sm:flex-row gap-2.5">
+                    <div className="relative flex-1">
+                      <Search
+                        className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                        aria-hidden="true"
+                      />
+                      <input
+                        type="text"
+                        value={domainSearchQuery}
+                        onChange={(e) => {
+                          setDomainSearchQuery(e.target.value);
+                          setDomainSearchError('');
+                        }}
+                        placeholder="Search domain name (e.g. yourbrand.com)"
+                        className="w-full min-h-[44px] pl-10 pr-4 py-2 text-sm bg-white border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={searchingDomains}
+                      className="min-h-[44px] inline-flex items-center justify-center gap-2 px-6 py-2 rounded-lg bg-[#0F172A] hover:bg-[#0E6B63] disabled:opacity-60 text-white text-xs sm:text-sm font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                    >
+                      {searchingDomains ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                          <span>Checking...</span>
+                        </>
+                      ) : (
+                        <span>Search Domain</span>
+                      )}
+                    </button>
+                  </form>
+
+                  {domainSearchError && (
+                    <p className="text-xs font-semibold text-[#DC2626]">{domainSearchError}</p>
+                  )}
+
+                  {domainResults.length > 0 && (
+                    <div className="bg-white border border-[#E2E8F0] rounded-xl divide-y divide-[#E2E8F0] overflow-hidden">
+                      {domainResults.map((item) => (
+                        <div
+                          key={item.domain}
+                          className="px-4 py-3.5 flex flex-wrap items-center justify-between gap-3 text-xs"
+                        >
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-sm font-bold text-[#0F172A]">
+                                {item.domain}
+                              </span>
+                              <span
+                                className={`text-[11px] font-semibold ${
+                                  item.available ? 'text-[#16A34A]' : 'text-[#DC2626]'
+                                }`}
+                              >
+                                {item.available ? 'Available' : 'Registered'}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-500 mt-0.5">
+                              {item.minYears === 2 ? '2-Year Mandatory Term' : '1-Year Term'} · Renews at{' '}
+                              {formatPrice(item.renewalUsd)}/yr
+                            </p>
+                          </div>
+
+                          <div className="flex items-center gap-3">
+                            <span className="font-mono tabular-nums text-sm font-extrabold text-[#0F172A]">
+                              {formatPrice(item.priceUsd)}
+                            </span>
+                            {item.available ? (
+                              <button
+                                type="button"
+                                onClick={() => handleSelectDomainFromCatalog('register', item)}
+                                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold whitespace-nowrap cursor-pointer"
+                              >
+                                <ShoppingCart className="w-3.5 h-3.5" aria-hidden="true" />
+                                <span>Add to cart</span>
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleSelectDomainFromCatalog('transfer', undefined, item.domain)
+                                }
+                                className="px-3.5 py-2 rounded-lg border border-[#CBD5E1] text-xs font-semibold text-[#0F172A] hover:border-[#0E6B63] cursor-pointer"
+                              >
+                                Transfer Instead
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Enabled TLD Pricing Cards */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {enabledTlds.slice(0, 6).map((tld) => {
+                      const priceUsd = tld.minYears === 2 ? tld.year2Usd : tld.year1Usd;
+                      return (
+                        <div
+                          key={tld.id}
+                          className="bg-white border border-[#E2E8F0] rounded-xl p-4 flex flex-col justify-between"
+                        >
+                          <div>
+                            <div className="flex items-baseline justify-between gap-2">
+                              <span className="font-display text-lg font-extrabold text-[#0F172A]">
+                                {tld.tld}
+                              </span>
+                              <span className="font-mono tabular-nums text-sm font-bold text-[#0E6B63]">
+                                {formatPrice(priceUsd)}/{tld.minYears === 2 ? '2yr' : 'yr'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-500 mt-1.5 line-clamp-2">
+                              {tld.description}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDomainSearchQuery(`yourbrand${tld.tld}`);
+                            }}
+                            className="mt-4 w-full py-2 rounded-lg border border-[#CBD5E1] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] hover:text-[#0E6B63] cursor-pointer transition-colors"
+                          >
+                            Search {tld.tld}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                /* Domain Transfer inside Catalog */
+                <div className="bg-white border border-[#E2E8F0] rounded-xl p-6 space-y-4">
+                  <div>
+                    <h2 className="font-display text-lg font-bold text-[#0F172A]">
+                      Transfer Existing Domain
+                    </h2>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Includes +1 year automatic renewal extension and zero-downtime DNS migration.
+                    </p>
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <input
+                      type="text"
+                      value={transferDomainInput}
+                      onChange={(e) => setTransferDomainInput(e.target.value)}
+                      placeholder="Enter domain to transfer (e.g. mycompany.com)"
+                      className="flex-1 min-h-[44px] px-4 py-2 text-sm font-mono bg-white border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleSelectDomainFromCatalog(
+                          'transfer',
+                          undefined,
+                          transferDomainInput.trim()
+                        )
+                      }
+                      className="min-h-[44px] inline-flex items-center justify-center gap-2 px-6 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs sm:text-sm font-semibold whitespace-nowrap cursor-pointer"
+                    >
+                      <ShoppingCart className="w-4 h-4" aria-hidden="true" />
+                      <span>Continue Transfer</span>
+                    </button>
+                  </div>
                 </div>
               )}
-              <div className="flex items-center justify-between">
-                <span className="text-slate-500">Domain / Host Reference</span>
-                <span className="font-mono font-semibold text-[#0F172A]">
-                  {completedOrders.domainName}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-slate-500">Datacenter Region</span>
-                <span className="font-semibold text-[#0F172A]">
-                  {completedOrders.datacenter}
-                </span>
-              </div>
-              <div className="flex items-center justify-between pt-2 border-t border-[#E2E8F0]">
-                <span className="font-semibold text-[#0F172A]">Total Amount Due</span>
-                <span className="font-mono tabular-nums text-base font-extrabold text-[#0E6B63]">
-                  {formatPrice(completedOrders.totalPaidUsd)}
-                </span>
-              </div>
-            </div>
-
-            {/* Payment Method Notice */}
-            {selectedGateway && (
-              <div className="rounded-xl border border-[#CBD5E1] bg-white p-4 text-xs space-y-2">
-                <div className="flex items-center justify-between font-bold text-[#0F172A]">
-                  <span>Payment Instructions ({selectedGateway.name})</span>
-                  <span className="text-[#0E6B63] font-mono text-[11px]">{selectedGateway.currencyHint}</span>
-                </div>
-                {(selectedGateway.accountTitle || selectedGateway.accountNumber) && (
-                  <div className="p-3 bg-[#F8FAFC] rounded-lg border border-[#E2E8F0] space-y-1">
-                    {selectedGateway.accountTitle && (
-                      <p className="text-slate-600">
-                        Title: <strong className="text-[#0F172A]">{selectedGateway.accountTitle}</strong>
-                      </p>
-                    )}
-                    {selectedGateway.accountNumber && (
-                      <p className="text-slate-600">
-                        Account / Wallet:{' '}
-                        <strong className="text-[#0E6B63] font-mono">{selectedGateway.accountNumber}</strong>
-                      </p>
-                    )}
-                  </div>
-                )}
-                {transactionRef && (
-                  <p className="text-slate-500 text-[11px]">
-                    Recorded Transaction ID: <span className="font-mono text-[#0F172A]">{transactionRef}</span>
-                  </p>
-                )}
-              </div>
-            )}
-
-            <div className="flex flex-wrap items-center gap-3">
-              {/* Direct PDF Invoice Download */}
-              <button
-                type="button"
-                onClick={() => {
-                  const targetInv =
-                    invoices.find(
-                      (i) =>
-                        i.id === completedOrders.invoiceId ||
-                        i.id === completedOrders.secondaryInvoiceId
-                    ) || invoices[0];
-                  if (targetInv) {
-                    downloadInvoicePdf(
-                      targetInv,
-                      invoiceTemplateConfig,
-                      paymentMethods,
-                      { code: 'USD', formattedTotal: formatPrice(targetInv.amountUsd) }
-                    );
-                  }
-                }}
-                className="flex-1 min-h-[44px] inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl border border-[#0E6B63] bg-[#F2FAF8] hover:bg-[#E2ECE9] text-[#0E6B63] text-sm font-semibold whitespace-nowrap cursor-pointer transition-colors"
-              >
-                <Download className="w-4 h-4" aria-hidden="true" />
-                <span>Download PDF Invoice</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => onOpenDashboard('/dashboard/services')}
-                className="flex-1 min-h-[44px] inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-sm font-semibold whitespace-nowrap cursor-pointer transition-colors"
-              >
-                <span>View My Services</span>
-                <ArrowRight className="w-4 h-4" aria-hidden="true" />
-              </button>
-            </div>
+            </main>
           </div>
         ) : (
+          /* ======================== FOCUSED ENTERPRISE CHECKOUT VIEW ======================== */
           <>
             {/* Progress Stepper */}
             <nav aria-label="Checkout progress" className="mb-8">
-              <ol className={`grid gap-3 ${isDomainOnly ? 'grid-cols-3' : 'grid-cols-2 sm:grid-cols-4'}`}>
+              <ol
+                className={`grid gap-3 ${
+                  isDomainOnly ? 'grid-cols-3' : 'grid-cols-2 sm:grid-cols-4'
+                }`}
+              >
                 {!isDomainOnly && (
                   <li>
                     <button
@@ -1102,8 +2161,12 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                         {step > 1 ? <Check className="w-3.5 h-3.5" /> : 1}
                       </span>
                       <div className="min-w-0">
-                        <div className="text-xs font-bold text-[#0F172A] truncate">Billing Period</div>
-                        <div className="text-[11px] text-slate-500 truncate">Cycle &amp; Datacenter</div>
+                        <div className="text-xs font-bold text-[#0F172A] truncate">
+                          Billing Period
+                        </div>
+                        <div className="text-[11px] text-slate-500 truncate">
+                          Cycle &amp; Datacenter
+                        </div>
                       </div>
                     </button>
                   </li>
@@ -1138,7 +2201,9 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                         {isDomainOnly ? 'Domain & DNS' : 'Domain Name'}
                       </div>
                       <div className="text-[11px] text-slate-500 truncate">
-                        {domainOption === 'transfer' ? 'EPP & Unlock' : 'Search & Nameservers'}
+                        {domainOption === 'transfer'
+                          ? 'EPP & Unlock'
+                          : 'Domain & Nameservers'}
                       </div>
                     </div>
                   </button>
@@ -1169,8 +2234,12 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                       {step > 3 ? <Check className="w-3.5 h-3.5" /> : isDomainOnly ? 2 : 3}
                     </span>
                     <div className="min-w-0">
-                      <div className="text-xs font-bold text-[#0F172A] truncate">Review &amp; Promo</div>
-                      <div className="text-[11px] text-slate-500 truncate">Verify &amp; discounts</div>
+                      <div className="text-xs font-bold text-[#0F172A] truncate">
+                        Review &amp; Promo
+                      </div>
+                      <div className="text-[11px] text-slate-500 truncate">
+                        Verify &amp; discounts
+                      </div>
                     </div>
                   </button>
                 </li>
@@ -1207,7 +2276,7 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-7 items-start">
               {/* LEFT MAIN WORKSPACE (8 Cols) */}
               <div className="lg:col-span-8 space-y-6">
-                {/* ==================== STEP 1: BILLING PERIOD & DATACENTER ==================== */}
+                {/* ==================== STEP 1: SELECTED PLAN + BILLING PERIOD ==================== */}
                 {!isDomainOnly && step === 1 && (
                   <div className="bg-white border border-[#E2E8F0] rounded-2xl p-6 sm:p-7 space-y-6">
                     <div>
@@ -1215,58 +2284,46 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                         Step 1 of 4 · Plan &amp; Datacenter Configuration
                       </p>
                       <h1 className="font-display text-2xl font-extrabold text-[#0F172A] mt-1">
-                        Choose Your Billing Period
+                        Configure {activePlan.name}
                       </h1>
                       <p className="text-xs sm:text-sm text-slate-600 mt-1">
-                        Configure billing cycle on <strong className="text-[#0F172A]">{activePlan.name}</strong>. Multi-year cycles receive locked discount rates.
+                        Select your billing cycle and server node for{' '}
+                        <strong className="text-[#0F172A]">{activePlan.name}</strong>. Multi-year cycles lock discounted pricing.
                       </p>
                     </div>
 
-                    {/* Plan Switcher Grid */}
-                    <div>
-                      <label className="block text-xs font-semibold text-[#0F172A] mb-2">
-                        {activeCategory === 'wordpress-hosting'
-                          ? 'Select Managed WordPress Tier'
-                          : activeCategory === 'windows-hosting'
-                          ? 'Select Windows IIS Cloud Tier'
-                          : activeCategory === 'cpanel-hosting'
-                          ? 'Select cPanel Web Hosting Tier'
-                          : 'Select Shared Cloud Tier'}
-                      </label>
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                        {categoryPlans.map((plan) => {
-                          const isSelected = plan.id === activePlan.id;
-                          return (
-                            <button
-                              key={plan.id}
-                              type="button"
-                              onClick={() => setSelectedPlanId(plan.id)}
-                              className={`p-3.5 rounded-xl border text-left transition-colors cursor-pointer ${
-                                isSelected
-                                  ? 'border-[#0E6B63] bg-[#F4FAF9] ring-1 ring-[#0E6B63]'
-                                  : 'border-[#E2E8F0] bg-white hover:border-slate-300'
-                              }`}
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="font-display text-sm font-bold text-[#0F172A]">
-                                  {plan.name}
-                                </span>
-                                {isSelected && (
-                                  <CheckCircle2
-                                    className="w-4 h-4 text-[#0E6B63] shrink-0"
-                                    aria-hidden="true"
-                                  />
-                                )}
-                              </div>
-                              <p className="font-mono tabular-nums text-xs font-semibold text-[#0E6B63] mt-1">
-                                From {formatPrice(plan.monthlyPrice)}/mo
-                              </p>
-                              <p className="text-[11px] text-slate-500 mt-0.5 truncate">
-                                {plan.storage} · {plan.backups}
-                              </p>
-                            </button>
-                          );
-                        })}
+                    {/* Focused Single Selected Plan Card (Does NOT re-list all 3 plans) */}
+                    <div className="p-4 sm:p-5 rounded-xl border border-[#0E6B63]/35 bg-[#F4FAF9] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 text-xs text-[#0E6B63] font-semibold">
+                          <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden="true" />
+                          <span>Selected Plan · {CATEGORY_LABELS[activeCategory]}</span>
+                        </div>
+                        <h2 className="font-display text-lg font-extrabold text-[#0F172A] mt-1">
+                          {activePlan.name}
+                        </h2>
+                        <p className="text-xs text-slate-600 mt-0.5">
+                          {activePlan.storage} · {activePlan.bandwidth} · {activePlan.ssl} · {activePlan.backups}
+                        </p>
+                      </div>
+                      <div className="flex sm:flex-col items-center sm:items-end justify-between gap-2 shrink-0">
+                        <span className="font-mono tabular-nums text-base font-extrabold text-[#0F172A]">
+                          {formatPrice(activePlan.monthlyPrice)}/mo
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (orderCategory === 'catalog') {
+                              setViewMode('catalog');
+                              setCatalogCategory(activeCategory);
+                            } else {
+                              onBackToSharedHosting();
+                            }
+                          }}
+                          className="text-xs font-semibold text-[#0E6B63] hover:underline cursor-pointer whitespace-nowrap"
+                        >
+                          Change Plan
+                        </button>
                       </div>
                     </div>
 
@@ -1296,10 +2353,8 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                                 </span>
                                 {period.badge && (
                                   <span
-                                    className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                      isSelected
-                                        ? 'bg-[#0E6B63] text-white'
-                                        : 'bg-[#F2FAF8] text-[#0E6B63]'
+                                    className={`text-[11px] font-bold ${
+                                      isSelected ? 'text-[#0E6B63]' : 'text-slate-500'
                                     }`}
                                   >
                                     {period.badge}
@@ -1330,27 +2385,28 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                       </div>
                     </div>
 
-                    {/* Datacenter Location Selector with Strict Enforcements */}
+                    {/* Datacenter Location Selector */}
                     <div>
                       <div className="flex items-center justify-between mb-2">
                         <label className="block text-xs font-semibold text-[#0F172A]">
                           Datacenter Location
                         </label>
                         {isWpOrWin && (
-                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#F2FAF8] text-[#0E6B63] border border-[#0E6B63]/20">
-                            Strict UK Location Only (London Cluster)
+                          <span className="text-[11px] font-semibold text-[#0E6B63]">
+                            Strict UK Cluster (London)
                           </span>
                         )}
                         {isCpanel && (
-                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
-                            Strict USA Location Only (Dallas NVMe)
+                          <span className="text-[11px] font-semibold text-blue-700">
+                            Strict USA Cluster (Dallas NVMe)
                           </span>
                         )}
                       </div>
 
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                         {SHARED_DATACENTERS.map((dc) => {
-                          const isLockedOut = (isWpOrWin && dc.id !== 'uk') || (isCpanel && dc.id !== 'us');
+                          const isLockedOut =
+                            (isWpOrWin && dc.id !== 'uk') || (isCpanel && dc.id !== 'us');
                           const isSelected = activeDatacenter.id === dc.id;
 
                           if (isLockedOut) return null;
@@ -1395,14 +2451,16 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                         }}
                         className="min-h-[44px] inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-sm font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
                       >
-                        <span>Continue to Domain</span>
+                        <span>
+                          {isCompute ? 'Continue to Hostname / Domain' : 'Continue to Domain'}
+                        </span>
                         <ArrowRight className="w-4 h-4" aria-hidden="true" />
                       </button>
                     </div>
                   </div>
                 )}
 
-                {/* ==================== STEP 2: DOMAIN & HOSTINGER NAMESERVERS ==================== */}
+                {/* ==================== STEP 2: DOMAIN & NAMESERVERS ==================== */}
                 {step === 2 && (
                   <div className="bg-white border border-[#E2E8F0] rounded-2xl p-6 sm:p-7 space-y-6">
                     <div>
@@ -1413,17 +2471,17 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                         {isDomainOnly
                           ? activeCategory === 'domain-transfer'
                             ? 'Transfer Your Domain to CPCloudHost'
-                            : 'Register a New Domain Name'
+                            : 'Confirm Your Domain & Nameservers'
                           : 'Connect or Register Domain'}
                       </h1>
                       <p className="text-xs sm:text-sm text-slate-600 mt-1">
                         {isDomainOnly
-                          ? 'Includes 1-year automatic extension on transfers and Hostinger-style Anycast nameservers with free WHOIS privacy.'
-                          : 'Pair your cloud hosting container with a brand new domain, transfer an existing domain, or attach one later.'}
+                          ? 'Includes Anycast nameservers and free WHOIS privacy protection.'
+                          : 'Pair your cloud service with your domain, transfer an existing domain, or assign a staging hostname.'}
                       </p>
                     </div>
 
-                    {/* Domain Option Tabs */}
+                    {/* Domain Option Tabs (Hosting Orders) */}
                     {!isDomainOnly && (
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
                         {[
@@ -1457,160 +2515,195 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                     {/* ================= REGISTER NEW DOMAIN WORKFLOW ================= */}
                     {domainOption === 'register' && (
                       <div className="space-y-4">
-                        <form
-                          onSubmit={handleDomainSearch}
-                          className="flex flex-col sm:flex-row gap-2.5"
-                        >
-                          <div className="relative flex-1">
-                            <Search
-                              className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
-                              aria-hidden="true"
-                            />
-                            <input
-                              type="text"
-                              value={domainSearchQuery}
-                              onChange={(e) => {
-                                setDomainSearchQuery(e.target.value);
-                                setDomainSearchError('');
-                              }}
-                              placeholder="Search domain (e.g. yourbrand.com or acmestudio)"
-                              className="w-full min-h-[46px] pl-10 pr-4 py-2.5 text-sm bg-white border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
-                            />
-                          </div>
-                          <button
-                            type="submit"
-                            disabled={searchingDomains}
-                            className="min-h-[46px] inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl bg-[#0F172A] hover:bg-[#0E6B63] disabled:opacity-60 text-white text-xs sm:text-sm font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
-                          >
-                            {searchingDomains ? (
-                              <>
-                                <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
-                                <span>Checking Registry...</span>
-                              </>
-                            ) : (
-                              <span>Search Availability</span>
-                            )}
-                          </button>
-                        </form>
-
-                        {domainSearchError && (
-                          <p className="text-xs font-semibold text-[#DC2626]">
-                            {domainSearchError}
-                          </p>
-                        )}
-
-                        {/* Top 5 Suggestion Results from Admin TLD Console */}
-                        {domainResults.length > 0 && (
-                          <div className="border border-[#E2E8F0] rounded-xl divide-y divide-[#E2E8F0] overflow-hidden">
-                            <div className="px-4 py-2 bg-[#F8FAFC] text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-                              Top 5 Recommended Domain Extensions
-                            </div>
-                            {domainResults.map((item) => {
-                              const isChosen = selectedNewDomain?.domain === item.domain;
-                              return (
-                                <div
-                                  key={item.domain}
-                                  className={`px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs ${
-                                    isChosen ? 'bg-[#F4FAF9]' : 'bg-white'
-                                  }`}
-                                >
-                                  <div className="min-w-0">
-                                    <div className="flex items-center gap-2">
-                                      <span className="font-mono text-sm font-bold text-[#0F172A]">
-                                        {item.domain}
-                                      </span>
-                                      <span
-                                        className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                          item.available
-                                            ? 'bg-emerald-50 text-[#16A34A]'
-                                            : 'bg-red-50 text-[#DC2626]'
-                                        }`}
-                                      >
-                                        {item.available ? 'Available' : 'Registered'}
-                                      </span>
-                                      {item.minYears === 2 && (
-                                        <span className="px-2 py-0.5 rounded bg-amber-50 text-[10px] font-semibold text-amber-700 border border-amber-200">
-                                          2-Year Mandatory Term (.pk)
-                                        </span>
-                                      )}
-                                    </div>
-                                    <p className="text-[11px] text-slate-500 mt-0.5">
-                                      Renewal: {formatPrice(item.renewalUsd)}/yr · Free WHOIS Privacy &amp; Anycast DNS
-                                    </p>
-                                  </div>
-
-                                  <div className="flex items-center gap-3">
-                                    <span className="font-mono tabular-nums text-sm font-extrabold text-[#0F172A]">
-                                      {formatPrice(item.priceUsd)}
-                                    </span>
-                                    {item.available ? (
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setSelectedNewDomain(item);
-                                          setStep2Error('');
-                                        }}
-                                        className={`px-4 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap cursor-pointer transition-colors ${
-                                          isChosen
-                                            ? 'bg-[#16A34A] text-white'
-                                            : 'bg-[#0E6B63] hover:bg-[#0A534D] text-white'
-                                        }`}
-                                      >
-                                        {isChosen ? 'Selected ✓' : 'Select Domain'}
-                                      </button>
-                                    ) : (
-                                      <span className="text-[11px] font-semibold text-slate-400">
-                                        Taken
-                                      </span>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-
-                        {/* Selected Domain Card */}
+                        {/* If domain was already searched/selected on site, show locked confirmation & skip search bar */}
                         {selectedNewDomain && (
-                          <div className="p-4 rounded-xl bg-[#F2FAF8] border border-[#0E6B63]/30 flex items-center justify-between gap-3 text-xs">
-                            <div className="flex items-center gap-2.5">
-                              <CheckCircle2 className="w-5 h-5 text-[#16A34A] shrink-0" aria-hidden="true" />
+                          <div className="p-4 sm:p-5 rounded-xl bg-[#F2FAF8] border border-[#0E6B63]/35 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                            <div className="flex items-start gap-3">
+                              <CheckCircle2
+                                className="w-5 h-5 text-[#16A34A] shrink-0 mt-0.5"
+                                aria-hidden="true"
+                              />
                               <div>
-                                <span className="font-bold text-[#0F172A] block font-mono text-sm">
+                                <span className="text-[11px] font-semibold text-[#0E6B63] block">
+                                  Domain Locked from Your Search · Available
+                                </span>
+                                <span className="font-bold text-[#0F172A] block font-mono text-base mt-0.5">
                                   {selectedNewDomain.domain}
                                 </span>
                                 <span className="text-slate-600">
-                                  {selectedNewDomain.minYears === 2 ? '2-Year Term' : '1-Year Term'} · Renews at {formatPrice(selectedNewDomain.renewalUsd)}/yr
+                                  {selectedNewDomain.minYears === 2 ? '2-Year Term' : '1-Year Term'} · Renews at{' '}
+                                  {formatPrice(selectedNewDomain.renewalUsd)}/yr
                                 </span>
                               </div>
                             </div>
-                            <span className="font-mono font-bold text-base text-[#0E6B63]">
-                              {formatPrice(selectedNewDomain.priceUsd)}
-                            </span>
+
+                            <div className="flex sm:flex-col items-center sm:items-end justify-between gap-2 shrink-0">
+                              <span className="font-mono tabular-nums font-bold text-lg text-[#0E6B63]">
+                                {formatPrice(selectedNewDomain.priceUsd)}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setShowDomainSearchBox((prev) => !prev)}
+                                className="text-xs font-semibold text-[#0E6B63] hover:underline cursor-pointer"
+                              >
+                                {showDomainSearchBox
+                                  ? 'Hide domain search'
+                                  : 'Search a different domain'}
+                              </button>
+                            </div>
                           </div>
                         )}
 
-                        {/* ================= HOSTINGER-TYPE NAMESERVERS SECTION ================= */}
+                        {/* Domain Search Box (Shown only if no domain selected yet OR user explicitly wants to change it) */}
+                        {(!selectedNewDomain || showDomainSearchBox) && (
+                          <>
+                            <form
+                              onSubmit={handleDomainSearch}
+                              className="flex flex-col sm:flex-row gap-2.5"
+                            >
+                              <div className="relative flex-1">
+                                <Search
+                                  className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                                  aria-hidden="true"
+                                />
+                                <input
+                                  type="text"
+                                  value={domainSearchQuery}
+                                  onChange={(e) => {
+                                    setDomainSearchQuery(e.target.value);
+                                    setDomainSearchError('');
+                                  }}
+                                  placeholder="Search domain (e.g. yourbrand.com or acmestudio)"
+                                  className="w-full min-h-[46px] pl-10 pr-4 py-2.5 text-sm bg-white border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                                />
+                              </div>
+                              <button
+                                type="submit"
+                                disabled={searchingDomains}
+                                className="min-h-[46px] inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl bg-[#0F172A] hover:bg-[#0E6B63] disabled:opacity-60 text-white text-xs sm:text-sm font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                              >
+                                {searchingDomains ? (
+                                  <>
+                                    <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                                    <span>Checking Registry...</span>
+                                  </>
+                                ) : (
+                                  <span>Search Availability</span>
+                                )}
+                              </button>
+                            </form>
+
+                            {domainSearchError && (
+                              <p className="text-xs font-semibold text-[#DC2626]">
+                                {domainSearchError}
+                              </p>
+                            )}
+
+                            {domainResults.length > 0 && (
+                              <div className="border border-[#E2E8F0] rounded-xl divide-y divide-[#E2E8F0] overflow-hidden">
+                                <div className="px-4 py-2 bg-[#F8FAFC] text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                                  Recommended Domain Extensions
+                                </div>
+                                {domainResults.map((item) => {
+                                  const isChosen = selectedNewDomain?.domain === item.domain;
+                                  return (
+                                    <div
+                                      key={item.domain}
+                                      className={`px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs ${
+                                        isChosen ? 'bg-[#F4FAF9]' : 'bg-white'
+                                      }`}
+                                    >
+                                      <div className="min-w-0">
+                                        <div className="flex items-center gap-2">
+                                          <span className="font-mono text-sm font-bold text-[#0F172A]">
+                                            {item.domain}
+                                          </span>
+                                          <span
+                                            className={`text-[11px] font-bold ${
+                                              item.available ? 'text-[#16A34A]' : 'text-[#DC2626]'
+                                            }`}
+                                          >
+                                            {item.available ? 'Available' : 'Registered'}
+                                          </span>
+                                          {item.minYears === 2 && (
+                                            <span className="text-[11px] font-semibold text-amber-700">
+                                              · 2-Year Mandatory Term
+                                            </span>
+                                          )}
+                                        </div>
+                                        <p className="text-[11px] text-slate-500 mt-0.5">
+                                          Renewal: {formatPrice(item.renewalUsd)}/yr · Free WHOIS Privacy &amp; Anycast DNS
+                                        </p>
+                                      </div>
+
+                                      <div className="flex items-center gap-3">
+                                        <span className="font-mono tabular-nums text-sm font-extrabold text-[#0F172A]">
+                                          {formatPrice(item.priceUsd)}
+                                        </span>
+                                        {item.available ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setSelectedNewDomain(item);
+                                              setShowDomainSearchBox(false);
+                                              setStep2Error('');
+                                              setLastSearchedDomain({
+                                                domain: item.domain,
+                                                tld: item.tld,
+                                                available: true,
+                                                priceUsd: item.priceUsd,
+                                                renewalUsd: item.renewalUsd,
+                                                minYears: item.minYears,
+                                                mode: 'register',
+                                                searchedAtUtc:
+                                                  new Date().toISOString().replace('T', ' ').slice(0, 16) +
+                                                  ' UTC',
+                                              });
+                                            }}
+                                            className={`px-4 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap cursor-pointer transition-colors ${
+                                              isChosen
+                                                ? 'bg-[#16A34A] text-white'
+                                                : 'bg-[#0E6B63] hover:bg-[#0A534D] text-white'
+                                            }`}
+                                          >
+                                            {isChosen ? 'Selected' : 'Select Domain'}
+                                          </button>
+                                        ) : (
+                                          <span className="text-[11px] font-semibold text-slate-400">
+                                            Taken
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </>
+                        )}
+
+                        {/* ================= NAMESERVERS & DNS ROUTING ================= */}
                         <div className="mt-4 border border-[#CBD5E1] rounded-2xl p-5 bg-[#F8FAFC] space-y-4">
-                          <div className="flex items-center justify-between">
+                          <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2">
                               <Globe className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
                               <h3 className="font-display text-sm font-bold text-[#0F172A]">
-                                Nameserver &amp; DNS Routing (Hostinger Standard)
+                                Nameserver &amp; DNS Routing
                               </h3>
                             </div>
-                            <span className="text-[10px] font-bold text-[#0E6B63] bg-[#E6F4F2] px-2 py-0.5 rounded">
-                              DDoS Anycast Shield
+                            <span className="text-[11px] font-semibold text-[#0E6B63]">
+                              DDoS Anycast Shield Included
                             </span>
                           </div>
 
                           <div className="space-y-3">
-                            {/* Option 1: CPCloudHost Default Nameservers */}
-                            <label className={`block p-3.5 rounded-xl border cursor-pointer transition-colors ${
-                              nameserversType === 'default'
-                                ? 'bg-white border-[#0E6B63] ring-1 ring-[#0E6B63]'
-                                : 'bg-white/70 border-[#E2E8F0] hover:border-slate-300'
-                            }`}>
+                            <label
+                              className={`block p-3.5 rounded-xl border cursor-pointer transition-colors ${
+                                nameserversType === 'default'
+                                  ? 'bg-white border-[#0E6B63] ring-1 ring-[#0E6B63]'
+                                  : 'bg-white/70 border-[#E2E8F0] hover:border-slate-300'
+                              }`}
+                            >
                               <div className="flex items-start gap-3">
                                 <input
                                   type="radio"
@@ -1624,26 +2717,23 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                                     Use CPCloudHost Anycast Cloud Nameservers (Recommended)
                                   </span>
                                   <p className="text-[11px] text-slate-500">
-                                    Instant DNS propagation (&lt; 10ms) and automatic DNS zone synchronization for web and email.
+                                    Instant DNS propagation and automatic DNS zone synchronization for web and email.
                                   </p>
-                                  <div className="pt-1.5 flex flex-wrap gap-2 text-[11px] font-mono text-[#0E6B63]">
-                                    <span className="bg-[#F2FAF8] px-2 py-0.5 rounded border border-[#0E6B63]/20">
-                                      ns1.cpcloudhost.com
-                                    </span>
-                                    <span className="bg-[#F2FAF8] px-2 py-0.5 rounded border border-[#0E6B63]/20">
-                                      ns2.cpcloudhost.com
-                                    </span>
+                                  <div className="pt-1 flex flex-wrap gap-3 text-[11px] font-mono text-[#0E6B63]">
+                                    <span>ns1.cpcloudhost.com</span>
+                                    <span>ns2.cpcloudhost.com</span>
                                   </div>
                                 </div>
                               </div>
                             </label>
 
-                            {/* Option 2: Custom Nameservers */}
-                            <label className={`block p-3.5 rounded-xl border cursor-pointer transition-colors ${
-                              nameserversType === 'custom'
-                                ? 'bg-white border-[#0E6B63] ring-1 ring-[#0E6B63]'
-                                : 'bg-white/70 border-[#E2E8F0] hover:border-slate-300'
-                            }`}>
+                            <label
+                              className={`block p-3.5 rounded-xl border cursor-pointer transition-colors ${
+                                nameserversType === 'custom'
+                                  ? 'bg-white border-[#0E6B63] ring-1 ring-[#0E6B63]'
+                                  : 'bg-white/70 border-[#E2E8F0] hover:border-slate-300'
+                              }`}
+                            >
                               <div className="flex items-start gap-3">
                                 <input
                                   type="radio"
@@ -1693,7 +2783,6 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                             </label>
                           </div>
 
-                          {/* Free Included Value Addons (Hostinger-Style) */}
                           <div className="pt-3 border-t border-[#E2E8F0] space-y-2">
                             <div className="flex items-center justify-between text-xs">
                               <div className="flex items-center gap-2">
@@ -1710,7 +2799,7 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                               <button
                                 type="button"
                                 onClick={() => setWhoisPrivacyEnabled(!whoisPrivacyEnabled)}
-                                className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
+                                className={`px-3 py-1 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
                                   whoisPrivacyEnabled
                                     ? 'bg-[#E6F4F2] text-[#0E6B63]'
                                     : 'bg-slate-200 text-slate-600'
@@ -1719,17 +2808,18 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                                 {whoisPrivacyEnabled ? 'Included (Active)' : 'Disabled'}
                               </button>
                             </div>
-
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-slate-600 pt-1">
-                              <span className="flex items-center gap-1.5">
-                                <Check className="w-3.5 h-3.5 text-[#16A34A]" /> Cloud Edge Anycast DNS Included
-                              </span>
-                              <span className="flex items-center gap-1.5">
-                                <Check className="w-3.5 h-3.5 text-[#16A34A]" /> 2 Free Email Forwarders Included
-                              </span>
-                            </div>
                           </div>
                         </div>
+
+                        <DomainContactAddressSelector
+                          selectedContactId={selectedWhoisContact?.id || null}
+                          onSelectContact={(addr) => {
+                            setSelectedWhoisContact(addr);
+                            setStep2Error('');
+                          }}
+                          title="WHOIS Registrant Contact & Address"
+                          subtitle="Required for ICANN domain registration. Select a saved address below or click Add Address to enter your country, state, and street details once."
+                        />
                       </div>
                     )}
 
@@ -1765,7 +2855,6 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                           )}
                         </div>
 
-                        {/* Unlock Checkbox */}
                         <label className="flex items-start gap-3 p-3.5 bg-white border border-[#CBD5E1] rounded-xl cursor-pointer">
                           <input
                             type="checkbox"
@@ -1783,7 +2872,6 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                           </div>
                         </label>
 
-                        {/* EPP / Auth Code Input */}
                         <div>
                           <label className="block text-xs font-semibold text-[#0F172A] mb-1">
                             EPP / Authorization Code
@@ -1808,14 +2896,12 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                               {showEppSecret ? 'Hide' : 'Show'}
                             </button>
                           </div>
-                          <p className="text-[11px] text-slate-500 mt-1">
-                            Obtain your secret EPP transfer code from your current registrar (GoDaddy, Namecheap, Google, etc.).
-                          </p>
                         </div>
 
-                        {/* Transfer Nameserver Strategy */}
                         <div className="p-4 bg-[#F8FAFC] border border-[#CBD5E1] rounded-xl space-y-2 text-xs">
-                          <span className="font-bold text-[#0F172A] block">Nameserver Strategy During Transfer:</span>
+                          <span className="font-bold text-[#0F172A] block">
+                            Nameserver Strategy During Transfer:
+                          </span>
                           <div className="space-y-2">
                             <label className="flex items-center gap-2 cursor-pointer">
                               <input
@@ -1835,10 +2921,22 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                                 onChange={() => setTransferStrategy('cloud')}
                                 className="text-[#0E6B63] focus:ring-[#0E6B63]"
                               />
-                              <span>Switch to CPCloudHost Anycast Nameservers (ns1.cpcloudhost.com, ns2.cpcloudhost.com)</span>
+                              <span>
+                                Switch to CPCloudHost Anycast Nameservers (ns1.cpcloudhost.com, ns2.cpcloudhost.com)
+                              </span>
                             </label>
                           </div>
                         </div>
+
+                        <DomainContactAddressSelector
+                          selectedContactId={selectedWhoisContact?.id || null}
+                          onSelectContact={(addr) => {
+                            setSelectedWhoisContact(addr);
+                            setStep2Error('');
+                          }}
+                          title="WHOIS Registrant Contact & Address"
+                          subtitle="Required for incoming domain transfers. Your saved address stays available automatically across all future orders."
+                        />
                       </div>
                     )}
 
@@ -1863,8 +2961,14 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                         </div>
                         <p className="text-xs text-slate-500">
                           After order activation, update your registrar nameservers to{' '}
-                          <span className="font-mono font-semibold text-[#0F172A]">ns1.cpcloudhost.com</span> and{' '}
-                          <span className="font-mono font-semibold text-[#0F172A]">ns2.cpcloudhost.com</span>.
+                          <span className="font-mono font-semibold text-[#0F172A]">
+                            ns1.cpcloudhost.com
+                          </span>{' '}
+                          and{' '}
+                          <span className="font-mono font-semibold text-[#0F172A]">
+                            ns2.cpcloudhost.com
+                          </span>
+                          .
                         </p>
                       </div>
                     )}
@@ -1923,19 +3027,20 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                       </p>
                     </div>
 
-                    {/* Detailed Line Items with Product Renewals */}
                     <div className="border border-[#E2E8F0] rounded-xl divide-y divide-[#E2E8F0] overflow-hidden text-xs">
                       {!isDomainOnly && (
                         <div className="p-4 flex items-center justify-between gap-4 bg-white">
                           <div>
                             <div className="font-display text-sm font-bold text-[#0F172A]">
-                              {activePlan.name} — {activeCategory === 'wordpress-hosting' ? 'Managed WordPress' : activeCategory === 'windows-hosting' ? 'Windows IIS Cloud' : activeCategory === 'cpanel-hosting' ? 'cPanel NVMe Hosting' : 'Shared Cloud'}
+                              {activePlan.name} — {CATEGORY_LABELS[activeCategory]}
                             </div>
                             <div className="text-slate-500 mt-0.5">
-                              Term: <strong>{billingCycle}</strong> · Node: <strong>{activeDatacenter.city}</strong>
+                              Term: <strong>{billingCycle}</strong> · Node:{' '}
+                              <strong>{activeDatacenter.city}</strong>
                             </div>
                             <div className="text-[#0E6B63] font-semibold mt-1">
-                              Renews at {formatPrice(activePlan.yearlyPrice || activePlan.monthlyPrice * 12)} / year on expiration
+                              Renews at{' '}
+                              {formatPrice(activePlan.yearlyPrice || activePlan.monthlyPrice * 12)} / year on expiration
                             </div>
                           </div>
                           <div className="text-right font-mono tabular-nums font-bold text-sm text-[#0F172A]">
@@ -1944,7 +3049,6 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                         </div>
                       )}
 
-                      {/* Domain Line Item */}
                       <div className="p-4 flex items-center justify-between gap-4 bg-white">
                         <div>
                           <div className="font-semibold text-[#0F172A]">
@@ -1958,16 +3062,40 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                           </div>
                           <div className="text-slate-500 mt-0.5">
                             {domainOption === 'register' && selectedNewDomain
-                              ? `${selectedNewDomain.minYears === 2 ? '2 Years' : '1 Year'} Term · Nameservers: ${nameserversType === 'default' ? 'CPCloudHost Anycast' : 'Custom'} · WHOIS Privacy Included`
+                              ? `${selectedNewDomain.minYears === 2 ? '2 Years' : '1 Year'} Term · Nameservers: ${
+                                  nameserversType === 'default' ? 'CPCloudHost Anycast' : 'Custom'
+                                } · WHOIS Privacy Included`
                               : domainOption === 'transfer'
-                              ? `Includes 1-Year Extension · Nameservers: ${transferStrategy === 'cloud' ? 'CPCloudHost Anycast' : 'Preserved'} · EPP Verified`
+                              ? `Includes 1-Year Extension · Nameservers: ${
+                                  transferStrategy === 'cloud' ? 'CPCloudHost Anycast' : 'Preserved'
+                                } · EPP Verified`
                               : domainOption === 'existing'
                               ? 'Nameserver configuration post-provisioning'
                               : 'Standard development subdomain provided'}
                           </div>
                           {(domainOption === 'register' || domainOption === 'transfer') && (
-                            <div className="text-[#0E6B63] font-semibold mt-1">
-                              Renewal Rate: {formatPrice(selectedNewDomain?.renewalUsd || detectedTransferTld?.renewalUsd || 14.99)} / year
+                            <div className="space-y-1 mt-1">
+                              <div className="text-[#0E6B63] font-semibold">
+                                Renewal Rate:{' '}
+                                {formatPrice(
+                                  selectedNewDomain?.renewalUsd ||
+                                    detectedTransferTld?.renewalUsd ||
+                                    getPricingForTld('.com').renewalPrice
+                                )}{' '}
+                                / year
+                              </div>
+                              {selectedWhoisContact && (
+                                <div className="text-slate-600">
+                                  WHOIS Registrant:{' '}
+                                  <strong className="text-[#0F172A]">
+                                    {selectedWhoisContact.firstName}{' '}
+                                    {selectedWhoisContact.lastName}
+                                  </strong>{' '}
+                                  · {selectedWhoisContact.city},{' '}
+                                  {selectedWhoisContact.stateProvince},{' '}
+                                  {selectedWhoisContact.countryName}
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
@@ -1977,7 +3105,6 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                       </div>
                     </div>
 
-                    {/* Promo Code Input */}
                     <div className="border border-[#E2E8F0] rounded-xl bg-[#F8FAFC] p-4 space-y-3">
                       <div className="flex items-center gap-2 text-xs font-bold text-[#0F172A]">
                         <Tag className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
@@ -1991,9 +3118,7 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                             <span className="font-mono font-bold text-[#0F172A]">
                               {appliedPromo.code}
                             </span>
-                            <span className="text-slate-600">
-                              ({appliedPromo.description})
-                            </span>
+                            <span className="text-slate-600">({appliedPromo.description})</span>
                           </div>
                           <div className="flex items-center gap-3">
                             <span className="font-mono tabular-nums font-bold text-[#16A34A]">
@@ -2035,9 +3160,7 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                       )}
 
                       {promoError && (
-                        <p className="text-xs font-semibold text-[#DC2626]">
-                          {promoError}
-                        </p>
+                        <p className="text-xs font-semibold text-[#DC2626]">{promoError}</p>
                       )}
                     </div>
 
@@ -2104,7 +3227,6 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                       </div>
                     ) : (
                       <>
-                        {/* Signed-In Summary */}
                         <div className="rounded-xl border border-[#E2E8F0] bg-[#F8FAFC] p-4 flex flex-wrap items-center justify-between gap-3 text-xs">
                           <div>
                             <span className="text-slate-500 block text-[11px]">Billing Account</span>
@@ -2116,7 +3238,6 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                           </span>
                         </div>
 
-                        {/* Payment Method Selector */}
                         <div className="space-y-3">
                           <label className="block text-xs font-semibold text-[#0F172A]">
                             Choose Payment Gateway
@@ -2161,57 +3282,27 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                           </div>
                         </div>
 
-                        {/* Selected Gateway Details */}
                         {selectedGateway && (
-                          <div className="rounded-xl border border-[#E2E8F0] bg-[#F8FAFC] p-4 space-y-3 text-xs">
+                          <div className="rounded-xl border border-[#E2E8F0] bg-[#F8FAFC] p-4 space-y-2.5 text-xs">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                               <span className="font-bold text-[#0F172A]">
-                                {selectedGateway.name} Instructions
+                                Selected Gateway: {selectedGateway.name}
                               </span>
                               <span className="font-mono text-[11px] text-[#0E6B63]">
                                 {selectedGateway.currencyHint}
                               </span>
                             </div>
 
-                            {(selectedGateway.accountTitle || selectedGateway.accountNumber) && (
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 bg-white border border-[#E2E8F0] rounded-lg p-3">
-                                {selectedGateway.accountTitle && (
-                                  <div>
-                                    <span className="text-[10px] uppercase text-slate-500 block">
-                                      Account Title
-                                    </span>
-                                    <span className="font-semibold text-[#0F172A]">
-                                      {selectedGateway.accountTitle}
-                                    </span>
-                                  </div>
-                                )}
-                                {selectedGateway.accountNumber && (
-                                  <div>
-                                    <span className="text-[10px] uppercase text-slate-500 block">
-                                      Account / Wallet Number
-                                    </span>
-                                    <span className="font-mono font-bold text-[#0E6B63]">
-                                      {selectedGateway.accountNumber}
-                                    </span>
-                                  </div>
-                                )}
-                              </div>
+                            {selectedGateway.instructions && (
+                              <p className="text-[11px] text-slate-600 leading-relaxed">
+                                {selectedGateway.instructions}
+                              </p>
                             )}
 
-                            <div>
-                              <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
-                                Transaction Reference / ID {selectedGateway.requiresTransactionId ? '(Required)' : '(Optional)'}
-                              </label>
-                              <input
-                                type="text"
-                                value={transactionRef}
-                                onChange={(e) => {
-                                  setTransactionRef(e.target.value);
-                                  setPaymentError('');
-                                }}
-                                placeholder="e.g. TRX-98234190 or sender mobile number"
-                                className="w-full text-xs font-mono px-3.5 py-2.5 bg-white border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
-                              />
+                            <div className="p-3 rounded-lg bg-white border border-[#E2E8F0] text-[11px] text-slate-600 leading-relaxed">
+                              <strong className="text-[#0F172A]">Invoice First Workflow:</strong>{' '}
+                              No transaction reference or TID is required right now. Click{' '}
+                              <strong>Complete Order &amp; Generate Invoice</strong> below to generate your official invoice, then submit your payment reference or settle directly on your invoice page.
                             </div>
                           </div>
                         )}
@@ -2248,11 +3339,9 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
               {/* RIGHT STICKY SIDEBAR (4 Cols) */}
               <aside className="lg:col-span-4 lg:sticky lg:top-6 bg-white border border-[#E2E8F0] rounded-2xl p-6 space-y-5">
                 <div className="border-b border-[#E2E8F0] pb-3.5">
-                  <h2 className="font-display text-base font-bold text-[#0F172A]">
-                    Order Summary
-                  </h2>
+                  <h2 className="font-display text-base font-bold text-[#0F172A]">Order Summary</h2>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    Real-time billing breakdown &amp; renewal terms
+                    Real-time billing breakdown in {currency.code}
                   </p>
                 </div>
 
@@ -2264,34 +3353,29 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                           <span className="font-bold text-[#0F172A] block">
                             {activePlan.name}
                           </span>
-                          <span className="text-slate-500">
-                            {billingCycle} Billing Cycle
-                          </span>
+                          <span className="text-slate-500">{billingCycle} Billing Cycle</span>
                         </div>
                         <span className="font-mono tabular-nums font-bold text-[#0F172A]">
                           {formatPrice(hostingPricing.priceUsd)}
                         </span>
                       </div>
                       <p className="text-[11px] text-[#0E6B63] font-medium mt-0.5">
-                        Renews at {formatPrice(activePlan.yearlyPrice || activePlan.monthlyPrice * 12)} / year
+                        Renews at{' '}
+                        {formatPrice(activePlan.yearlyPrice || activePlan.monthlyPrice * 12)} / year
                       </p>
                     </div>
                   )}
 
-                  {/* Datacenter Location Badge */}
                   {!isDomainOnly && (
                     <div className="flex items-center justify-between gap-3 py-2 px-3 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0]">
                       <span className="inline-flex items-center gap-1.5 text-slate-600 font-medium">
                         <MapPin className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
                         Datacenter Node
                       </span>
-                      <span className="font-semibold text-[#0F172A]">
-                        {activeDatacenter.city}
-                      </span>
+                      <span className="font-semibold text-[#0F172A]">{activeDatacenter.city}</span>
                     </div>
                   )}
 
-                  {/* Domain Row */}
                   <div className="flex items-start justify-between gap-3 pt-1">
                     <div className="min-w-0">
                       <span className="font-semibold text-[#0F172A] block">
@@ -2305,7 +3389,7 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                       </span>
                       <span className="font-mono text-[11px] text-[#0E6B63] truncate block">
                         {domainOption === 'register'
-                          ? selectedNewDomain?.domain || 'Search & select domain'
+                          ? selectedNewDomain?.domain || 'Select a domain'
                           : domainOption === 'transfer'
                           ? transferDomainInput.trim() || 'Enter transfer domain'
                           : domainOption === 'existing'
@@ -2314,12 +3398,20 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                       </span>
                       {(domainOption === 'register' || domainOption === 'transfer') && (
                         <span className="text-[10px] text-slate-500 block">
-                          Renewal: {formatPrice(selectedNewDomain?.renewalUsd || detectedTransferTld?.renewalUsd || 14.99)}/yr
+                          Renewal:{' '}
+                          {formatPrice(
+                            selectedNewDomain?.renewalUsd ||
+                              detectedTransferTld?.renewalUsd ||
+                              getPricingForTld('.com').renewalPrice
+                          )}
+                          /yr
                         </span>
                       )}
                     </div>
                     <span className="font-mono tabular-nums font-bold text-[#0F172A] shrink-0">
-                      {domainPriceUsd > 0 ? formatPrice(domainPriceUsd) : '$0.00'}
+                      {domainPriceUsd > 0
+                        ? formatPrice(domainPriceUsd)
+                        : formatPrice(0, { compactZero: true })}
                     </span>
                   </div>
 
@@ -2335,9 +3427,7 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
 
                 <div className="border-t border-[#E2E8F0] pt-4 space-y-1.5">
                   <div className="flex items-baseline justify-between">
-                    <span className="text-xs font-semibold text-slate-600">
-                      Total Due Today
-                    </span>
+                    <span className="text-xs font-semibold text-slate-600">Total Due Today</span>
                     <span className="font-mono tabular-nums text-2xl font-extrabold text-[#0F172A]">
                       {formatPrice(netTotalUsd)}
                     </span>

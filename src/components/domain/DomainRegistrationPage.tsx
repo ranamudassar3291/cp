@@ -30,8 +30,9 @@ import {
   runFullDomainSearch,
 } from '../../utils/domainLookup';
 import { DomainPillarArtwork } from './DomainArtworkEmblems';
+import { DomainContactAddressSelector } from './DomainContactAddressSelector';
 import { useCurrency } from '../../context/CurrencyContext';
-import { usePlatform } from '../../context/PlatformContext';
+import { DomainContactAddress, usePlatform } from '../../context/PlatformContext';
 import { CmsExtraSections } from '../cms/CmsExtraSections';
 
 interface DomainRegistrationPageProps {
@@ -48,7 +49,14 @@ export const DomainRegistrationPage: React.FC<DomainRegistrationPageProps> = ({
   onNavigatePath,
 }) => {
   const { formatPrice, countryName } = useCurrency();
-  const { addOrder, cmsPages, tldExtensions, setOrderCheckoutDraft } = usePlatform();
+  const {
+    addOrder,
+    cmsPages,
+    tldExtensions,
+    domainContactAddresses,
+    setOrderCheckoutDraft,
+    setLastSearchedDomain,
+  } = usePlatform();
   const pageCms = cmsPages.find((p) => p.id === 'domain-registration');
   const [queryInput, setQueryInput] = useState(initialQuery);
   const [searching, setSearching] = useState(false);
@@ -77,6 +85,21 @@ export const DomainRegistrationPage: React.FC<DomainRegistrationPageProps> = ({
   const [enableFreeHosting, setEnableFreeHosting] = useState(true);
   const [registerFormError, setRegisterFormError] = useState('');
   const [registrationComplete, setRegistrationComplete] = useState(false);
+  const [selectedWhoisContact, setSelectedWhoisContact] =
+    useState<DomainContactAddress | null>(
+      () =>
+        domainContactAddresses.find((c) => c.isDefault) ||
+        domainContactAddresses[0] ||
+        null
+    );
+
+  useEffect(() => {
+    if (!selectedWhoisContact && domainContactAddresses.length > 0) {
+      setSelectedWhoisContact(
+        domainContactAddresses.find((c) => c.isDefault) || domainContactAddresses[0]
+      );
+    }
+  }, [domainContactAddresses, selectedWhoisContact]);
 
   const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(0);
   const [heroImgFailed, setHeroImgFailed] = useState(false);
@@ -114,10 +137,21 @@ export const DomainRegistrationPage: React.FC<DomainRegistrationPageProps> = ({
           minYears: tldRec.minYears,
         };
       };
+      const mappedPrimary = mapAdminPrice(data.primary);
       setResults({
-        primary: mapAdminPrice(data.primary),
+        primary: mappedPrimary,
         extensions: data.extensions.slice(0, 5).map(mapAdminPrice),
         suggestions: data.suggestions.slice(0, 5).map(mapAdminPrice),
+      });
+      setLastSearchedDomain({
+        domain: mappedPrimary.domain,
+        tld: mappedPrimary.tld,
+        available: mappedPrimary.available,
+        priceUsd: mappedPrimary.price,
+        renewalUsd: mappedPrimary.renewalPrice,
+        minYears: mappedPrimary.minYears === 2 ? 2 : 1,
+        mode: mappedPrimary.available ? 'register' : 'transfer',
+        searchedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
       });
       if (data.primary.whois) {
         setWhoisCache((prev) => ({
@@ -169,6 +203,16 @@ export const DomainRegistrationPage: React.FC<DomainRegistrationPageProps> = ({
     setRegisterTarget(item);
     setRegistrationComplete(false);
     setRegisterFormError('');
+    setLastSearchedDomain({
+      domain: item.domain,
+      tld: item.tld,
+      available: item.available,
+      priceUsd: item.price,
+      renewalUsd: item.renewalPrice,
+      minYears: item.minYears === 2 ? 2 : 1,
+      mode: 'register',
+      searchedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
+    });
     setOrderCheckoutDraft({
       orderCategory: 'domain-registration',
       planId: 'domain-reg',
@@ -182,6 +226,8 @@ export const DomainRegistrationPage: React.FC<DomainRegistrationPageProps> = ({
       domainTld: item.tld,
       domainYears: (item.minYears === 2 ? 2 : 1) as 1 | 2,
       domainPriceUsd: item.price,
+      whoisContactId: selectedWhoisContact?.id,
+      domainSearchedFromSite: true,
       step: 2,
       sourceOrigin: 'public',
       updatedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
@@ -197,10 +243,16 @@ export const DomainRegistrationPage: React.FC<DomainRegistrationPageProps> = ({
 
   const handleConfirmRegistration = (e: React.FormEvent) => {
     e.preventDefault();
-    const cleaned = registrantEmail.trim();
+    const cleaned = (registrantEmail.trim() || selectedWhoisContact?.email || '').trim();
     if (!cleaned || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleaned)) {
       setRegisterFormError(
         'Please enter a valid registrant email address to lock your domain.'
+      );
+      return;
+    }
+    if (!selectedWhoisContact) {
+      setRegisterFormError(
+        'Please add and select your WHOIS Contact & Address details below.'
       );
       return;
     }
@@ -208,14 +260,19 @@ export const DomainRegistrationPage: React.FC<DomainRegistrationPageProps> = ({
     if (registerTarget) {
       addOrder({
         clientEmail: cleaned,
-        country: countryName || 'International',
+        clientName: `${selectedWhoisContact.firstName} ${selectedWhoisContact.lastName}`.trim(),
+        country: selectedWhoisContact.countryName || countryName || 'International',
         productType: 'Domain Registration',
         planName: `Domain Registration${enablePrivacy ? ' + WHOIS Privacy' : ''}`,
         domainOrHost: registerTarget.domain,
-        billingCycle: 'Yearly',
+        billingCycle: registerTarget.minYears === 2 ? '2 Years' : '1 Year',
         amountUsd: registerTarget.price,
         datacenter: 'Global Anycast DNS',
         paymentMethod: 'Domain Checkout',
+        whoisPrivacy: enablePrivacy,
+        registrarLock: true,
+        autoRenew: true,
+        whoisContact: selectedWhoisContact,
         status: 'pending',
       });
     }
@@ -657,6 +714,20 @@ export const DomainRegistrationPage: React.FC<DomainRegistrationPageProps> = ({
                             <span>Attach Complimentary Basic Cloud Hosting</span>
                           </label>
                         </div>
+
+                        <DomainContactAddressSelector
+                          compact
+                          selectedContactId={selectedWhoisContact?.id || null}
+                          onSelectContact={(addr) => {
+                            setSelectedWhoisContact(addr);
+                            if (!registrantEmail.trim()) {
+                              setRegistrantEmail(addr.email);
+                            }
+                            setRegisterFormError('');
+                          }}
+                          title="WHOIS Contact & Address"
+                          subtitle="Add your address once with country & state dropdowns — reused automatically for future domains."
+                        />
 
                         <div className="flex items-center justify-between gap-3 pt-1">
                           {registerFormError ? (

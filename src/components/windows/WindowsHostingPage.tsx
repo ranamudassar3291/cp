@@ -53,7 +53,7 @@ export const WindowsHostingPage: React.FC<WindowsHostingPageProps> = ({
   onNavigatePath,
 }) => {
   const { formatPrice, formatPriceString } = useCurrency();
-  const { cmsPages, setOrderCheckoutDraft } = usePlatform();
+  const { cmsPages, lastSearchedDomain, setOrderCheckoutDraft } = usePlatform();
   const pageCms = cmsPages.find((p) => p.id === 'windows-hosting');
   const [selectedPlanName, setSelectedPlanName] = useState<string | null>(null);
   const [selectedPlanSummary, setSelectedPlanSummary] = useState<string>('');
@@ -87,8 +87,14 @@ export const WindowsHostingPage: React.FC<WindowsHostingPageProps> = ({
       billingCycle: '1 Year',
       datacenterId: 'uk',
       datacenterLabel: 'London, UK',
-      domainOption: 'register',
-      domainName: '',
+      domainOption: lastSearchedDomain ? lastSearchedDomain.mode : 'register',
+      domainName: lastSearchedDomain?.domain || '',
+      domainTld: lastSearchedDomain?.tld,
+      domainYears: lastSearchedDomain?.minYears,
+      domainPriceUsd: lastSearchedDomain?.priceUsd,
+      eppAuthCode: lastSearchedDomain?.eppAuthCode,
+      preselectedFromSite: true,
+      domainSearchedFromSite: Boolean(lastSearchedDomain),
       step: 1,
       sourceOrigin: 'public',
       updatedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
@@ -107,14 +113,20 @@ export const WindowsHostingPage: React.FC<WindowsHostingPageProps> = ({
     setSelectedPlanSummary(`${formatPrice(75)} One-Off · All WinCore Pro Specs Locked`);
     setOrderCheckoutDraft({
       orderCategory: 'windows-hosting',
-      planId: 'plan-wincore-pro',
+      planId: 'plan-win-core',
       planName: 'WinCore Pro (5-Year Lock)',
       productType: 'Windows Hosting',
       billingCycle: '4 Years',
       datacenterId: 'uk',
       datacenterLabel: 'London, UK',
-      domainOption: 'register',
-      domainName: '',
+      domainOption: lastSearchedDomain ? lastSearchedDomain.mode : 'register',
+      domainName: lastSearchedDomain?.domain || '',
+      domainTld: lastSearchedDomain?.tld,
+      domainYears: lastSearchedDomain?.minYears,
+      domainPriceUsd: lastSearchedDomain?.priceUsd,
+      eppAuthCode: lastSearchedDomain?.eppAuthCode,
+      preselectedFromSite: true,
+      domainSearchedFromSite: Boolean(lastSearchedDomain),
       step: 1,
       sourceOrigin: 'public',
       updatedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',

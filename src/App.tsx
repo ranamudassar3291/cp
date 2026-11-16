@@ -37,7 +37,7 @@ import { ServiceOrderPage } from './components/order/ServiceOrderPage';
 import { CmsExtraSections } from './components/cms/CmsExtraSections';
 import { CustomCmsPage } from './components/cms/CustomCmsPage';
 import { Footer } from './components/Footer';
-import { WhatsAppWidget } from './components/WhatsAppWidget';
+import { LiveSupportChatWidget } from './components/LiveSupportChatWidget';
 import { ServiceMatrixItem } from './data/hostingData';
 import { applyPageSeoMetadata } from './utils/seoManager';
 import { useCurrency } from './context/CurrencyContext';
@@ -100,10 +100,13 @@ const PAGE_PATHS: Record<Exclude<ActivePage, 'custom-cms'>, string> = {
 };
 
 export type OrderCategory =
+  | 'catalog'
   | 'shared-hosting'
   | 'wordpress-hosting'
   | 'windows-hosting'
   | 'cpanel-hosting'
+  | 'vps-hosting'
+  | 'n8n-hosting'
   | 'domain-registration'
   | 'domain-transfer';
 
@@ -140,12 +143,16 @@ function parseRouteFromLocation(cmsPages: CmsPageRecord[] = []): {
     return { page: 'auth-login', kbSlug: null, customSlug: null };
   }
   if (candidate === 'order' || candidate.startsWith('order/') || candidate.startsWith('order')) {
-    let orderCategory: OrderCategory = 'shared-hosting';
-    if (candidate.includes('wordpress')) orderCategory = 'wordpress-hosting';
+    let orderCategory: OrderCategory = 'catalog';
+    if (candidate === 'order' || candidate === 'order/catalog') orderCategory = 'catalog';
+    else if (candidate.includes('wordpress')) orderCategory = 'wordpress-hosting';
     else if (candidate.includes('windows') || candidate.includes('wincore')) orderCategory = 'windows-hosting';
     else if (candidate.includes('cpanel')) orderCategory = 'cpanel-hosting';
+    else if (candidate.includes('vps')) orderCategory = 'vps-hosting';
+    else if (candidate.includes('n8n')) orderCategory = 'n8n-hosting';
     else if (candidate.includes('domain-registration') || candidate.includes('register')) orderCategory = 'domain-registration';
     else if (candidate.includes('domain-transfer') || candidate.includes('transfer')) orderCategory = 'domain-transfer';
+    else if (candidate.includes('shared')) orderCategory = 'shared-hosting';
     return { page: 'service-order', kbSlug: null, customSlug: null, orderCategory };
   }
   if (candidate.startsWith('knowledge-base/')) {
@@ -319,12 +326,14 @@ export default function App() {
         setAdminPath(cleanAdminPath);
       }
 
-      const currentOrderCat = resolved.orderCategory || orderCategory || 'shared-hosting';
+      const currentOrderCat = resolved.orderCategory || orderCategory || 'catalog';
       const cleanPath =
         resolved.page === 'knowledge-base' && resolved.kbSlug
           ? `/knowledge-base/${resolved.kbSlug}`
           : resolved.page === 'service-order'
-            ? `/order/${currentOrderCat}`
+            ? currentOrderCat === 'catalog'
+              ? '/order'
+              : `/order/${currentOrderCat}`
             : resolved.page === 'dashboard'
             ? cleanDashboardPath
             : resolved.page === 'admin'
@@ -590,12 +599,16 @@ export default function App() {
 
       const normalized = cleaned.replace(/\/+$/, '') || '/';
       if (normalized.startsWith('/order')) {
-        let cat: OrderCategory = 'shared-hosting';
-        if (normalized.includes('wordpress')) cat = 'wordpress-hosting';
+        let cat: OrderCategory = 'catalog';
+        if (normalized === '/order' || normalized === '/order/catalog') cat = 'catalog';
+        else if (normalized.includes('wordpress')) cat = 'wordpress-hosting';
         else if (normalized.includes('windows') || normalized.includes('wincore')) cat = 'windows-hosting';
         else if (normalized.includes('cpanel')) cat = 'cpanel-hosting';
+        else if (normalized.includes('vps')) cat = 'vps-hosting';
+        else if (normalized.includes('n8n')) cat = 'n8n-hosting';
         else if (normalized.includes('domain-registration') || normalized.includes('register')) cat = 'domain-registration';
         else if (normalized.includes('domain-transfer') || normalized.includes('transfer')) cat = 'domain-transfer';
+        else if (normalized.includes('shared')) cat = 'shared-hosting';
         setOrderCategory(cat);
         setActivePage('service-order');
         if (typeof window !== 'undefined') {
@@ -699,24 +712,9 @@ export default function App() {
   }, [pendingPostAuthPath, setPendingPostAuthPath, navigateByPath, navigatePage]);
 
   const handleLaunchSharedOrderFromDashboard = useCallback(() => {
-    const defaultPlan =
-      hostingPlans.find((p) => p.pageCategory === 'shared-hosting' && p.enabled && p.popular) ??
-      hostingPlans.find((p) => p.pageCategory === 'shared-hosting' && p.enabled);
-    setOrderCheckoutDraft({
-      planId: defaultPlan?.id || 'plan-shared-velocity',
-      planName: defaultPlan?.name || 'Cloud Velocity',
-      productType: 'Shared Cloud',
-      billingCycle: '1 Year',
-      datacenterId: 'uk',
-      datacenterLabel: 'London, UK',
-      domainOption: 'register',
-      domainName: '',
-      step: 1,
-      sourceOrigin: 'dashboard',
-      updatedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
-    });
-    navigatePage('service-order', '#top');
-  }, [hostingPlans, setOrderCheckoutDraft, navigatePage]);
+    setOrderCheckoutDraft(null);
+    navigateByPath('/order');
+  }, [setOrderCheckoutDraft, navigateByPath]);
 
   const isStandaloneShell =
     activePage === 'auth-login' ||
@@ -905,10 +903,16 @@ export default function App() {
                 navigatePage('windows-hosting', '#win-plans');
               } else if (orderCategory === 'cpanel-hosting') {
                 navigatePage('cpanel-hosting', '#cpanel-pricing');
+              } else if (orderCategory === 'vps-hosting') {
+                navigatePage('vps-hosting', '#top');
+              } else if (orderCategory === 'n8n-hosting') {
+                navigatePage('n8n-hosting', '#top');
               } else if (orderCategory === 'domain-registration') {
                 navigatePage('domain-registration', '#top');
               } else if (orderCategory === 'domain-transfer') {
                 navigatePage('domain-transfer', '#top');
+              } else if (orderCategory === 'catalog') {
+                navigatePage(currentUser ? 'dashboard' : 'home', '#top');
               } else {
                 navigatePage('shared-hosting', '#shared-plans');
               }
@@ -1074,8 +1078,18 @@ export default function App() {
         />
       )}
 
-      {/* Floating WhatsApp Support Button */}
-      {!isStandaloneShell && <WhatsAppWidget />}
+      {/* Unified Real-Time AI & Live Agent Support Chat (Active on Public Website + Client Dashboard) */}
+      {activePage !== 'admin' &&
+        activePage !== 'admin-login' &&
+        activePage !== 'auth-login' &&
+        activePage !== 'auth-register' &&
+        activePage !== 'auth-forgot' && (
+          <LiveSupportChatWidget
+            pageContext={
+              typeof window !== 'undefined' ? window.location.pathname : '/'
+            }
+          />
+        )}
 
       {/* Toast Notification Banner */}
       {toastMsg && (

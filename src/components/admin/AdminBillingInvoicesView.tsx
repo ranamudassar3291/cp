@@ -109,8 +109,9 @@ export const AdminInvoiceEditor: React.FC<AdminInvoiceEditorProps> = ({
     invoiceTemplateConfig,
     adminUpdateInvoiceFull,
     adminCreateStandaloneInvoice,
+    adminProcessRefund,
   } = usePlatform();
-  const { formatPrice, currency } = useCurrency();
+  const { formatPrice, currency, rate } = useCurrency();
 
   const isCreating = invoice === null;
   const todayIso = new Date().toISOString().slice(0, 10);
@@ -168,6 +169,12 @@ export const AdminInvoiceEditor: React.FC<AdminInvoiceEditorProps> = ({
     ];
   });
   const [errorMsg, setErrorMsg] = useState('');
+  const [refundDecisionAmount, setRefundDecisionAmount] = useState<string>(
+    String(invoice?.refundAmountUsd ?? invoice?.amountUsd ?? 0)
+  );
+  const [refundAdminNote, setRefundAdminNote] = useState(
+    invoice?.refundAdminNote || ''
+  );
 
   useEffect(() => {
     if (invoice) {
@@ -181,6 +188,10 @@ export const AdminInvoiceEditor: React.FC<AdminInvoiceEditorProps> = ({
       setDiscountUsd(String(invoice.discountUsd ?? 0));
       setNotes(invoice.notes || '');
       setItems(invoice.items);
+      setRefundDecisionAmount(
+        String(invoice.refundAmountUsd ?? invoice.amountUsd ?? 0)
+      );
+      setRefundAdminNote(invoice.refundAdminNote || '');
     }
   }, [invoice]);
 
@@ -323,6 +334,10 @@ export const AdminInvoiceEditor: React.FC<AdminInvoiceEditorProps> = ({
     };
     downloadInvoicePdf(previewInv, invoiceTemplateConfig, paymentMethods, {
       code: currency.code,
+      symbol: currency.symbol,
+      rate,
+      decimals: currency.decimals,
+      spaceAfterSymbol: currency.spaceAfterSymbol,
       formattedTotal: formatPrice(previewInv.amountUsd),
     });
     onShowToast(`Downloaded ${previewInv.id}.pdf`);
@@ -707,6 +722,143 @@ export const AdminInvoiceEditor: React.FC<AdminInvoiceEditorProps> = ({
         </div>
       </div>
 
+      {!isCreating && invoice && (
+        <div className="border-t border-[#E2E8F0] pt-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h4 className="font-display text-sm font-bold text-[#0F172A]">
+                Refund &amp; Cancellation Management
+              </h4>
+              <p className="text-[11px] text-slate-500">
+                Review client refund requests, payment notes, and cancellation status linked to this invoice.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold">
+              <span className="px-2.5 py-1 rounded-lg bg-[#F8FAFC] border border-[#E2E8F0] text-[#0F172A]">
+                Refund Status:{' '}
+                <strong className="uppercase text-[#0E6B63]">
+                  {invoice.refundStatus || 'none'}
+                </strong>
+              </span>
+              <span className="px-2.5 py-1 rounded-lg bg-[#F8FAFC] border border-[#E2E8F0] text-[#0F172A]">
+                Cancellation:{' '}
+                <strong className="uppercase text-slate-700">
+                  {invoice.cancellationStatus || 'none'}
+                </strong>
+              </span>
+            </div>
+          </div>
+
+          {(invoice.paymentSubmittedAt || invoice.paymentDetailsNote) && (
+            <div className="p-3.5 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] text-xs space-y-1">
+              <p className="font-semibold text-[#0F172A]">Client Payment Submission Details</p>
+              {invoice.paymentSubmittedAt && (
+                <p className="text-slate-600 font-mono text-[11px]">
+                  Submitted At: {invoice.paymentSubmittedAt}
+                </p>
+              )}
+              {invoice.paymentDetailsNote && (
+                <p className="text-slate-600">Note: {invoice.paymentDetailsNote}</p>
+              )}
+            </div>
+          )}
+
+          {invoice.refundReason && (
+            <div className="p-3.5 rounded-xl bg-amber-50/60 border border-amber-200 text-xs space-y-1">
+              <p className="font-semibold text-[#0F172A]">
+                Client Refund Reason
+                {invoice.refundRequestedAt ? ` (${invoice.refundRequestedAt})` : ''}
+              </p>
+              <p className="text-slate-700">{invoice.refundReason}</p>
+            </div>
+          )}
+
+          {invoice.cancellationReason && (
+            <div className="p-3.5 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] text-xs space-y-1">
+              <p className="font-semibold text-[#0F172A]">
+                Linked Service Cancellation Reason
+              </p>
+              <p className="text-slate-700">{invoice.cancellationReason}</p>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end bg-[#F8FAFC] border border-[#E2E8F0] rounded-xl p-4">
+            <div className="sm:col-span-3">
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                Refund Amount (USD)
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={refundDecisionAmount}
+                onChange={(e) => setRefundDecisionAmount(e.target.value)}
+                className="w-full px-3 py-2 text-xs font-mono bg-white border border-[#CBD5E1] rounded-lg"
+              />
+            </div>
+            <div className="sm:col-span-5">
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                Billing Admin Refund Memo
+              </label>
+              <input
+                type="text"
+                value={refundAdminNote}
+                onChange={(e) => setRefundAdminNote(e.target.value)}
+                placeholder="Reason or payout reference note..."
+                className="w-full px-3 py-2 text-xs bg-white border border-[#CBD5E1] rounded-lg"
+              />
+            </div>
+            <div className="sm:col-span-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const res = adminProcessRefund(invoice.id, 'approved', {
+                    refundAmountUsd: parseFloat(refundDecisionAmount) || invoice.amountUsd,
+                    note: refundAdminNote,
+                  });
+                  if (res.ok) {
+                    onShowToast(`Refund approved for ${invoice.id}`);
+                  }
+                }}
+                className="px-3 py-2 text-[11px] font-semibold rounded-lg border border-[#0E6B63] text-[#0E6B63] bg-white hover:bg-[#F2FAF8] cursor-pointer"
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const res = adminProcessRefund(invoice.id, 'processed', {
+                    refundAmountUsd: parseFloat(refundDecisionAmount) || invoice.amountUsd,
+                    note: refundAdminNote,
+                  });
+                  if (res.ok) {
+                    setStatus('refunded');
+                    onShowToast(`Refund processed & invoice ${invoice.id} marked REFUNDED`);
+                  }
+                }}
+                className="px-3 py-2 text-[11px] font-semibold rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white cursor-pointer"
+              >
+                Process Refund
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const res = adminProcessRefund(invoice.id, 'rejected', {
+                    note: refundAdminNote,
+                  });
+                  if (res.ok) {
+                    onShowToast(`Refund request declined for ${invoice.id}`);
+                  }
+                }}
+                className="px-3 py-2 text-[11px] font-semibold rounded-lg border border-red-200 text-[#DC2626] bg-white hover:bg-red-50 cursor-pointer"
+              >
+                Reject
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {errorMsg && (
         <p className="text-xs font-semibold text-[#DC2626]">{errorMsg}</p>
       )}
@@ -729,11 +881,14 @@ export const AdminBillingInvoicesView: React.FC<AdminBillingInvoicesViewProps> =
     invoiceTemplateConfig,
     saveInvoiceTemplateConfig,
     adminUpdateInvoiceStatus,
+    adminProcessRefund,
   } = usePlatform();
-  const { formatPrice, currency } = useCurrency();
+  const { formatPrice, currency, rate } = useCurrency();
 
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | InvoiceStatus>('all');
+  const [statusFilter, setStatusFilter] = useState<
+    'all' | InvoiceStatus | 'refund_requests'
+  >('all');
   const [editingInvoiceId, setEditingInvoiceId] = useState<string | null>(null);
   const [creatingNew, setCreatingNew] = useState(false);
 
@@ -742,10 +897,24 @@ export const AdminBillingInvoicesView: React.FC<AdminBillingInvoicesViewProps> =
     [invoices, editingInvoiceId]
   );
 
+  const pendingRefundCount = useMemo(
+    () =>
+      invoices.filter(
+        (i) => i.refundStatus === 'requested' || i.refundStatus === 'approved'
+      ).length,
+    [invoices]
+  );
+
   const filteredInvoices = useMemo(() => {
     const q = search.trim().toLowerCase();
     return invoices.filter((inv) => {
-      if (statusFilter !== 'all' && inv.status !== statusFilter) return false;
+      if (statusFilter === 'refund_requests') {
+        if (inv.refundStatus !== 'requested' && inv.refundStatus !== 'approved') {
+          return false;
+        }
+      } else if (statusFilter !== 'all' && inv.status !== statusFilter) {
+        return false;
+      }
       if (!q) return true;
       return (
         inv.id.toLowerCase().includes(q) ||
@@ -826,6 +995,10 @@ export const AdminBillingInvoicesView: React.FC<AdminBillingInvoicesViewProps> =
               onClick={() => {
                 downloadInvoicePdf(sampleInvoice, tplDraft, paymentMethods, {
                   code: currency.code,
+                  symbol: currency.symbol,
+                  rate,
+                  decimals: currency.decimals,
+                  spaceAfterSymbol: currency.spaceAfterSymbol,
                   formattedTotal: formatPrice(sampleInvoice.amountUsd),
                 });
                 onShowToast(`Generated sample ${sampleInvoice.id}.pdf`);
@@ -1299,6 +1472,7 @@ export const AdminBillingInvoicesView: React.FC<AdminBillingInvoicesViewProps> =
                 'pending',
                 'overdue',
                 'paid',
+                'refund_requests',
                 'cancelled',
                 'refunded',
               ] as const
@@ -1307,13 +1481,15 @@ export const AdminBillingInvoicesView: React.FC<AdminBillingInvoicesViewProps> =
                 key={st}
                 type="button"
                 onClick={() => setStatusFilter(st)}
-                className={`px-2.5 py-1 text-[11px] font-semibold rounded-md capitalize transition-colors cursor-pointer ${
+                className={`px-2.5 py-1 text-[11px] font-semibold rounded-md capitalize transition-colors whitespace-nowrap cursor-pointer ${
                   statusFilter === st
                     ? 'bg-white text-[#0F172A] shadow-sm'
                     : 'text-slate-600 hover:text-[#0F172A]'
                 }`}
               >
-                {st}
+                {st === 'refund_requests'
+                  ? `Refund Requests (${pendingRefundCount})`
+                  : st}
               </button>
             ))}
           </div>
@@ -1408,6 +1584,24 @@ export const AdminBillingInvoicesView: React.FC<AdminBillingInvoicesViewProps> =
                         >
                           {st.label}
                         </span>
+                        {inv.refundStatus && inv.refundStatus !== 'none' && (
+                          <span
+                            className={`block mt-1 text-[10px] font-semibold ${
+                              inv.refundStatus === 'processed'
+                                ? 'text-[#16A34A]'
+                                : inv.refundStatus === 'rejected'
+                                  ? 'text-[#DC2626]'
+                                  : 'text-[#D97706]'
+                            }`}
+                          >
+                            Refund: {inv.refundStatus.toUpperCase()}
+                          </span>
+                        )}
+                        {inv.cancellationStatus && inv.cancellationStatus !== 'none' && (
+                          <span className="block mt-0.5 text-[10px] font-semibold text-slate-600">
+                            Cancel: {inv.cancellationStatus.toUpperCase()}
+                          </span>
+                        )}
                       </td>
                       <td className="py-3 px-4 text-right whitespace-nowrap space-x-1.5">
                         <button
@@ -1427,6 +1621,10 @@ export const AdminBillingInvoicesView: React.FC<AdminBillingInvoicesViewProps> =
                               paymentMethods,
                               {
                                 code: currency.code,
+                                symbol: currency.symbol,
+                                rate,
+                                decimals: currency.decimals,
+                                spaceAfterSymbol: currency.spaceAfterSymbol,
                                 formattedTotal: formatPrice(inv.amountUsd),
                               }
                             );
@@ -1437,7 +1635,23 @@ export const AdminBillingInvoicesView: React.FC<AdminBillingInvoicesViewProps> =
                           <Download className="w-3 h-3" aria-hidden="true" />
                           <span>PDF</span>
                         </button>
-                        {inv.status !== 'paid' && (
+                        {(inv.refundStatus === 'requested' || inv.refundStatus === 'approved') && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const res = adminProcessRefund(inv.id, 'processed', {
+                                refundAmountUsd: inv.refundAmountUsd ?? inv.amountUsd,
+                              });
+                              if (res.ok) {
+                                onShowToast(`Refund processed for ${inv.id}`);
+                              }
+                            }}
+                            className="px-2.5 py-1 text-[11px] font-semibold text-[#0E6B63] border border-[#0E6B63]/30 hover:bg-[#F2FAF8] rounded cursor-pointer"
+                          >
+                            Process Refund
+                          </button>
+                        )}
+                        {inv.status !== 'paid' && inv.status !== 'refunded' && (
                           <button
                             type="button"
                             onClick={() => {

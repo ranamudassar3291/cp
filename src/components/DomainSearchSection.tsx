@@ -7,7 +7,10 @@ import { usePlatform } from '../context/PlatformContext';
 interface DomainLookupResult {
   domain: string;
   tld: string;
-  price: string;
+  priceUsd: number;
+  renewalUsd: number;
+  transferUsd: number;
+  minYears: 1 | 2;
   termLabel: string;
   available: boolean;
 }
@@ -19,8 +22,8 @@ interface DomainSearchSectionProps {
 export const DomainSearchSection: React.FC<DomainSearchSectionProps> = ({
   onNavigatePath,
 }) => {
-  const { formatPriceString } = useCurrency();
-  const { tldExtensions, setOrderCheckoutDraft } = usePlatform();
+  const { formatPrice } = useCurrency();
+  const { tldExtensions, setOrderCheckoutDraft, setLastSearchedDomain } = usePlatform();
   const [query, setQuery] = useState('');
   const [activeTld, setActiveTld] = useState('.com');
   const [error, setError] = useState('');
@@ -30,21 +33,24 @@ export const DomainSearchSection: React.FC<DomainSearchSectionProps> = ({
   const liveTldItems = useMemo(() => {
     const enabled = tldExtensions.filter((t) => t.enabled);
     if (enabled.length === 0) {
-      return TLD_PRICES.slice(0, 5).map((t) => ({
-        tld: t.tld,
-        price: t.price,
-        priceUsd: Number(t.price.replace(/[^0-9.]/g, '')) || 12.99,
-        transferUsd: Number(t.price.replace(/[^0-9.]/g, '')) || 12.99,
-        minYears: (t.tld === '.pk' ? 2 : 1) as 1 | 2,
-        termLabel: t.tld === '.pk' ? '2yr' : 'yr',
-      }));
+      return TLD_PRICES.slice(0, 5).map((t) => {
+        const regUsd = Number(t.price.replace(/[^0-9.]/g, '')) || 12.99;
+        return {
+          tld: t.tld,
+          priceUsd: regUsd,
+          renewalUsd: regUsd,
+          transferUsd: regUsd,
+          minYears: (t.tld === '.pk' ? 2 : 1) as 1 | 2,
+          termLabel: t.tld === '.pk' ? '2yr' : 'yr',
+        };
+      });
     }
     return enabled.slice(0, 5).map((t) => {
       const regUsd = t.minYears === 2 ? t.year2Usd : t.year1Usd;
       return {
         tld: t.tld,
-        price: `$${regUsd.toFixed(2)}`,
         priceUsd: regUsd,
+        renewalUsd: t.renewalUsd,
         transferUsd: t.transferUsd,
         minYears: t.minYears,
         termLabel: t.minYears === 2 ? '2yr' : 'yr',
@@ -100,52 +106,73 @@ export const DomainSearchSection: React.FC<DomainSearchSectionProps> = ({
         : 12.99;
       orderedTlds.unshift({
         tld: requestedTld,
-        price: `$${fallbackUsd.toFixed(2)}`,
         priceUsd: fallbackUsd,
+        renewalUsd: adminMatch?.renewalUsd ?? fallbackUsd,
         transferUsd: adminMatch?.transferUsd ?? 12.99,
         minYears: adminMatch?.minYears ?? (requestedTld === '.pk' ? 2 : 1),
         termLabel: requestedTld === '.pk' || adminMatch?.minYears === 2 ? '2yr' : 'yr',
       });
     }
 
-    setResults(
-      orderedTlds.slice(0, 5).map((entry, index) => ({
-        domain: `${baseName}${entry.tld}`,
-        tld: entry.tld,
-        price: entry.price,
-        termLabel: entry.termLabel,
-        available: !(index === 0 && hash % 6 === 0),
-      }))
-    );
+    const mappedResults: DomainLookupResult[] = orderedTlds.slice(0, 5).map((entry, index) => ({
+      domain: `${baseName}${entry.tld}`,
+      tld: entry.tld,
+      priceUsd: entry.priceUsd,
+      renewalUsd: entry.renewalUsd,
+      transferUsd: entry.transferUsd,
+      minYears: entry.minYears,
+      termLabel: entry.termLabel,
+      available: !(index === 0 && hash % 6 === 0),
+    }));
+    setResults(mappedResults);
+
+    const primary = mappedResults[0];
+    if (primary) {
+      setLastSearchedDomain({
+        domain: primary.domain,
+        tld: primary.tld,
+        available: primary.available,
+        priceUsd: primary.available ? primary.priceUsd : primary.transferUsd,
+        renewalUsd: primary.renewalUsd,
+        minYears: primary.minYears,
+        mode: primary.available ? 'register' : 'transfer',
+        searchedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
+      });
+    }
   };
 
   const handleProceedOrder = (res: DomainLookupResult, mode: 'register' | 'transfer') => {
     setSelectedDomain(res.domain);
-    const tldRecord = tldExtensions.find((t) => t.tld === res.tld);
-    const regUsd = tldRecord
-      ? tldRecord.minYears === 2
-        ? tldRecord.year2Usd
-        : tldRecord.year1Usd
-      : Number(res.price.replace(/[^0-9.]/g, '')) || 12.99;
-    const transferUsd = tldRecord?.transferUsd ?? regUsd;
-    const minYears = tldRecord?.minYears ?? (res.tld === '.pk' ? 2 : 1);
+    const chosenPrice = mode === 'transfer' ? res.transferUsd : res.priceUsd;
+
+    setLastSearchedDomain({
+      domain: res.domain,
+      tld: res.tld,
+      available: res.available,
+      priceUsd: chosenPrice,
+      renewalUsd: res.renewalUsd,
+      minYears: mode === 'transfer' ? 1 : res.minYears,
+      mode,
+      searchedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
+    });
 
     setOrderCheckoutDraft({
       orderCategory: mode === 'transfer' ? 'domain-transfer' : 'domain-registration',
       planId: mode === 'transfer' ? 'domain-transfer' : 'domain-reg',
       planName: `${res.tld} ${mode === 'transfer' ? 'Domain Transfer' : 'Domain Registration'}`,
       productType: mode === 'transfer' ? 'Domain Transfer' : 'Domain Registration',
-      billingCycle: mode === 'register' && minYears === 2 ? '2 Years' : '1 Year',
+      billingCycle: mode === 'register' && res.minYears === 2 ? '2 Years' : '1 Year',
       datacenterId: 'uk',
       datacenterLabel: 'Global Anycast DNS',
       domainOption: mode,
       domainName: res.domain,
       domainTld: res.tld,
-      domainYears: mode === 'transfer' ? 1 : minYears,
-      domainPriceUsd: mode === 'transfer' ? transferUsd : regUsd,
+      domainYears: mode === 'transfer' ? 1 : res.minYears,
+      domainPriceUsd: chosenPrice,
       nameserversType: 'default',
       nameservers: ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com'],
       whoisPrivacy: true,
+      domainSearchedFromSite: true,
       step: 2,
       sourceOrigin: 'public',
       updatedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
@@ -235,7 +262,7 @@ export const DomainSearchSection: React.FC<DomainSearchSectionProps> = ({
                     selected ? 'text-emerald-200' : 'text-slate-300'
                   }`}
                 >
-                  {formatPriceString(item.price)}/{item.termLabel}
+                  {formatPrice(item.priceUsd)}/{item.termLabel}
                 </span>
               </button>
             );
@@ -283,7 +310,7 @@ export const DomainSearchSection: React.FC<DomainSearchSectionProps> = ({
 
                   <div className="flex items-center justify-between sm:justify-end gap-4 shrink-0">
                     <span className="font-mono-num text-sm font-bold text-white">
-                      {formatPriceString(res.price)}/{res.termLabel}
+                      {formatPrice(res.available ? res.priceUsd : res.transferUsd)}/{res.termLabel}
                     </span>
                     {res.available ? (
                       <button

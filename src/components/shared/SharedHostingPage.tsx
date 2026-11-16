@@ -59,7 +59,7 @@ export const SharedHostingPage: React.FC<SharedHostingPageProps> = ({
   onNavigatePath,
 }) => {
   const { formatPrice } = useCurrency();
-  const { cmsPages, hostingPlans, setOrderCheckoutDraft } = usePlatform();
+  const { cmsPages, hostingPlans, lastSearchedDomain, setOrderCheckoutDraft } = usePlatform();
   const pageCms = cmsPages.find((p) => p.id === 'shared-hosting');
   const [selectedRegion, setSelectedRegion] = useState<'uk' | 'us' | 'sg'>('uk');
   const [selectedPlan, setSelectedPlan] = useState<SharedHostingPlan | null>(null);
@@ -119,14 +119,21 @@ export const SharedHostingPage: React.FC<SharedHostingPageProps> = ({
     setTrialSubmitted(false);
     setTrialError('');
     setOrderCheckoutDraft({
+      orderCategory: 'shared-hosting',
       planId: String(plan.id),
       planName: plan.name,
       productType: 'Shared Cloud',
       billingCycle: '1 Year',
       datacenterId: activeDatacenter.id,
       datacenterLabel: activeDatacenter.city,
-      domainOption: 'register',
-      domainName: '',
+      domainOption: lastSearchedDomain ? lastSearchedDomain.mode : 'register',
+      domainName: lastSearchedDomain?.domain || '',
+      domainTld: lastSearchedDomain?.tld,
+      domainYears: lastSearchedDomain?.minYears,
+      domainPriceUsd: lastSearchedDomain?.priceUsd,
+      eppAuthCode: lastSearchedDomain?.eppAuthCode,
+      preselectedFromSite: true,
+      domainSearchedFromSite: Boolean(lastSearchedDomain),
       step: 1,
       sourceOrigin: 'public',
       updatedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',

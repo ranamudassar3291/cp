@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   ArrowUpRight,
   BookOpen,
+  Bot,
   Check,
   CheckCircle2,
   Clock,
@@ -22,17 +23,18 @@ import {
   KeyRound,
   LayoutGrid,
   LifeBuoy,
+  Loader2,
   Lock,
   LogOut,
   MapPin,
   Maximize2,
   Menu,
+  MessageCircle,
   MessageSquarePlus,
   Minimize2,
   Monitor,
   Paperclip,
   Plus,
-  Printer,
   QrCode,
   Receipt,
   RefreshCw,
@@ -42,6 +44,7 @@ import {
   Server,
   Shield,
   ShieldCheck,
+  Sparkles,
   Terminal,
   Trash2,
   Unlock,
@@ -54,6 +57,7 @@ import {
   useCurrency,
 } from '../../context/CurrencyContext';
 import {
+  CancellationType,
   LoginActivityRecord,
   LoginActivityStatus,
   PlatformInvoice,
@@ -65,8 +69,16 @@ import {
   TicketStatus,
   usePlatform,
 } from '../../context/PlatformContext';
+import type { TicketAiTriageResult } from '../../types/liveChat';
 import { applyPageSeoMetadata } from '../../utils/seoManager';
 import { downloadInvoicePdf } from '../../utils/invoicePdfGenerator';
+import {
+  InvoiceDetailPage,
+  getCancellationStatusDisplay,
+  getRefundStatusDisplay,
+} from './InvoiceDetailPage';
+import { DomainManagementPage } from './DomainManagementPage';
+import { evaluateDomainLifecycle } from '../../utils/domainLifecycle';
 import {
   buildOtpAuthUri,
   generateBase32Secret,
@@ -278,33 +290,129 @@ function parseDashboardSubRoute(path?: string): {
   section: DashboardSection;
   ticketSubView: 'list' | 'new' | 'detail';
   ticketId: string | null;
+  billingSubView: 'list' | 'detail';
+  invoiceId: string | null;
+  domainSubView: 'list' | 'detail';
+  domainId: string | null;
 } {
   const normalized = (path || '/dashboard').replace(/\/+$/, '');
   if (normalized === '/dashboard/services') {
-    return { section: 'services', ticketSubView: 'list', ticketId: null };
+    return {
+      section: 'services',
+      ticketSubView: 'list',
+      ticketId: null,
+      billingSubView: 'list',
+      invoiceId: null,
+      domainSubView: 'list',
+      domainId: null,
+    };
+  }
+  if (normalized.startsWith('/dashboard/domains/')) {
+    const id = normalized.slice('/dashboard/domains/'.length).trim();
+    if (id) {
+      return {
+        section: 'domains',
+        ticketSubView: 'list',
+        ticketId: null,
+        billingSubView: 'list',
+        invoiceId: null,
+        domainSubView: 'detail',
+        domainId: id,
+      };
+    }
   }
   if (normalized === '/dashboard/domains') {
-    return { section: 'domains', ticketSubView: 'list', ticketId: null };
+    return {
+      section: 'domains',
+      ticketSubView: 'list',
+      ticketId: null,
+      billingSubView: 'list',
+      invoiceId: null,
+      domainSubView: 'list',
+      domainId: null,
+    };
+  }
+  if (normalized.startsWith('/dashboard/billing/')) {
+    const id = normalized.slice('/dashboard/billing/'.length).trim();
+    if (id) {
+      return {
+        section: 'billing',
+        ticketSubView: 'list',
+        ticketId: null,
+        billingSubView: 'detail',
+        invoiceId: id,
+        domainSubView: 'list',
+        domainId: null,
+      };
+    }
   }
   if (normalized === '/dashboard/billing') {
-    return { section: 'billing', ticketSubView: 'list', ticketId: null };
+    return {
+      section: 'billing',
+      ticketSubView: 'list',
+      ticketId: null,
+      billingSubView: 'list',
+      invoiceId: null,
+      domainSubView: 'list',
+      domainId: null,
+    };
   }
   if (normalized === '/dashboard/account') {
-    return { section: 'account', ticketSubView: 'list', ticketId: null };
+    return {
+      section: 'account',
+      ticketSubView: 'list',
+      ticketId: null,
+      billingSubView: 'list',
+      invoiceId: null,
+      domainSubView: 'list',
+      domainId: null,
+    };
   }
   if (normalized === '/dashboard/tickets/new') {
-    return { section: 'tickets', ticketSubView: 'new', ticketId: null };
+    return {
+      section: 'tickets',
+      ticketSubView: 'new',
+      ticketId: null,
+      billingSubView: 'list',
+      invoiceId: null,
+      domainSubView: 'list',
+      domainId: null,
+    };
   }
   if (normalized.startsWith('/dashboard/tickets/')) {
     const id = normalized.replace('/dashboard/tickets/', '').trim();
     if (id) {
-      return { section: 'tickets', ticketSubView: 'detail', ticketId: id };
+      return {
+        section: 'tickets',
+        ticketSubView: 'detail',
+        ticketId: id,
+        billingSubView: 'list',
+        invoiceId: null,
+        domainSubView: 'list',
+        domainId: null,
+      };
     }
   }
   if (normalized === '/dashboard/tickets') {
-    return { section: 'tickets', ticketSubView: 'list', ticketId: null };
+    return {
+      section: 'tickets',
+      ticketSubView: 'list',
+      ticketId: null,
+      billingSubView: 'list',
+      invoiceId: null,
+      domainSubView: 'list',
+      domainId: null,
+    };
   }
-  return { section: 'overview', ticketSubView: 'list', ticketId: null };
+  return {
+    section: 'overview',
+    ticketSubView: 'list',
+    ticketId: null,
+    billingSubView: 'list',
+    invoiceId: null,
+    domainSubView: 'list',
+    domainId: null,
+  };
 }
 
 function formatAttachmentSize(bytes: number): string {
@@ -373,7 +481,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
     updateClientProfile,
     changePassword,
     updateClientOrderSettings,
-    payClientOrderInvoice,
+    requestOrderCancellation,
     createSupportTicket,
     replySupportTicket,
     resolveSupportTicket,
@@ -387,6 +495,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
   const {
     countryCode,
     currency,
+    rate,
     detectionSource,
     isDetecting,
     formatPrice,
@@ -406,6 +515,18 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
   const [viewedTicketId, setViewedTicketId] = useState<string | null>(
     initialParsed.ticketId
   );
+  const [billingSubView, setBillingSubView] = useState<'list' | 'detail'>(
+    initialParsed.billingSubView
+  );
+  const [viewedInvoiceId, setViewedInvoiceId] = useState<string | null>(
+    initialParsed.invoiceId
+  );
+  const [domainSubView, setDomainSubView] = useState<'list' | 'detail'>(
+    initialParsed.domainSubView
+  );
+  const [viewedDomainId, setViewedDomainId] = useState<string | null>(
+    initialParsed.domainId
+  );
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [currencyMenuOpen, setCurrencyMenuOpen] = useState(false);
@@ -420,28 +541,31 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
     'all' | PlatformOrder['status']
   >('all');
   const [managedServiceId, setManagedServiceId] = useState<string | null>(null);
+  const [showSvcCancelForm, setShowSvcCancelForm] = useState(false);
+  const [svcCancelType, setSvcCancelType] =
+    useState<CancellationType>('end_of_period');
+  const [svcCancelReason, setSvcCancelReason] = useState('');
+  const [svcCancelError, setSvcCancelError] = useState('');
   const [copiedKey, setCopiedKey] = useState('');
 
-  // Domains filters & drawer
+  // Domains search & filter
   const [domainSearch, setDomainSearch] = useState('');
-  const [managedDomainId, setManagedDomainId] = useState<string | null>(null);
-  const [ns1Input, setNs1Input] = useState('ns1.cpcloudhost.com');
-  const [ns2Input, setNs2Input] = useState('ns2.cpcloudhost.com');
-  const [showEppCode, setShowEppCode] = useState(false);
+  const [domainStatusFilter, setDomainStatusFilter] = useState<
+    'all' | 'active' | 'pending' | 'expired'
+  >('all');
 
-  // Billing & invoice modal
+  // Billing filters & dedicated invoice view state
   const enabledPaymentMethods = useMemo(
     () => paymentMethods.filter((m) => m.enabled),
     [paymentMethods]
   );
-  const [billingFilter, setBillingFilter] = useState<'all' | 'unpaid' | 'paid'>('all');
-  const [selectedInvoiceOrderId, setSelectedInvoiceOrderId] = useState<string | null>(null);
+  const [billingFilter, setBillingFilter] = useState<
+    'all' | 'unpaid' | 'paid' | 'refunded' | 'cancelled'
+  >('all');
   const [selectedPayMethod, setSelectedPayMethod] = useState<string>(
     () =>
       paymentMethods.find((m) => m.enabled)?.name || 'Easypaisa Mobile Wallet'
   );
-  const [paymentTxRef, setPaymentTxRef] = useState('');
-  const [paymentTxError, setPaymentTxError] = useState('');
 
   // Support tickets filters, attachments & dedicated pages (NO POPUPS)
   const [ticketSearch, setTicketSearch] = useState('');
@@ -458,6 +582,13 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
   const [newTicketBody, setNewTicketBody] = useState('');
   const [newTicketAttachments, setNewTicketAttachments] = useState<TicketAttachment[]>([]);
   const [newTicketError, setNewTicketError] = useState('');
+  const [aiTriageResult, setAiTriageResult] = useState<TicketAiTriageResult | null>(null);
+  const [aiTriageLoading, setAiTriageLoading] = useState(false);
+  const [aiTriageError, setAiTriageError] = useState('');
+  const [aiSelfResolvedNotice, setAiSelfResolvedNotice] = useState('');
+  const [detailAiTriage, setDetailAiTriage] = useState<TicketAiTriageResult | null>(null);
+  const [detailAiLoading, setDetailAiLoading] = useState(false);
+  const [detailAiError, setDetailAiError] = useState('');
 
   // Login Activity Logs filters
   const [loginLogFilter, setLoginLogFilter] = useState<
@@ -530,11 +661,21 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
   const navigateWithinDashboard = (
     nextSection: DashboardSection,
     sub: 'list' | 'new' | 'detail' = 'list',
-    ticketId: string | null = null
+    ticketId: string | null = null,
+    invoiceId: string | null = null,
+    domainId: string | null = null
   ) => {
     setSection(nextSection);
-    setTicketSubView(sub);
-    setViewedTicketId(ticketId);
+    setTicketSubView(nextSection === 'tickets' ? sub : 'list');
+    setViewedTicketId(nextSection === 'tickets' ? ticketId : null);
+    setBillingSubView(
+      nextSection === 'billing' && invoiceId ? 'detail' : 'list'
+    );
+    setViewedInvoiceId(nextSection === 'billing' ? invoiceId : null);
+    setDomainSubView(
+      nextSection === 'domains' && domainId ? 'detail' : 'list'
+    );
+    setViewedDomainId(nextSection === 'domains' ? domainId : null);
     setSidebarOpen(false);
 
     if (onSyncRoutePath) {
@@ -546,6 +687,10 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
         } else {
           onSyncRoutePath('/dashboard/tickets');
         }
+      } else if (nextSection === 'billing' && invoiceId) {
+        onSyncRoutePath(`/dashboard/billing/${invoiceId}`);
+      } else if (nextSection === 'domains' && domainId) {
+        onSyncRoutePath(`/dashboard/domains/${domainId}`);
       } else {
         const target =
           SIDEBAR_ITEMS.find((i) => i.id === nextSection)?.path ?? '/dashboard';
@@ -555,11 +700,45 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const handleOpenInvoicePage = (invoiceOrOrderId: string) => {
+    const matched = invoices.find(
+      (inv) => inv.id === invoiceOrOrderId || inv.orderId === invoiceOrOrderId
+    );
+    const resolvedId = matched?.id || invoiceOrOrderId;
+    navigateWithinDashboard('billing', 'detail', null, resolvedId, null);
+  };
+
+  const handleOpenDomainManagePage = (domId: string) => {
+    navigateWithinDashboard('domains', 'detail', null, null, domId);
+  };
+
+  const handleGoToOrderCategory = (
+    category:
+      | 'shared-hosting'
+      | 'wordpress-hosting'
+      | 'windows-hosting'
+      | 'cpanel-hosting'
+      | 'domain-registration'
+      | 'domain-transfer'
+  ) => {
+    if (onNavigateOrderCategory) {
+      onNavigateOrderCategory(category);
+      return;
+    }
+    if (typeof window !== 'undefined') {
+      window.location.assign(`/order/${category}`);
+    }
+  };
+
   useEffect(() => {
     const parsed = parseDashboardSubRoute(initialRoutePath);
     setSection(parsed.section);
     setTicketSubView(parsed.ticketSubView);
     setViewedTicketId(parsed.ticketId);
+    setBillingSubView(parsed.billingSubView);
+    setViewedInvoiceId(parsed.invoiceId);
+    setDomainSubView(parsed.domainSubView);
+    setViewedDomainId(parsed.domainId);
   }, [initialRoutePath]);
 
   useEffect(() => {
@@ -568,6 +747,10 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
         ? '/dashboard/tickets/new'
         : section === 'tickets' && ticketSubView === 'detail' && viewedTicketId
         ? `/dashboard/tickets/${viewedTicketId}`
+        : section === 'billing' && billingSubView === 'detail' && viewedInvoiceId
+        ? `/dashboard/billing/${viewedInvoiceId}`
+        : section === 'domains' && domainSubView === 'detail' && viewedDomainId
+        ? `/dashboard/domains/${viewedDomainId}`
         : SIDEBAR_ITEMS.find((i) => i.id === section)?.path ?? '/dashboard';
 
     applyPageSeoMetadata({
@@ -578,7 +761,15 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
       ogType: 'website',
       jsonLd: null,
     });
-  }, [section, ticketSubView, viewedTicketId]);
+  }, [
+    section,
+    ticketSubView,
+    viewedTicketId,
+    billingSubView,
+    viewedInvoiceId,
+    domainSubView,
+    viewedDomainId,
+  ]);
 
   useEffect(() => {
     setProfileName(currentUser?.name ?? '');
@@ -715,6 +906,11 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
   const filteredDomains = useMemo(() => {
     const q = domainSearch.trim().toLowerCase();
     return myDomains.filter((dom) => {
+      const lifecycle = evaluateDomainLifecycle(dom);
+      const effectiveStatus = lifecycle.isExpired ? 'expired' : dom.status;
+      if (domainStatusFilter !== 'all' && effectiveStatus !== domainStatusFilter) {
+        return false;
+      }
       if (!q) return true;
       return (
         dom.domainOrHost.toLowerCase().includes(q) ||
@@ -722,7 +918,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
         dom.id.toLowerCase().includes(q)
       );
     });
-  }, [myDomains, domainSearch]);
+  }, [myDomains, domainSearch, domainStatusFilter]);
 
   const filteredInvoices = useMemo(() => {
     return myInvoices.filter((inv) => {
@@ -732,6 +928,19 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
           inv.status === 'unpaid' ||
           inv.status === 'overdue' ||
           inv.status === 'pending'
+        );
+      }
+      if (billingFilter === 'refunded') {
+        return (
+          inv.status === 'refunded' ||
+          (inv.refundStatus !== undefined && inv.refundStatus !== 'none')
+        );
+      }
+      if (billingFilter === 'cancelled') {
+        return (
+          inv.status === 'cancelled' ||
+          (inv.cancellationStatus !== undefined &&
+            inv.cancellationStatus !== 'none')
         );
       }
       return true;
@@ -847,28 +1056,45 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
     showToast('Account password updated');
   };
 
-  const managedDomain = useMemo(
-    () => myOrders.find((o) => o.id === managedDomainId) ?? null,
-    [myOrders, managedDomainId]
-  );
+  const viewedDomain = useMemo<PlatformOrder | null>(() => {
+    if (!viewedDomainId) return null;
+    const targetLower = viewedDomainId.toLowerCase();
+    return (
+      myDomains.find(
+        (d) =>
+          d.id.toLowerCase() === targetLower ||
+          d.domainOrHost.toLowerCase() === targetLower
+      ) ?? null
+    );
+  }, [myDomains, viewedDomainId]);
 
-  const selectedInvoice = useMemo<PlatformInvoice | null>(() => {
-    if (!selectedInvoiceOrderId) return null;
+  const viewedDomainLinkedInvoice = useMemo<PlatformInvoice | null>(() => {
+    if (!viewedDomain) return null;
+    return myInvoices.find((inv) => inv.orderId === viewedDomain.id) ?? null;
+  }, [myInvoices, viewedDomain]);
+
+  const viewedInvoice = useMemo<PlatformInvoice | null>(() => {
+    if (!viewedInvoiceId) return null;
+    const targetLower = viewedInvoiceId.toLowerCase();
     return (
       myInvoices.find(
         (inv) =>
-          inv.id === selectedInvoiceOrderId || inv.orderId === selectedInvoiceOrderId
+          inv.id.toLowerCase() === targetLower ||
+          inv.orderId.toLowerCase() === targetLower
       ) ?? null
     );
-  }, [myInvoices, selectedInvoiceOrderId]);
+  }, [myInvoices, viewedInvoiceId]);
 
-  const activePaymentGateway = useMemo(
-    () =>
-      enabledPaymentMethods.find((m) => m.name === selectedPayMethod) ??
-      enabledPaymentMethods[0] ??
-      null,
-    [enabledPaymentMethods, selectedPayMethod]
-  );
+  const viewedInvoiceLinkedOrder = useMemo<PlatformOrder | null>(() => {
+    if (!viewedInvoice?.orderId) return null;
+    return myOrders.find((ord) => ord.id === viewedInvoice.orderId) ?? null;
+  }, [myOrders, viewedInvoice]);
+
+  useEffect(() => {
+    setShowSvcCancelForm(false);
+    setSvcCancelReason('');
+    setSvcCancelError('');
+  }, [managedServiceId]);
 
   useEffect(() => {
     if (
@@ -878,14 +1104,6 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
       setSelectedPayMethod(enabledPaymentMethods[0].name);
     }
   }, [enabledPaymentMethods, selectedPayMethod]);
-
-  useEffect(() => {
-    if (managedDomain) {
-      setNs1Input(managedDomain.nameservers?.[0] ?? 'ns1.cpcloudhost.com');
-      setNs2Input(managedDomain.nameservers?.[1] ?? 'ns2.cpcloudhost.com');
-      setShowEppCode(false);
-    }
-  }, [managedDomain]);
 
   const currencyChoices = POPULAR_COUNTRIES.some(
     (c) => c.currencyCode === currency.code
@@ -905,6 +1123,8 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
       ? 'Create New Ticket'
       : section === 'tickets' && ticketSubView === 'detail' && viewedTicket
       ? viewedTicket.id
+      : section === 'domains' && domainSubView === 'detail' && viewedDomain
+      ? viewedDomain.domainOrHost
       : SIDEBAR_ITEMS.find((item) => item.id === section)?.label ?? 'Overview';
 
   const initials = (currentUser?.name ?? 'CP')
@@ -937,7 +1157,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
       item.productType === 'Domain Registration' ? 'Yearly' : quickCycle;
     const amountUsd = cycle === 'Yearly' ? item.yearlyUsd : item.monthlyUsd;
 
-    const { order: created } = addOrder({
+    const { order: created, invoice: createdInvoice } = addOrder({
       clientEmail: currentUser.email,
       clientName: currentUser.name,
       country: currentUser.country,
@@ -956,8 +1176,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
 
     setShowQuickOrderModal(false);
     setQuickOrderError('');
-    setSelectedInvoiceOrderId(created.id);
-    navigateWithinDashboard('billing');
+    handleOpenInvoicePage(createdInvoice?.id || created.id);
     showToast(`Order ${created.id} created — settle invoice to activate service.`);
   };
 
@@ -971,18 +1190,18 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
     const setList =
       target === 'new' ? setNewTicketAttachments : setReplyAttachments;
 
-    const remainingSlots = Math.max(0, 4 - current.length);
+    const remainingSlots = Math.max(0, 5 - current.length);
     if (remainingSlots === 0) {
-      setError('Maximum 4 attachments allowed per message.');
+      setError('Maximum 5 attachments allowed per message.');
       return;
     }
 
     const selectedFiles = Array.from(fileList).slice(0, remainingSlots);
-    const maxBytes = 2 * 1024 * 1024;
+    const maxBytes = 10 * 1024 * 1024; // 10 MB per file
     const oversized = selectedFiles.find((f) => f.size > maxBytes);
     if (oversized) {
       setError(
-        `File "${oversized.name}" exceeds the 2 MB limit (${formatAttachmentSize(oversized.size)}).`
+        `File "${oversized.name}" exceeds the 10 MB limit (${formatAttachmentSize(oversized.size)}).`
       );
       return;
     }
@@ -990,7 +1209,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
     try {
       const encoded = await Promise.all(selectedFiles.map(readSingleFileAsAttachment));
       setError('');
-      setList((prev) => [...prev, ...encoded].slice(0, 4));
+      setList((prev) => [...prev, ...encoded].slice(0, 5));
     } catch (err) {
       setError(
         err instanceof Error ? err.message : 'Unable to attach the selected file.'
@@ -1006,11 +1225,13 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
     setNewTicketBody('');
     setNewTicketAttachments([]);
     setNewTicketError('');
+    setAiTriageResult(null);
+    setAiTriageError('');
+    setAiSelfResolvedNotice('');
     navigateWithinDashboard('tickets', 'new', null);
   };
 
-  const handleCreateTicketSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleFinalizeCreateTicket = () => {
     if (!newTicketSubject.trim() || newTicketSubject.trim().length < 4) {
       setNewTicketError('Please enter a descriptive ticket subject (minimum 4 characters).');
       return;
@@ -1034,10 +1255,122 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
       setTicketReplyText('');
       setReplyAttachments([]);
       setReplyAttachmentError('');
+      setAiTriageResult(null);
+      setAiTriageError('');
+      setDetailAiTriage(null);
+      setDetailAiError('');
       navigateWithinDashboard('tickets', 'detail', created.id);
       showToast(
-        `Ticket ${created.id} created (${created.department}) — live engineer triage active.`
+        `Ticket ${created.id} created (${created.department}) — confirmation email dispatched.`
       );
+    }
+  };
+
+  const handleCreateTicketSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newTicketSubject.trim() || newTicketSubject.trim().length < 4) {
+      setNewTicketError('Please enter a descriptive ticket subject (minimum 4 characters).');
+      return;
+    }
+    if (!newTicketBody.trim() || newTicketBody.trim().length < 10) {
+      setNewTicketError('Please describe your issue or request in detail (minimum 10 characters).');
+      return;
+    }
+
+    setNewTicketError('');
+    setAiTriageError('');
+    setAiSelfResolvedNotice('');
+    setAiTriageLoading(true);
+    try {
+      const res = await fetch('/api/ai/ticket-triage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          department: newTicketDept,
+          priority: newTicketPriority,
+          relatedService: newTicketService || undefined,
+          subject: newTicketSubject.trim(),
+          description: newTicketBody.trim(),
+          attachments: newTicketAttachments,
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        triage?: TicketAiTriageResult;
+        error?: string;
+      };
+      if (!res.ok || !data.ok || !data.triage) {
+        setAiTriageError(
+          data.error ||
+            'AI diagnostics could not analyze right now — click "I Need Additional Support" below to submit your ticket directly.'
+        );
+        return;
+      }
+      setAiTriageResult(data.triage);
+    } catch (err) {
+      setAiTriageError(
+        err instanceof Error
+          ? `${err.message} — click "I Need Additional Support" below to create your support ticket directly.`
+          : 'Network error contacting AI diagnostics.'
+      );
+    } finally {
+      setAiTriageLoading(false);
+    }
+  };
+
+  const handleAiTriageIssueResolved = () => {
+    const resolvedTitle = newTicketSubject.trim() || 'your issue';
+    setAiTriageResult(null);
+    setAiTriageError('');
+    setNewTicketSubject('');
+    setNewTicketBody('');
+    setNewTicketAttachments([]);
+    setAiSelfResolvedNotice(
+      `Glad we solved "${resolvedTitle}" right away! No support ticket was needed — reopen this page anytime if you need help.`
+    );
+    showToast('Marked as Issue Resolved via AI Troubleshooting');
+  };
+
+  const handleRunDetailAiTriage = async () => {
+    if (!viewedTicket || detailAiLoading) return;
+    setDetailAiLoading(true);
+    setDetailAiError('');
+    try {
+      const combinedTranscript = viewedTicket.messages
+        .map((m) => `${m.authorName} (${m.authorRole}): ${m.body}`)
+        .join('\n\n');
+      const latestAtts = viewedTicket.messages
+        .flatMap((m) => m.attachments || [])
+        .slice(-5);
+
+      const res = await fetch('/api/ai/ticket-triage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          department: viewedTicket.department,
+          priority: viewedTicket.priority,
+          relatedService: viewedTicket.relatedService,
+          subject: viewedTicket.subject,
+          description: combinedTranscript,
+          attachments: latestAtts,
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        triage?: TicketAiTriageResult;
+        error?: string;
+      };
+      if (!res.ok || !data.ok || !data.triage) {
+        setDetailAiError(data.error || 'Could not generate AI troubleshooting steps.');
+        return;
+      }
+      setDetailAiTriage(data.triage);
+    } catch (err) {
+      setDetailAiError(
+        err instanceof Error ? err.message : 'Unable to reach AI troubleshooter.'
+      );
+    } finally {
+      setDetailAiLoading(false);
     }
   };
 
@@ -1627,7 +1960,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                     </button>
                     <button
                       type="button"
-                      onClick={() => handleOpenQuickOrder('domain-com')}
+                      onClick={() => handleGoToOrderCategory('domain-registration')}
                       className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-[#E2E8F0] bg-white hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] transition-colors whitespace-nowrap cursor-pointer"
                     >
                       <Globe className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
@@ -1660,11 +1993,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                     </div>
                     <button
                       type="button"
-                      onClick={() => {
-                        setBillingFilter('unpaid');
-                        setSelectedInvoiceOrderId(unpaidOrders[0].id);
-                        navigateWithinDashboard('billing');
-                      }}
+                      onClick={() => handleOpenInvoicePage(unpaidOrders[0].id)}
                       className="min-h-[40px] px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
                     >
                       Pay Invoice Now
@@ -1760,80 +2089,203 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
 
                 {/* Primary 2-Column Portal Workspace Grid */}
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-                  {/* Left: Your Cloud Services */}
-                  <section className="lg:col-span-7 bg-white border border-[#E2E8F0] rounded-xl overflow-hidden">
-                    <div className="px-5 py-4 border-b border-[#E2E8F0] flex items-center justify-between gap-3">
-                      <h3 className="font-display text-base font-bold text-[#0F172A]">
-                        Your Hosting &amp; Cloud Services
-                      </h3>
-                      <button
-                        type="button"
-                        onClick={() => navigateWithinDashboard('services')}
-                        className="text-xs font-semibold text-[#0E6B63] hover:text-[#0A534D] whitespace-nowrap cursor-pointer"
-                      >
-                        View all
-                      </button>
-                    </div>
-
-                    {myHostingServices.length === 0 ? (
-                      <div className="p-8 text-center">
-                        <Server className="w-8 h-8 text-slate-300 mx-auto mb-3" aria-hidden="true" />
-                        <p className="text-sm font-semibold text-[#0F172A]">
-                          No active hosting or compute services yet
-                        </p>
-                        <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto leading-relaxed">
-                          Launch shared cloud hosting, managed WordPress, cPanel, or an unmanaged KVM VPS node in under 60 seconds.
-                        </p>
+                  {/* Left: Your Cloud Services & Domain Portfolio */}
+                  <div className="lg:col-span-7 space-y-6">
+                    <section className="bg-white border border-[#E2E8F0] rounded-xl overflow-hidden">
+                      <div className="px-5 py-4 border-b border-[#E2E8F0] flex items-center justify-between gap-3">
+                        <h3 className="font-display text-base font-bold text-[#0F172A]">
+                          Your Hosting &amp; Cloud Services
+                        </h3>
                         <button
                           type="button"
-                          onClick={() => handleOpenQuickOrder()}
-                          className="mt-4 min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+                          onClick={() => navigateWithinDashboard('services')}
+                          className="text-xs font-semibold text-[#0E6B63] hover:text-[#0A534D] whitespace-nowrap cursor-pointer"
                         >
-                          <Plus className="w-4 h-4" aria-hidden="true" />
-                          <span>Deploy First Service</span>
+                          View all
                         </button>
                       </div>
-                    ) : (
-                      <div className="divide-y divide-[#E2E8F0]">
-                        {myHostingServices.slice(0, 5).map((svc) => (
-                          <div
-                            key={svc.id}
-                            className="px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-[#F8FAFC] transition-colors"
+
+                      {myHostingServices.length === 0 ? (
+                        <div className="p-8 text-center">
+                          <Server className="w-8 h-8 text-slate-300 mx-auto mb-3" aria-hidden="true" />
+                          <p className="text-sm font-semibold text-[#0F172A]">
+                            No active hosting or compute services yet
+                          </p>
+                          <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto leading-relaxed">
+                            Launch shared cloud hosting, managed WordPress, cPanel, or an unmanaged KVM VPS node in under 60 seconds.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (onOrderSharedHosting) onOrderSharedHosting();
+                              else handleOpenQuickOrder();
+                            }}
+                            className="mt-4 min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
                           >
-                            <div className="min-w-0">
-                              <div className="flex flex-wrap items-center gap-2.5">
-                                <p className="font-display text-sm font-bold text-[#0F172A] truncate">
-                                  {svc.planName}
+                            <Plus className="w-4 h-4" aria-hidden="true" />
+                            <span>Deploy First Service</span>
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="divide-y divide-[#E2E8F0]">
+                          {myHostingServices.slice(0, 5).map((svc) => (
+                            <div
+                              key={svc.id}
+                              className="px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-[#F8FAFC] transition-colors"
+                            >
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2.5">
+                                  <p className="font-display text-sm font-bold text-[#0F172A] truncate">
+                                    {svc.planName}
+                                  </p>
+                                  <StatusIndicator
+                                    tone={formatOrderTone(svc.status)}
+                                    label={svc.status.charAt(0).toUpperCase() + svc.status.slice(1)}
+                                  />
+                                  {svc.cancellationStatus && svc.cancellationStatus !== 'none' && (
+                                    <span className="text-[11px] font-semibold text-[#D97706]">
+                                      {getCancellationStatusDisplay(svc.cancellationStatus).label}
+                                    </span>
+                                  )}
+                                  {svc.refundStatus && svc.refundStatus !== 'none' && (
+                                    <span className="text-[11px] font-semibold text-[#0E6B63]">
+                                      {getRefundStatusDisplay(svc.refundStatus).label}
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="mt-1 text-xs text-slate-500 truncate">
+                                  <span className="font-mono text-[#0F172A]">
+                                    {svc.domainOrHost}
+                                  </span>{' '}
+                                  · {svc.datacenter} · {svc.billingCycle}
                                 </p>
-                                <StatusIndicator
-                                  tone={formatOrderTone(svc.status)}
-                                  label={svc.status.charAt(0).toUpperCase() + svc.status.slice(1)}
-                                />
                               </div>
-                              <p className="mt-1 text-xs text-slate-500 truncate">
-                                <span className="font-mono text-[#0F172A]">
-                                  {svc.domainOrHost}
-                                </span>{' '}
-                                · {svc.datacenter} · {svc.billingCycle}
-                              </p>
+                              <div className="flex items-center justify-between sm:justify-end gap-4 shrink-0">
+                                <span className="font-mono-num text-sm font-semibold text-[#0F172A]">
+                                  {formatPrice(svc.amountUsd)}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => setManagedServiceId(svc.id)}
+                                  className="min-h-[34px] px-3 py-1.5 rounded-lg border border-[#E2E8F0] bg-white hover:border-[#0E6B63] hover:text-[#0E6B63] text-xs font-semibold text-[#0F172A] transition-colors cursor-pointer"
+                                >
+                                  Manage
+                                </button>
+                              </div>
                             </div>
-                            <div className="flex items-center justify-between sm:justify-end gap-4 shrink-0">
-                              <span className="font-mono-num text-sm font-semibold text-[#0F172A]">
-                                {formatPrice(svc.amountUsd)}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => setManagedServiceId(svc.id)}
-                                className="min-h-[34px] px-3 py-1.5 rounded-lg border border-[#E2E8F0] bg-white hover:border-[#0E6B63] hover:text-[#0E6B63] text-xs font-semibold text-[#0F172A] transition-colors cursor-pointer"
-                              >
-                                Manage
-                              </button>
-                            </div>
-                          </div>
-                        ))}
+                          ))}
+                        </div>
+                      )}
+                    </section>
+
+                    <section className="bg-white border border-[#E2E8F0] rounded-xl overflow-hidden">
+                      <div className="px-5 py-4 border-b border-[#E2E8F0] flex items-center justify-between gap-3">
+                        <h3 className="font-display text-base font-bold text-[#0F172A]">
+                          Your Domain Portfolio
+                        </h3>
+                        <button
+                          type="button"
+                          onClick={() => navigateWithinDashboard('domains')}
+                          className="text-xs font-semibold text-[#0E6B63] hover:text-[#0A534D] whitespace-nowrap cursor-pointer"
+                        >
+                          Manage all domains
+                        </button>
                       </div>
-                    )}
-                  </section>
+
+                      {myDomains.length === 0 ? (
+                        <div className="p-8 text-center">
+                          <Globe className="w-8 h-8 text-slate-300 mx-auto mb-3" aria-hidden="true" />
+                          <p className="text-sm font-semibold text-[#0F172A]">
+                            No domains registered or transferred yet
+                          </p>
+                          <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto leading-relaxed">
+                            Search and register your domain name with Anycast DNS and WHOIS privacy included.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => handleGoToOrderCategory('domain-registration')}
+                            className="mt-4 min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+                          >
+                            <Globe className="w-4 h-4" aria-hidden="true" />
+                            <span>Register Domain</span>
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="divide-y divide-[#E2E8F0]">
+                          {myDomains.slice(0, 4).map((dom) => {
+                            const lc = evaluateDomainLifecycle(dom);
+                            const linkedInv = myInvoices.find((inv) => inv.orderId === dom.id);
+                            const displayStatus = lc.isExpired ? 'expired' : dom.status;
+                            const isManageDisabled = lc.isExpired || lc.isManageLocked;
+
+                            return (
+                              <div
+                                key={dom.id}
+                                className="px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-[#F8FAFC] transition-colors"
+                              >
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-2.5">
+                                    <p className="font-mono text-sm font-bold text-[#0F172A] truncate">
+                                      {dom.domainOrHost}
+                                    </p>
+                                    <StatusIndicator
+                                      tone={formatOrderTone(displayStatus)}
+                                      label={
+                                        displayStatus.charAt(0).toUpperCase() +
+                                        displayStatus.slice(1)
+                                      }
+                                    />
+                                    <span className="text-[11px] font-medium text-slate-500">
+                                      {lc.icann60DayLockActive
+                                        ? `60d ICANN Lock (${lc.daysUntilIcannUnlock}d left)`
+                                        : lc.effectiveRegistrarLocked
+                                          ? 'Transfer Locked'
+                                          : 'Unlocked'}
+                                    </span>
+                                  </div>
+                                  <p className="mt-1 text-xs text-slate-500 font-mono-num truncate">
+                                    Registered: {lc.registeredDateIso} · Due: {lc.dueDateIso}
+                                  </p>
+                                </div>
+
+                                <div className="flex items-center justify-between sm:justify-end gap-2 shrink-0">
+                                  {lc.isExpired && linkedInv && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenInvoicePage(linkedInv.id)}
+                                      className="min-h-[34px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+                                    >
+                                      <RefreshCw className="w-3 h-3" aria-hidden="true" />
+                                      <span>Renew Now</span>
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    disabled={isManageDisabled}
+                                    onClick={() => handleOpenDomainManagePage(dom.id)}
+                                    className={`min-h-[34px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
+                                      isManageDisabled
+                                        ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
+                                        : 'border-[#E2E8F0] bg-white hover:border-[#0E6B63] hover:text-[#0E6B63] text-[#0F172A] cursor-pointer'
+                                    }`}
+                                  >
+                                    {isManageDisabled ? (
+                                      <>
+                                        <Lock className="w-3 h-3" aria-hidden="true" />
+                                        <span>Manage Locked</span>
+                                      </>
+                                    ) : (
+                                      <span>Manage</span>
+                                    )}
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </section>
+                  </div>
 
                   {/* Right: Support & Account Readiness */}
                   <div className="lg:col-span-5 space-y-6">
@@ -1978,7 +2430,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
 
                   <div className="flex flex-wrap items-center gap-2">
                     <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg overflow-x-auto">
-                      {(['all', 'active', 'pending', 'suspended'] as const).map((tab) => (
+                      {(['all', 'active', 'pending', 'suspended', 'cancelled', 'refunded'] as const).map((tab) => (
                         <button
                           key={tab}
                           type="button"
@@ -2001,7 +2453,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                         className="min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
                       >
                         <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-                        <span>Order Shared Hosting</span>
+                        <span>Order Hosting</span>
                       </button>
                     )}
                   </div>
@@ -2026,7 +2478,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                         className="mt-4 min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
                       >
                         <Plus className="w-4 h-4" aria-hidden="true" />
-                        <span>Order Shared Hosting</span>
+                        <span>Order Hosting</span>
                       </button>
                     </div>
                   ) : (
@@ -2084,7 +2536,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                   {svc.billingCycle}
                                 </span>
                               </td>
-                              <td className="py-3.5 px-4">
+                              <td className="py-3.5 px-4 space-y-1">
                                 <StatusIndicator
                                   tone={
                                     isServiceLockedByBilling(svc)
@@ -2097,6 +2549,16 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                       : svc.status.charAt(0).toUpperCase() + svc.status.slice(1)
                                   }
                                 />
+                                {svc.cancellationStatus && svc.cancellationStatus !== 'none' && (
+                                  <p className="text-[11px] font-semibold text-[#D97706]">
+                                    {getCancellationStatusDisplay(svc.cancellationStatus).label}
+                                  </p>
+                                )}
+                                {svc.refundStatus && svc.refundStatus !== 'none' && (
+                                  <p className="text-[11px] font-semibold text-[#0E6B63]">
+                                    {getRefundStatusDisplay(svc.refundStatus).label}
+                                  </p>
+                                )}
                               </td>
                               <td className="py-3.5 px-4 text-right whitespace-nowrap space-x-1.5">
                                 {(() => {
@@ -2109,7 +2571,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                       {locked && linkedInv && linkedInv.status !== 'paid' && (
                                         <button
                                           type="button"
-                                          onClick={() => setSelectedInvoiceOrderId(linkedInv.id)}
+                                          onClick={() => handleOpenInvoicePage(linkedInv.id)}
                                           className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#DC2626] hover:bg-red-700 text-white text-xs font-semibold cursor-pointer"
                                         >
                                           <Lock className="w-3 h-3" aria-hidden="true" />
@@ -2117,26 +2579,39 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                         </button>
                                       )}
                                       {linkedInv && (
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            downloadInvoicePdf(
-                                              linkedInv,
-                                              invoiceTemplateConfig,
-                                              paymentMethods,
-                                              {
-                                                code: currency.code,
-                                                formattedTotal: formatPrice(linkedInv.amountUsd),
-                                              }
-                                            );
-                                            showToast(`Downloaded ${linkedInv.id}.pdf`);
-                                          }}
-                                          title={`Download ${linkedInv.id}.pdf`}
-                                          className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] cursor-pointer"
-                                        >
-                                          <Download className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
-                                          <span>PDF</span>
-                                        </button>
+                                        <>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleOpenInvoicePage(linkedInv.id)}
+                                            className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] cursor-pointer"
+                                          >
+                                            <span>View Invoice</span>
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              downloadInvoicePdf(
+                                                linkedInv,
+                                                invoiceTemplateConfig,
+                                                paymentMethods,
+                                                {
+                                                  code: currency.code,
+                                                  symbol: currency.symbol,
+                                                  rate,
+                                                  decimals: currency.decimals,
+                                                  spaceAfterSymbol: currency.spaceAfterSymbol,
+                                                  formattedTotal: formatPrice(linkedInv.amountUsd),
+                                                }
+                                              );
+                                              showToast(`Downloaded ${linkedInv.id}.pdf`);
+                                            }}
+                                            title={`Download ${linkedInv.id}.pdf`}
+                                            className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] cursor-pointer"
+                                          >
+                                            <Download className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+                                            <span>PDF</span>
+                                          </button>
+                                        </>
                                       )}
                                     </>
                                   );
@@ -2159,33 +2634,144 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
               </div>
             )}
 
-            {/* ============================ DOMAINS ============================ */}
-            {section === 'domains' && (
-              <div className="space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div className="relative flex-1 max-w-md">
-                    <Search
-                      className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
-                      aria-hidden="true"
-                    />
-                    <input
-                      type="text"
-                      value={domainSearch}
-                      onChange={(e) => setDomainSearch(e.target.value)}
-                      placeholder="Search domain name or order ID..."
-                      className="w-full min-h-[42px] pl-10 pr-4 py-2 text-sm bg-white border border-[#E2E8F0] rounded-xl focus:outline-none focus:border-[#0E6B63]"
-                    />
+            {/* ============================ DOMAINS (DEDICATED HOSTINGER-STYLE DETAIL + PROFESSIONAL PORTFOLIO) ============================ */}
+            {section === 'domains' && domainSubView === 'detail' && viewedDomain && (
+              <DomainManagementPage
+                domain={viewedDomain}
+                linkedInvoice={viewedDomainLinkedInvoice}
+                onBackToDomains={() => navigateWithinDashboard('domains', 'list', null, null, null)}
+                onOpenInvoice={(invId) => handleOpenInvoicePage(invId)}
+                onOpenSupportTicket={(host) => handleOpenCreateTicketPage(host)}
+                onShowToast={showToast}
+              />
+            )}
+
+            {section === 'domains' && domainSubView === 'detail' && !viewedDomain && (
+              <div className="bg-white border border-[#E2E8F0] rounded-xl p-8 text-center space-y-3">
+                <Globe className="w-9 h-9 text-slate-300 mx-auto" aria-hidden="true" />
+                <h2 className="font-display text-lg font-bold text-[#0F172A]">
+                  Domain Not Found
+                </h2>
+                <p className="text-xs text-slate-500 max-w-md mx-auto">
+                  The requested domain ({viewedDomainId}) could not be found under your client account.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => navigateWithinDashboard('domains', 'list', null, null, null)}
+                  className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#0E6B63] text-white text-xs font-semibold cursor-pointer"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Return to Domains</span>
+                </button>
+              </div>
+            )}
+
+            {section === 'domains' && domainSubView === 'list' && (
+              <div className="space-y-5">
+                {/* Domain Portfolio Summary Strip */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+                  <div className="bg-white border border-[#E2E8F0] rounded-xl p-4">
+                    <span className="text-xs font-medium text-slate-500">Total Domains</span>
+                    <p className="mt-1 font-mono-num text-2xl font-bold text-[#0F172A]">
+                      {myDomains.length}
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-slate-500">
+                      Registered &amp; transferred
+                    </p>
                   </div>
+
+                  <div className="bg-white border border-[#E2E8F0] rounded-xl p-4">
+                    <span className="text-xs font-medium text-slate-500">Active &amp; Healthy</span>
+                    <p className="mt-1 font-mono-num text-2xl font-bold text-[#16A34A]">
+                      {
+                        myDomains.filter((d) => {
+                          const lc = evaluateDomainLifecycle(d);
+                          return !lc.isExpired && d.status === 'active';
+                        }).length
+                      }
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-slate-500">
+                      DNS &amp; Anycast routed
+                    </p>
+                  </div>
+
+                  <div className="bg-white border border-[#E2E8F0] rounded-xl p-4">
+                    <span className="text-xs font-medium text-slate-500">
+                      60-Day ICANN Lock
+                    </span>
+                    <p className="mt-1 font-mono-num text-2xl font-bold text-[#0E6B63]">
+                      {
+                        myDomains.filter((d) => evaluateDomainLifecycle(d).icann60DayLockActive)
+                          .length
+                      }
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-slate-500">
+                      Protected transfer window
+                    </p>
+                  </div>
+
+                  <div className="bg-white border border-[#E2E8F0] rounded-xl p-4">
+                    <span className="text-xs font-medium text-slate-500">
+                      Expired / Due Renewal
+                    </span>
+                    <p className="mt-1 font-mono-num text-2xl font-bold text-[#DC2626]">
+                      {
+                        myDomains.filter((d) => evaluateDomainLifecycle(d).isExpired)
+                          .length
+                      }
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-slate-500">
+                      Manage locked until renewed
+                    </p>
+                  </div>
+                </div>
+
+                {/* Search + Filter + Register/Transfer Actions */}
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 flex-1">
+                    <div className="relative flex-1 max-w-md">
+                      <Search
+                        className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                        aria-hidden="true"
+                      />
+                      <input
+                        type="text"
+                        value={domainSearch}
+                        onChange={(e) => setDomainSearch(e.target.value)}
+                        placeholder="Search domain name, TLD, or order ID..."
+                        className="w-full min-h-[42px] pl-10 pr-4 py-2 text-sm bg-white border border-[#E2E8F0] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-1.5 overflow-x-auto">
+                      {(
+                        [
+                          { id: 'all', label: 'All' },
+                          { id: 'active', label: 'Active' },
+                          { id: 'pending', label: 'Pending' },
+                          { id: 'expired', label: 'Expired' },
+                        ] as const
+                      ).map((f) => (
+                        <button
+                          key={f.id}
+                          type="button"
+                          onClick={() => setDomainStatusFilter(f.id)}
+                          className={`min-h-[36px] px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap cursor-pointer transition-colors ${
+                            domainStatusFilter === f.id
+                              ? 'bg-[#0F172A] text-white'
+                              : 'bg-white border border-[#E2E8F0] text-slate-600 hover:border-[#0E6B63]'
+                          }`}
+                        >
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => {
-                        if (onNavigateOrderCategory) {
-                          onNavigateOrderCategory('domain-transfer');
-                        } else {
-                          handleOpenQuickOrder('domain-com');
-                        }
-                      }}
+                      onClick={() => handleGoToOrderCategory('domain-transfer')}
                       className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-[#CBD5E1] bg-white hover:border-[#0E6B63] text-[#0F172A] text-xs font-semibold whitespace-nowrap cursor-pointer"
                     >
                       <RefreshCw className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
@@ -2193,13 +2779,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                     </button>
                     <button
                       type="button"
-                      onClick={() => {
-                        if (onNavigateOrderCategory) {
-                          onNavigateOrderCategory('domain-registration');
-                        } else {
-                          handleOpenQuickOrder('domain-com');
-                        }
-                      }}
+                      onClick={() => handleGoToOrderCategory('domain-registration')}
                       className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold whitespace-nowrap cursor-pointer"
                     >
                       <Plus className="w-4 h-4" aria-hidden="true" />
@@ -2208,25 +2788,20 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                   </div>
                 </div>
 
+                {/* Professional Domains Portfolio Table */}
                 <div className="bg-white border border-[#E2E8F0] rounded-xl overflow-hidden">
                   {filteredDomains.length === 0 ? (
                     <div className="p-10 text-center">
                       <Globe className="w-8 h-8 text-slate-300 mx-auto mb-3" aria-hidden="true" />
                       <p className="text-sm font-semibold text-[#0F172A]">
-                        No domains found under this account
+                        No matching domains found under this account
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
-                        Register a .com, .io, .co.uk, or .cloud domain with Free WHOIS privacy and DNSSEC.
+                        Register a .com, .pk, .io, .co.uk, or .cloud domain with Free WHOIS privacy and Anycast DNS.
                       </p>
                       <button
                         type="button"
-                        onClick={() => {
-                          if (onNavigateOrderCategory) {
-                            onNavigateOrderCategory('domain-registration');
-                          } else {
-                            handleOpenQuickOrder('domain-com');
-                          }
-                        }}
+                        onClick={() => handleGoToOrderCategory('domain-registration')}
                         className="mt-4 min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
                       >
                         <Globe className="w-4 h-4" aria-hidden="true" />
@@ -2238,88 +2813,193 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                       <table className="w-full text-left border-collapse">
                         <thead>
                           <tr className="border-b border-[#E2E8F0] bg-[#F8FAFC] text-xs font-semibold text-slate-500">
-                            <th className="py-3 px-4">Domain</th>
-                            <th className="py-3 px-4">Nameservers</th>
+                            <th className="py-3 px-4">Domain Name</th>
+                            <th className="py-3 px-4">Registration Date</th>
+                            <th className="py-3 px-4">Due / Expiry Date</th>
+                            <th className="py-3 px-4">Transfer &amp; 60d Lock</th>
                             <th className="py-3 px-4">Auto-Renew</th>
-                            <th className="py-3 px-4">Registrar Lock</th>
-                            <th className="py-3 px-4">WHOIS Privacy</th>
-                            <th className="py-3 px-4">Next Due</th>
                             <th className="py-3 px-4">Status</th>
-                            <th className="py-3 px-4 text-right">Manage</th>
+                            <th className="py-3 px-4 text-right">Action</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-[#E2E8F0] text-sm">
-                          {filteredDomains.map((dom) => (
-                            <tr
-                              key={dom.id}
-                              className="hover:bg-[#F8FAFC] transition-colors"
-                            >
-                              <td className="py-3.5 px-4">
-                                <p className="font-mono text-sm font-semibold text-[#0F172A]">
-                                  {dom.domainOrHost}
-                                </p>
-                                <p className="text-xs text-slate-500">{dom.planName}</p>
-                              </td>
-                              <td className="py-3.5 px-4 font-mono text-xs text-slate-600">
-                                {(dom.nameservers ?? ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']).join(
-                                  ' · '
-                                )}
-                              </td>
-                              <td className="py-3.5 px-4">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    const nextAutoRenew = !(dom.autoRenew !== false);
-                                    updateClientOrderSettings(dom.id, { autoRenew: nextAutoRenew });
-                                    showToast(
-                                      `Auto-renew ${nextAutoRenew ? 'enabled' : 'disabled'} for ${dom.domainOrHost}`
-                                    );
-                                  }}
-                                  className={`px-2.5 py-1 rounded-full text-[11px] font-bold cursor-pointer transition-colors ${
-                                    dom.autoRenew !== false
-                                      ? 'bg-[#E6F4F2] text-[#0E6B63]'
-                                      : 'bg-slate-100 text-slate-600'
-                                  }`}
-                                >
-                                  {dom.autoRenew !== false ? 'Auto-Renew ON' : 'OFF'}
-                                </button>
-                              </td>
-                              <td className="py-3.5 px-4 text-xs font-medium text-[#0F172A]">
-                                {dom.registrarLock !== false ? (
-                                  <span className="inline-flex items-center gap-1 text-[#16A34A]">
-                                    <Lock className="w-3.5 h-3.5" aria-hidden="true" />
-                                    Locked
-                                  </span>
-                                ) : (
-                                  <span className="inline-flex items-center gap-1 text-[#D97706]">
-                                    <Unlock className="w-3.5 h-3.5" aria-hidden="true" />
-                                    Unlocked
-                                  </span>
-                                )}
-                              </td>
-                              <td className="py-3.5 px-4 text-xs text-slate-600">
-                                {dom.whoisPrivacy !== false ? 'Protected' : 'Public'}
-                              </td>
-                              <td className="py-3.5 px-4 font-mono-num text-xs text-slate-700">
-                                {dom.nextDueDate ?? '2027-11-01'}
-                              </td>
-                              <td className="py-3.5 px-4">
-                                <StatusIndicator
-                                  tone={formatOrderTone(dom.status)}
-                                  label={dom.status.charAt(0).toUpperCase() + dom.status.slice(1)}
-                                />
-                              </td>
-                              <td className="py-3.5 px-4 text-right">
-                                <button
-                                  type="button"
-                                  onClick={() => setManagedDomainId(dom.id)}
-                                  className="min-h-[34px] px-3 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] hover:text-[#0E6B63] text-xs font-semibold text-[#0F172A] transition-colors cursor-pointer"
-                                >
-                                  Manage DNS
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
+                          {filteredDomains.map((dom) => {
+                            const lc = evaluateDomainLifecycle(dom);
+                            const linkedInv = myInvoices.find(
+                              (inv) => inv.orderId === dom.id
+                            );
+                            const displayStatus = lc.isExpired ? 'expired' : dom.status;
+                            const isManageDisabled = lc.isExpired || lc.isManageLocked;
+
+                            return (
+                              <tr
+                                key={dom.id}
+                                className="hover:bg-[#F8FAFC] transition-colors"
+                              >
+                                <td className="py-3.5 px-4">
+                                  <div className="flex items-center gap-3">
+                                    <div
+                                      className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
+                                        lc.isExpired
+                                          ? 'bg-red-50 text-[#DC2626]'
+                                          : 'bg-[#F2FAF8] text-[#0E6B63]'
+                                      }`}
+                                    >
+                                      <Globe className="w-4 h-4" aria-hidden="true" />
+                                    </div>
+                                    <div className="min-w-0">
+                                      <p className="font-mono text-sm font-bold text-[#0F172A] truncate">
+                                        {dom.domainOrHost}
+                                      </p>
+                                      <p className="text-[11px] text-slate-500 truncate">
+                                        {dom.planName} ·{' '}
+                                        <span className="font-mono">{dom.id}</span>
+                                      </p>
+                                    </div>
+                                  </div>
+                                </td>
+
+                                <td className="py-3.5 px-4">
+                                  <p className="font-mono-num text-xs font-semibold text-[#0F172A]">
+                                    {lc.registeredDateIso}
+                                  </p>
+                                  <p className="text-[11px] text-slate-500 font-mono-num">
+                                    {lc.daysSinceRegistration}d active
+                                  </p>
+                                </td>
+
+                                <td className="py-3.5 px-4">
+                                  <p
+                                    className={`font-mono-num text-xs font-semibold ${
+                                      lc.isExpired
+                                        ? 'text-[#DC2626]'
+                                        : lc.daysRemainingUntilDue <= 30
+                                          ? 'text-[#D97706]'
+                                          : 'text-[#0F172A]'
+                                    }`}
+                                  >
+                                    {lc.dueDateIso}
+                                  </p>
+                                  <p className="text-[11px] text-slate-500 font-mono-num">
+                                    {lc.isExpired
+                                      ? `Expired ${Math.abs(lc.daysRemainingUntilDue)}d ago`
+                                      : `${lc.daysRemainingUntilDue}d remaining`}
+                                  </p>
+                                </td>
+
+                                <td className="py-3.5 px-4 text-xs">
+                                  {lc.icann60DayLockActive ? (
+                                    <div>
+                                      <span className="inline-flex items-center gap-1 font-semibold text-[#D97706]">
+                                        <Lock className="w-3.5 h-3.5" aria-hidden="true" />
+                                        60d ICANN Lock
+                                      </span>
+                                      <span className="block text-[11px] text-slate-500 font-mono-num">
+                                        Unlocks {lc.icannUnlockDateIso}
+                                      </span>
+                                    </div>
+                                  ) : lc.effectiveRegistrarLocked ? (
+                                    <div>
+                                      <span className="inline-flex items-center gap-1 font-semibold text-[#16A34A]">
+                                        <Lock className="w-3.5 h-3.5" aria-hidden="true" />
+                                        Locked (Eligible)
+                                      </span>
+                                      <span className="block text-[11px] text-slate-500">
+                                        EPP &amp; Unlock Ready
+                                      </span>
+                                    </div>
+                                  ) : (
+                                    <div>
+                                      <span className="inline-flex items-center gap-1 font-semibold text-[#D97706]">
+                                        <Unlock className="w-3.5 h-3.5" aria-hidden="true" />
+                                        Unlocked
+                                      </span>
+                                      <span className="block text-[11px] text-slate-500">
+                                        Transfer Ready
+                                      </span>
+                                    </div>
+                                  )}
+                                </td>
+
+                                <td className="py-3.5 px-4">
+                                  <button
+                                    type="button"
+                                    disabled={isManageDisabled}
+                                    onClick={() => {
+                                      const nextAutoRenew = !(dom.autoRenew !== false);
+                                      updateClientOrderSettings(dom.id, {
+                                        autoRenew: nextAutoRenew,
+                                      });
+                                      showToast(
+                                        `Auto-renew ${
+                                          nextAutoRenew ? 'enabled' : 'disabled'
+                                        } for ${dom.domainOrHost}`
+                                      );
+                                    }}
+                                    className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors ${
+                                      isManageDisabled
+                                        ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                                        : dom.autoRenew !== false
+                                          ? 'bg-[#E6F4F2] text-[#0E6B63] cursor-pointer'
+                                          : 'bg-slate-100 text-slate-600 cursor-pointer'
+                                    }`}
+                                  >
+                                    {dom.autoRenew !== false ? 'Auto ON' : 'OFF'}
+                                  </button>
+                                </td>
+
+                                <td className="py-3.5 px-4">
+                                  <StatusIndicator
+                                    tone={formatOrderTone(displayStatus)}
+                                    label={
+                                      displayStatus.charAt(0).toUpperCase() +
+                                      displayStatus.slice(1)
+                                    }
+                                  />
+                                </td>
+
+                                <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                                  <div className="inline-flex items-center justify-end gap-2">
+                                    {lc.isExpired && linkedInv && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenInvoicePage(linkedInv.id)}
+                                        className="min-h-[34px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+                                      >
+                                        <RefreshCw className="w-3 h-3" aria-hidden="true" />
+                                        <span>Renew Now</span>
+                                      </button>
+                                    )}
+
+                                    <button
+                                      type="button"
+                                      disabled={isManageDisabled}
+                                      onClick={() => handleOpenDomainManagePage(dom.id)}
+                                      title={
+                                        isManageDisabled
+                                          ? 'Domain management is locked because this domain expired or requires renewal'
+                                          : `Open domain console for ${dom.domainOrHost}`
+                                      }
+                                      className={`min-h-[34px] inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
+                                        isManageDisabled
+                                          ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
+                                          : 'border-[#E2E8F0] bg-white hover:border-[#0E6B63] hover:text-[#0E6B63] text-[#0F172A] cursor-pointer'
+                                      }`}
+                                    >
+                                      {isManageDisabled ? (
+                                        <>
+                                          <Lock className="w-3.5 h-3.5" aria-hidden="true" />
+                                          <span>Manage Locked</span>
+                                        </>
+                                      ) : (
+                                        <span>Manage</span>
+                                      )}
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -2329,7 +3009,36 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
             )}
 
             {/* ============================ BILLING & INVOICES ============================ */}
-            {section === 'billing' && (
+            {section === 'billing' && billingSubView === 'detail' && viewedInvoice && (
+              <InvoiceDetailPage
+                invoice={viewedInvoice}
+                linkedOrder={viewedInvoiceLinkedOrder}
+                onBackToBilling={() => navigateWithinDashboard('billing', 'list', null, null)}
+                onShowToast={showToast}
+              />
+            )}
+
+            {section === 'billing' && billingSubView === 'detail' && !viewedInvoice && (
+              <div className="bg-white border border-[#E2E8F0] rounded-xl p-8 text-center space-y-3">
+                <Receipt className="w-9 h-9 text-slate-300 mx-auto" aria-hidden="true" />
+                <h2 className="font-display text-lg font-bold text-[#0F172A]">
+                  Invoice Not Found
+                </h2>
+                <p className="text-xs text-slate-500 max-w-md mx-auto">
+                  The requested invoice ({viewedInvoiceId}) could not be found under your client account.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => navigateWithinDashboard('billing', 'list', null, null)}
+                  className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#0E6B63] text-white text-xs font-semibold cursor-pointer"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Return to Billing &amp; Invoices</span>
+                </button>
+              </div>
+            )}
+
+            {section === 'billing' && billingSubView === 'list' && (
               <div className="space-y-5">
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <div className="bg-white border border-[#E2E8F0] rounded-xl p-5">
@@ -2373,18 +3082,18 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <h2 className="font-display text-lg font-bold text-[#0F172A]">
                     Invoices &amp; Transactions
                   </h2>
 
-                  <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
-                    {(['all', 'unpaid', 'paid'] as const).map((tab) => (
+                  <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg">
+                    {(['all', 'unpaid', 'paid', 'refunded', 'cancelled'] as const).map((tab) => (
                       <button
                         key={tab}
                         type="button"
                         onClick={() => setBillingFilter(tab)}
-                        className={`px-3 py-1.5 text-xs font-semibold rounded-md capitalize cursor-pointer ${
+                        className={`px-3 py-1.5 text-xs font-semibold rounded-md capitalize whitespace-nowrap cursor-pointer ${
                           billingFilter === tab
                             ? 'bg-white text-[#0F172A] shadow-sm'
                             : 'text-slate-600 hover:text-[#0F172A]'
@@ -2405,126 +3114,315 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                       </p>
                     </div>
                   ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left border-collapse">
-                        <thead>
-                          <tr className="border-b border-[#E2E8F0] bg-[#F8FAFC] text-xs font-semibold text-slate-500">
-                            <th className="py-3 px-4">Invoice</th>
-                            <th className="py-3 px-4">Service / Description</th>
-                            <th className="py-3 px-4">Payment Method</th>
-                            <th className="py-3 px-4">Start / Due</th>
-                            <th className="py-3 px-4 text-right">Amount</th>
-                            <th className="py-3 px-4">Status</th>
-                            <th className="py-3 px-4 text-right">Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-[#E2E8F0] text-sm">
-                          {filteredInvoices.map((inv) => {
-                            const statusMeta: {
-                              label: string;
-                              tone: 'emerald' | 'amber' | 'red' | 'slate';
-                            } =
-                              inv.status === 'paid'
-                                ? { label: 'Paid', tone: 'emerald' }
-                                : inv.status === 'pending'
-                                  ? { label: 'Pending Review', tone: 'amber' }
-                                  : inv.status === 'overdue'
-                                    ? { label: 'Overdue', tone: 'red' }
-                                    : inv.status === 'cancelled'
-                                      ? { label: 'Cancelled', tone: 'slate' }
-                                      : inv.status === 'refunded'
-                                        ? { label: 'Refunded', tone: 'slate' }
-                                        : { label: 'Unpaid', tone: 'amber' };
-                            const needsAction =
-                              inv.status === 'unpaid' || inv.status === 'overdue';
-                            return (
-                              <tr key={inv.id} className="hover:bg-[#F8FAFC]">
-                                <td className="py-3.5 px-4 font-mono text-xs font-semibold text-[#0F172A] whitespace-nowrap">
-                                  <span className="block">{inv.id}</span>
-                                  {inv.autoGeneratedTrigger === 'order_approved' && (
-                                    <span className="inline-block mt-0.5 font-sans text-[10px] font-semibold text-[#0E6B63] bg-[#F2FAF8] px-1.5 py-0.5 rounded">
-                                      Auto-Generated
-                                    </span>
-                                  )}
-                                </td>
-                                <td className="py-3.5 px-4">
-                                  <p className="font-display font-semibold text-[#0F172A]">
-                                    {inv.planName}
-                                    {inv.items && inv.items.length > 1 && (
-                                      <span className="ml-1.5 text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
-                                        +{inv.items.length - 1} items
-                                      </span>
-                                    )}
+                    <>
+                      {/* Mobile Cards View */}
+                      <div className="md:hidden divide-y divide-[#E2E8F0]">
+                        {filteredInvoices.map((inv) => {
+                          const linkedOrd = inv.orderId
+                            ? myOrders.find((o) => o.id === inv.orderId)
+                            : undefined;
+                          const effectiveRefund =
+                            inv.refundStatus ||
+                            (inv.status === 'refunded' ? 'processed' : 'none');
+                          const effectiveCancel =
+                            linkedOrd?.cancellationStatus ||
+                            inv.cancellationStatus ||
+                            (inv.status === 'cancelled' ? 'completed' : 'none');
+                          const statusMeta: {
+                            label: string;
+                            tone: 'emerald' | 'amber' | 'red' | 'slate';
+                          } =
+                            inv.status === 'paid'
+                              ? { label: 'Paid', tone: 'emerald' }
+                              : inv.status === 'pending'
+                                ? { label: 'Pending Review', tone: 'amber' }
+                                : inv.status === 'overdue'
+                                  ? { label: 'Overdue', tone: 'red' }
+                                  : inv.status === 'cancelled'
+                                    ? { label: 'Cancelled', tone: 'slate' }
+                                    : inv.status === 'refunded'
+                                      ? { label: 'Refunded', tone: 'slate' }
+                                      : { label: 'Unpaid', tone: 'amber' };
+                          const needsAction =
+                            inv.status === 'unpaid' ||
+                            inv.status === 'overdue' ||
+                            inv.status === 'pending';
+
+                          return (
+                            <div key={inv.id} className="p-4 space-y-3">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="font-mono text-xs font-bold text-[#0F172A]">
+                                    {inv.id}
                                   </p>
-                                  <p className="text-xs text-slate-500 font-mono">
+                                  <p className="font-display text-sm font-bold text-[#0F172A] truncate mt-0.5">
+                                    {inv.planName}
+                                  </p>
+                                  <p className="font-mono text-[11px] text-slate-500 truncate">
                                     {inv.domainOrHost} · {inv.billingCycle}
                                   </p>
-                                </td>
-                                <td className="py-3.5 px-4 text-xs text-slate-600">
-                                  <span className="block">{inv.paymentMethod}</span>
-                                  {inv.transactionRef && (
-                                    <span className="font-mono text-[11px] text-[#0E6B63]">
-                                      TID: {inv.transactionRef}
+                                </div>
+                                <div className="text-right shrink-0">
+                                  <p className="font-mono-num text-sm font-bold text-[#0F172A]">
+                                    {formatPrice(inv.amountUsd)}
+                                  </p>
+                                  <div className="mt-1">
+                                    <StatusIndicator
+                                      tone={statusMeta.tone}
+                                      label={statusMeta.label}
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+                                <span>
+                                  Issued {inv.issuedDate} · Due {inv.dueDate}
+                                </span>
+                                <span>{inv.paymentMethod}</span>
+                              </div>
+
+                              {(effectiveRefund !== 'none' ||
+                                effectiveCancel !== 'none') && (
+                                <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                                  {effectiveRefund !== 'none' && (
+                                    <span
+                                      className={`px-2 py-0.5 rounded border font-semibold ${
+                                        getRefundStatusDisplay(effectiveRefund).toneClass
+                                      }`}
+                                    >
+                                      {getRefundStatusDisplay(effectiveRefund).label}
                                     </span>
                                   )}
-                                </td>
-                                <td className="py-3.5 px-4 font-mono-num text-xs text-slate-600 whitespace-nowrap">
-                                  <div>{inv.issuedDate}</div>
-                                  <div className="text-[11px] text-slate-400">
-                                    Due {inv.dueDate}
-                                  </div>
-                                </td>
-                                <td className="py-3.5 px-4 text-right font-mono-num font-semibold text-[#0F172A] whitespace-nowrap">
-                                  {formatPrice(inv.amountUsd)}
-                                </td>
-                                <td className="py-3.5 px-4 whitespace-nowrap">
-                                  <StatusIndicator
-                                    tone={statusMeta.tone}
-                                    label={statusMeta.label}
-                                  />
-                                </td>
-                                <td className="py-3.5 px-4 text-right whitespace-nowrap space-x-1.5">
+                                  {effectiveCancel !== 'none' && (
+                                    <span
+                                      className={`px-2 py-0.5 rounded border font-semibold ${
+                                        getCancellationStatusDisplay(effectiveCancel)
+                                          .toneClass
+                                      }`}
+                                    >
+                                      {
+                                        getCancellationStatusDisplay(effectiveCancel)
+                                          .label
+                                      }
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+
+                              <div className="flex flex-wrap items-center gap-2 pt-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenInvoicePage(inv.id)}
+                                  className="min-h-[40px] flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] cursor-pointer"
+                                >
+                                  <Eye className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+                                  <span>View Invoice</span>
+                                </button>
+                                {needsAction && (
                                   <button
                                     type="button"
-                                    onClick={() => {
-                                      downloadInvoicePdf(
-                                        inv,
-                                        invoiceTemplateConfig,
-                                        paymentMethods,
+                                    onClick={() => handleOpenInvoicePage(inv.id)}
+                                    className="min-h-[40px] flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+                                  >
+                                    <span>
+                                      {inv.status === 'pending' ? 'Submit TID' : 'Pay Now'}
+                                    </span>
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    downloadInvoicePdf(
+                                      inv,
+                                      invoiceTemplateConfig,
+                                      paymentMethods,
+                                      {
+                                        code: currency.code,
+                                        symbol: currency.symbol,
+                                        rate,
+                                        decimals: currency.decimals,
+                                        spaceAfterSymbol: currency.spaceAfterSymbol,
+                                        formattedTotal: formatPrice(inv.amountUsd),
+                                      }
+                                    );
+                                    showToast(`Downloaded ${inv.id}.pdf`);
+                                  }}
+                                  className="min-h-[40px] inline-flex items-center justify-center gap-1 px-3 py-2 rounded-lg border border-[#E2E8F0] text-xs font-semibold text-[#0F172A] cursor-pointer"
+                                >
+                                  <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                                  <span>PDF</span>
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Desktop Table View */}
+                      <div className="hidden md:block overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr className="border-b border-[#E2E8F0] bg-[#F8FAFC] text-xs font-semibold text-slate-500">
+                              <th className="py-3 px-4">Invoice</th>
+                              <th className="py-3 px-4">Service / Description</th>
+                              <th className="py-3 px-4">Payment Method</th>
+                              <th className="py-3 px-4">Start / Due</th>
+                              <th className="py-3 px-4 text-right">Amount</th>
+                              <th className="py-3 px-4">Status &amp; Lifecycle</th>
+                              <th className="py-3 px-4 text-right">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-[#E2E8F0] text-sm">
+                            {filteredInvoices.map((inv) => {
+                              const linkedOrd = inv.orderId
+                                ? myOrders.find((o) => o.id === inv.orderId)
+                                : undefined;
+                              const effectiveRefund =
+                                inv.refundStatus ||
+                                (inv.status === 'refunded' ? 'processed' : 'none');
+                              const effectiveCancel =
+                                linkedOrd?.cancellationStatus ||
+                                inv.cancellationStatus ||
+                                (inv.status === 'cancelled' ? 'completed' : 'none');
+                              const statusMeta: {
+                                label: string;
+                                tone: 'emerald' | 'amber' | 'red' | 'slate';
+                              } =
+                                inv.status === 'paid'
+                                  ? { label: 'Paid', tone: 'emerald' }
+                                  : inv.status === 'pending'
+                                    ? { label: 'Pending Review', tone: 'amber' }
+                                    : inv.status === 'overdue'
+                                      ? { label: 'Overdue', tone: 'red' }
+                                      : inv.status === 'cancelled'
+                                        ? { label: 'Cancelled', tone: 'slate' }
+                                        : inv.status === 'refunded'
+                                          ? { label: 'Refunded', tone: 'slate' }
+                                          : { label: 'Unpaid', tone: 'amber' };
+                              const needsAction =
+                                inv.status === 'unpaid' ||
+                                inv.status === 'overdue' ||
+                                inv.status === 'pending';
+                              return (
+                                <tr key={inv.id} className="hover:bg-[#F8FAFC]">
+                                  <td className="py-3.5 px-4 font-mono text-xs font-semibold text-[#0F172A] whitespace-nowrap">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenInvoicePage(inv.id)}
+                                      className="text-left hover:text-[#0E6B63] hover:underline cursor-pointer"
+                                    >
+                                      {inv.id}
+                                    </button>
+                                    {inv.autoGeneratedTrigger === 'order_approved' && (
+                                      <span className="block mt-0.5 font-sans text-[10px] font-semibold text-[#0E6B63]">
+                                        Auto-Generated
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="py-3.5 px-4">
+                                    <p className="font-display font-semibold text-[#0F172A]">
+                                      {inv.planName}
+                                      {inv.items && inv.items.length > 1 && (
+                                        <span className="ml-1.5 text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+                                          +{inv.items.length - 1} items
+                                        </span>
+                                      )}
+                                    </p>
+                                    <p className="text-xs text-slate-500 font-mono">
+                                      {inv.domainOrHost} · {inv.billingCycle}
+                                    </p>
+                                  </td>
+                                  <td className="py-3.5 px-4 text-xs text-slate-600">
+                                    <span className="block">{inv.paymentMethod}</span>
+                                    {inv.transactionRef && (
+                                      <span className="font-mono text-[11px] text-[#0E6B63]">
+                                        TID: {inv.transactionRef}
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="py-3.5 px-4 font-mono-num text-xs text-slate-600 whitespace-nowrap">
+                                    <div>{inv.issuedDate}</div>
+                                    <div className="text-[11px] text-slate-400">
+                                      Due {inv.dueDate}
+                                    </div>
+                                  </td>
+                                  <td className="py-3.5 px-4 text-right font-mono-num font-semibold text-[#0F172A] whitespace-nowrap">
+                                    {formatPrice(inv.amountUsd)}
+                                  </td>
+                                  <td className="py-3.5 px-4 whitespace-nowrap space-y-1">
+                                    <StatusIndicator
+                                      tone={statusMeta.tone}
+                                      label={statusMeta.label}
+                                    />
+                                    {effectiveRefund !== 'none' && (
+                                      <p className="text-[11px] font-semibold text-[#0E6B63]">
+                                        {getRefundStatusDisplay(effectiveRefund).label}
+                                      </p>
+                                    )}
+                                    {effectiveCancel !== 'none' && (
+                                      <p className="text-[11px] font-semibold text-[#D97706]">
                                         {
-                                          code: currency.code,
-                                          formattedTotal: formatPrice(inv.amountUsd),
+                                          getCancellationStatusDisplay(
+                                            effectiveCancel
+                                          ).label
                                         }
-                                      );
-                                      showToast(`Downloaded ${inv.id}.pdf`);
-                                    }}
-                                    className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] cursor-pointer"
-                                  >
-                                    <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                                    <span>PDF</span>
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setPaymentTxRef(inv.transactionRef || '');
-                                      setPaymentTxError('');
-                                      setSelectedInvoiceOrderId(inv.id);
-                                    }}
-                                    className={`min-h-[34px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
-                                      needsAction
-                                        ? 'bg-[#0E6B63] text-white hover:bg-[#0A534D]'
-                                        : 'border border-[#E2E8F0] text-[#0F172A] hover:border-[#0E6B63]'
-                                    }`}
-                                  >
-                                    {needsAction ? 'Pay Now' : 'View Invoice'}
-                                  </button>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
+                                      </p>
+                                    )}
+                                  </td>
+                                  <td className="py-3.5 px-4 text-right whitespace-nowrap space-x-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenInvoicePage(inv.id)}
+                                      className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] cursor-pointer"
+                                    >
+                                      <Eye className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+                                      <span>View Invoice</span>
+                                    </button>
+                                    {needsAction && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenInvoicePage(inv.id)}
+                                        className="min-h-[34px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold transition-colors cursor-pointer"
+                                      >
+                                        <span>
+                                          {inv.status === 'pending'
+                                            ? 'Pay / Update TID'
+                                            : 'Pay Now'}
+                                        </span>
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        downloadInvoicePdf(
+                                          inv,
+                                          invoiceTemplateConfig,
+                                          paymentMethods,
+                                          {
+                                            code: currency.code,
+                                            symbol: currency.symbol,
+                                            rate,
+                                            decimals: currency.decimals,
+                                            spaceAfterSymbol: currency.spaceAfterSymbol,
+                                            formattedTotal: formatPrice(inv.amountUsd),
+                                          }
+                                        );
+                                        showToast(`Downloaded ${inv.id}.pdf`);
+                                      }}
+                                      className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] cursor-pointer"
+                                    >
+                                      <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                                      <span>PDF</span>
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
                   )}
                 </div>
               </div>
@@ -2573,6 +3471,17 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                         </button>
                       </div>
                     )}
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        window.dispatchEvent(new Event('cpcloudhost:open-live-chat'))
+                      }
+                      className="min-h-[42px] inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-[#E2E8F0] bg-white hover:border-[#0E6B63] text-[#0F172A] text-xs sm:text-sm font-semibold whitespace-nowrap cursor-pointer"
+                    >
+                      <MessageCircle className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                      <span>Open Live Chat</span>
+                    </button>
 
                     <button
                       type="button"
@@ -2895,7 +3804,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                           Attach Images or Files (Optional)
                         </label>
                         <span className="text-[11px] font-mono-num text-slate-400">
-                          {newTicketAttachments.length}/4 files · Max 2 MB each
+                          {newTicketAttachments.length}/5 files · Max 10 MB each
                         </span>
                       </div>
 
@@ -2986,6 +3895,84 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                       )}
                     </div>
 
+                    {aiSelfResolvedNotice && (
+                      <div className="rounded-xl border border-[#16A34A]/30 bg-[#16A34A]/5 p-4 flex items-start gap-3">
+                        <CheckCircle2
+                          className="w-5 h-5 text-[#16A34A] shrink-0 mt-0.5"
+                          aria-hidden="true"
+                        />
+                        <div className="text-xs text-[#0F172A] space-y-2">
+                          <p className="font-semibold">{aiSelfResolvedNotice}</p>
+                          <button
+                            type="button"
+                            onClick={() => navigateWithinDashboard('tickets', 'list', null)}
+                            className="font-semibold text-[#0E6B63] hover:underline cursor-pointer"
+                          >
+                            Return to Support Tickets
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* AI Instant Error Diagnosis & Two-Button Resolution Panel */}
+                    {(aiTriageResult || aiTriageError) && (
+                      <div className="rounded-xl border border-[#0E6B63]/35 bg-[#F2FAF8] p-5 space-y-4">
+                        <div className="flex items-start gap-2.5">
+                          <Bot
+                            className="w-5 h-5 text-[#0E6B63] shrink-0 mt-0.5"
+                            aria-hidden="true"
+                          />
+                          <div>
+                            <h3 className="font-display text-sm font-bold text-[#0F172A]">
+                              AI Troubleshooting Analysis &amp; Recommended Fix
+                            </h3>
+                            <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                              {aiTriageResult
+                                ? aiTriageResult.summary
+                                : aiTriageError}
+                            </p>
+                          </div>
+                        </div>
+
+                        {aiTriageResult && aiTriageResult.steps.length > 0 && (
+                          <ol className="space-y-2 bg-white border border-[#E2E8F0] rounded-xl p-4 text-xs text-[#0F172A] leading-relaxed">
+                            {aiTriageResult.steps.map((step, idx) => (
+                              <li key={idx} className="flex items-start gap-2.5">
+                                <span className="font-mono font-bold text-[#0E6B63] shrink-0">
+                                  {idx + 1}.
+                                </span>
+                                <span>{step}</span>
+                              </li>
+                            ))}
+                          </ol>
+                        )}
+
+                        <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-[#0E6B63]/15">
+                          <span className="text-xs font-medium text-slate-600">
+                            Did these steps fix your problem?
+                          </span>
+                          <div className="flex flex-wrap items-center gap-2.5">
+                            <button
+                              type="button"
+                              onClick={handleAiTriageIssueResolved}
+                              className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border border-[#16A34A]/40 bg-white hover:bg-[#16A34A]/10 text-[#16A34A] text-xs font-semibold whitespace-nowrap cursor-pointer"
+                            >
+                              <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
+                              <span>Issue Resolved</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleFinalizeCreateTicket}
+                              className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold whitespace-nowrap cursor-pointer"
+                            >
+                              <Send className="w-3.5 h-3.5" aria-hidden="true" />
+                              <span>I Need Additional Support</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     {newTicketError && (
                       <p
                         role="alert"
@@ -2995,7 +3982,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                       </p>
                     )}
 
-                    <div className="flex items-center justify-end gap-3 pt-2 border-t border-[#E2E8F0]">
+                    <div className="flex flex-wrap items-center justify-end gap-3 pt-2 border-t border-[#E2E8F0]">
                       <button
                         type="button"
                         onClick={() => navigateWithinDashboard('tickets', 'list', null)}
@@ -3005,10 +3992,24 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                       </button>
                       <button
                         type="submit"
-                        className="min-h-[42px] inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-sm font-semibold cursor-pointer"
+                        disabled={aiTriageLoading}
+                        className="min-h-[42px] inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] disabled:opacity-60 text-white text-xs sm:text-sm font-semibold whitespace-nowrap cursor-pointer"
                       >
-                        <Send className="w-4 h-4" aria-hidden="true" />
-                        <span>Submit Support Ticket</span>
+                        {aiTriageLoading ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                            <span>Analyzing Issue with AI...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="w-4 h-4" aria-hidden="true" />
+                            <span>
+                              {aiTriageResult
+                                ? 'Re-Run AI Diagnosis'
+                                : 'Get AI Troubleshooting & Create Ticket'}
+                            </span>
+                          </>
+                        )}
                       </button>
                     </div>
                   </form>
@@ -3077,30 +4078,58 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                   </button>
 
                   {viewedTicket && (
-                    <div className="flex items-center gap-2.5">
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <button
+                        type="button"
+                        disabled={detailAiLoading}
+                        onClick={() => void handleRunDetailAiTriage()}
+                        className="min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-[#0E6B63]/30 bg-[#F2FAF8] hover:bg-[#0E6B63]/10 text-[#0E6B63] text-xs font-semibold whitespace-nowrap cursor-pointer"
+                      >
+                        {detailAiLoading ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Bot className="w-3.5 h-3.5" aria-hidden="true" />
+                        )}
+                        <span>AI Error Fix Assistant</span>
+                      </button>
+
                       {viewedTicket.status !== 'resolved' ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            resolveSupportTicket(viewedTicket.id);
-                            showToast(`Ticket ${viewedTicket.id} marked as Resolved`);
-                          }}
-                          className="min-h-[38px] inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border border-[#16A34A]/40 bg-[#16A34A]/5 hover:bg-[#16A34A]/10 text-[#16A34A] text-xs font-semibold cursor-pointer"
-                        >
-                          <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
-                          <span>Mark as Resolved</span>
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              resolveSupportTicket(viewedTicket.id);
+                              showToast(`Ticket ${viewedTicket.id} marked as Issue Resolved`);
+                            }}
+                            className="min-h-[38px] inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border border-[#16A34A]/40 bg-[#16A34A]/5 hover:bg-[#16A34A]/10 text-[#16A34A] text-xs font-semibold whitespace-nowrap cursor-pointer"
+                          >
+                            <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
+                            <span>Issue Resolved</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const el = document.getElementById('ticket-detail-reply');
+                              el?.focus();
+                              el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            }}
+                            className="min-h-[38px] inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold whitespace-nowrap cursor-pointer"
+                          >
+                            <Headphones className="w-3.5 h-3.5" aria-hidden="true" />
+                            <span>I Need Additional Support</span>
+                          </button>
+                        </>
                       ) : (
                         <button
                           type="button"
                           onClick={() => {
                             reopenSupportTicket(viewedTicket.id);
-                            showToast(`Ticket ${viewedTicket.id} reopened`);
+                            showToast(`Ticket ${viewedTicket.id} reopened for additional support`);
                           }}
-                          className="min-h-[38px] inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border border-[#E2E8F0] bg-white hover:border-[#0E6B63] text-[#0F172A] text-xs font-semibold cursor-pointer"
+                          className="min-h-[38px] inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold whitespace-nowrap cursor-pointer"
                         >
                           <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-                          <span>Reopen Ticket</span>
+                          <span>I Need Additional Support (Reopen)</span>
                         </button>
                       )}
                     </div>
@@ -3264,9 +4293,50 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                           </div>
                         ))}
 
+                        {(detailAiTriage || detailAiError) && (
+                          <div className="rounded-xl border border-[#0E6B63]/35 bg-[#F2FAF8] p-4 space-y-3">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex items-start gap-2.5">
+                                <Bot className="w-4 h-4 text-[#0E6B63] shrink-0 mt-0.5" aria-hidden="true" />
+                                <div>
+                                  <p className="font-display text-xs font-bold text-[#0F172A]">
+                                    AI Troubleshooting Suggestions
+                                  </p>
+                                  <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
+                                    {detailAiTriage ? detailAiTriage.summary : detailAiError}
+                                  </p>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDetailAiTriage(null);
+                                  setDetailAiError('');
+                                }}
+                                aria-label="Dismiss AI suggestions"
+                                className="text-slate-400 hover:text-[#0F172A] cursor-pointer"
+                              >
+                                <X className="w-4 h-4" aria-hidden="true" />
+                              </button>
+                            </div>
+                            {detailAiTriage && detailAiTriage.steps.length > 0 && (
+                              <ol className="space-y-1.5 bg-white border border-[#E2E8F0] rounded-lg p-3 text-xs text-[#0F172A]">
+                                {detailAiTriage.steps.map((s, idx) => (
+                                  <li key={idx} className="flex items-start gap-2">
+                                    <span className="font-mono font-bold text-[#0E6B63] shrink-0">
+                                      {idx + 1}.
+                                    </span>
+                                    <span>{s}</span>
+                                  </li>
+                                ))}
+                              </ol>
+                            )}
+                          </div>
+                        )}
+
                         {viewedTicket.status === 'open' && (
                           <p className="text-xs text-slate-500 font-medium px-1">
-                            Ticket is currently <strong className="text-[#0E6B63]">Open</strong> in our engineering queue — real-time staff updates appear here automatically.
+                            Ticket is currently <strong className="text-[#0E6B63]">Open</strong> in our engineering queue — staff updates also trigger instant email notifications.
                           </p>
                         )}
                       </div>
@@ -3288,7 +4358,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                               className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] bg-[#F8FAFC] text-xs font-semibold text-[#0F172A] cursor-pointer"
                             >
                               <Paperclip className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
-                              <span>Attach Image / File ({replyAttachments.length}/4)</span>
+                              <span>Attach Image / File ({replyAttachments.length}/5 · 10 MB)</span>
                               <input
                                 id="reply-ticket-files"
                                 type="file"
@@ -4293,7 +5363,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                         type="button"
                         onClick={() => {
                           setManagedServiceId(null);
-                          setSelectedInvoiceOrderId(dueInv.id);
+                          handleOpenInvoicePage(dueInv.id);
                         }}
                         className="min-h-[38px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#DC2626] hover:bg-red-700 text-white text-xs font-semibold cursor-pointer"
                       >
@@ -4348,6 +5418,146 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                 </div>
               )}
 
+              {(managedService.cancellationStatus &&
+                managedService.cancellationStatus !== 'none') ||
+              (managedService.refundStatus &&
+                managedService.refundStatus !== 'none') ? (
+                <div className="border border-[#E2E8F0] bg-[#F8FAFC] rounded-xl p-3.5 space-y-1.5 text-xs">
+                  {managedService.cancellationStatus &&
+                    managedService.cancellationStatus !== 'none' && (
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-semibold text-[#0F172A]">
+                          Cancellation Status:
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded border text-[11px] font-semibold ${
+                            getCancellationStatusDisplay(
+                              managedService.cancellationStatus
+                            ).toneClass
+                          }`}
+                        >
+                          {
+                            getCancellationStatusDisplay(
+                              managedService.cancellationStatus
+                            ).label
+                          }
+                        </span>
+                      </div>
+                    )}
+                  {managedService.cancellationReason && (
+                    <p className="text-slate-600 text-[11px]">
+                      Reason: {managedService.cancellationReason}
+                    </p>
+                  )}
+                  {managedService.refundStatus &&
+                    managedService.refundStatus !== 'none' && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                        <span className="font-semibold text-[#0F172A]">
+                          Refund Status:
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded border text-[11px] font-semibold ${
+                            getRefundStatusDisplay(managedService.refundStatus)
+                              .toneClass
+                          }`}
+                        >
+                          {getRefundStatusDisplay(managedService.refundStatus).label}
+                        </span>
+                      </div>
+                    )}
+                </div>
+              ) : null}
+
+              {showSvcCancelForm && (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    setSvcCancelError('');
+                    const res = requestOrderCancellation(managedService.id, {
+                      type: svcCancelType,
+                      reason: svcCancelReason,
+                    });
+                    if (!res.ok) {
+                      setSvcCancelError(res.error || 'Could not submit cancellation request.');
+                      return;
+                    }
+                    setShowSvcCancelForm(false);
+                    setSvcCancelReason('');
+                    showToast(`Cancellation request submitted for ${managedService.domainOrHost}`);
+                  }}
+                  className="border border-red-200 bg-red-50/40 rounded-xl p-4 space-y-3 text-xs"
+                >
+                  <p className="font-display font-bold text-[#0F172A]">
+                    Request Service Cancellation
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSvcCancelType('end_of_period')}
+                      className={`p-2.5 rounded-lg border text-left cursor-pointer ${
+                        svcCancelType === 'end_of_period'
+                          ? 'border-[#0E6B63] bg-white ring-1 ring-[#0E6B63]'
+                          : 'border-[#E2E8F0] bg-white'
+                      }`}
+                    >
+                      <span className="font-semibold text-[#0F172A] block">
+                        End of Billing Period
+                      </span>
+                      <span className="text-[11px] text-slate-500">
+                        Cancel on renewal date
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSvcCancelType('immediate')}
+                      className={`p-2.5 rounded-lg border text-left cursor-pointer ${
+                        svcCancelType === 'immediate'
+                          ? 'border-[#DC2626] bg-white ring-1 ring-[#DC2626]'
+                          : 'border-[#E2E8F0] bg-white'
+                      }`}
+                    >
+                      <span className="font-semibold text-[#0F172A] block">
+                        Immediate
+                      </span>
+                      <span className="text-[11px] text-slate-500">
+                        Terminate immediately upon review
+                      </span>
+                    </button>
+                  </div>
+                  <textarea
+                    rows={2}
+                    required
+                    value={svcCancelReason}
+                    onChange={(e) => {
+                      setSvcCancelReason(e.target.value);
+                      setSvcCancelError('');
+                    }}
+                    placeholder="Enter cancellation reason..."
+                    className="w-full px-3 py-2 bg-white border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
+                  />
+                  {svcCancelError && (
+                    <p className="text-[11px] font-semibold text-[#DC2626]">
+                      {svcCancelError}
+                    </p>
+                  )}
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowSvcCancelForm(false)}
+                      className="px-3 py-1.5 rounded-lg border border-[#CBD5E1] bg-white font-semibold text-slate-600 cursor-pointer"
+                    >
+                      Keep Service
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-1.5 rounded-lg bg-[#DC2626] hover:bg-red-700 text-white font-semibold cursor-pointer"
+                    >
+                      Submit Cancellation
+                    </button>
+                  </div>
+                </form>
+              )}
+
               <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-[#E2E8F0]">
                 <button
                   type="button"
@@ -4363,7 +5573,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                   Auto-Renew: {managedService.autoRenew !== false ? 'ON' : 'OFF'}
                 </button>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={() => {
@@ -4382,40 +5592,28 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                       <button
                         type="button"
                         onClick={() => {
-                          downloadInvoicePdf(
-                            svcInv,
-                            invoiceTemplateConfig,
-                            paymentMethods,
-                            {
-                              code: currency.code,
-                              formattedTotal: formatPrice(svcInv.amountUsd),
-                            }
-                          );
-                          showToast(`Downloaded ${svcInv.id}.pdf`);
+                          setManagedServiceId(null);
+                          handleOpenInvoicePage(svcInv.id);
                         }}
                         className="min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-[#0E6B63]/35 bg-[#F2FAF8] text-[#0E6B63] hover:bg-[#0E6B63] hover:text-white text-xs font-semibold transition-colors cursor-pointer"
                       >
-                        <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                        <span>Download Invoice PDF</span>
+                        <Eye className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>View Invoice</span>
                       </button>
                     ) : null;
                   })()}
-                  {managedService.status !== 'cancelled' && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        updateClientOrderSettings(managedService.id, {
-                          status: 'cancelled',
-                          autoRenew: false,
-                        });
-                        setManagedServiceId(null);
-                        showToast(`Cancellation logged for ${managedService.domainOrHost}`);
-                      }}
-                      className="min-h-[38px] px-3.5 py-2 rounded-lg border border-red-200 text-[#DC2626] hover:bg-red-50 text-xs font-semibold cursor-pointer"
-                    >
-                      Cancel Service
-                    </button>
-                  )}
+                  {managedService.status !== 'cancelled' &&
+                    (!managedService.cancellationStatus ||
+                      managedService.cancellationStatus === 'none' ||
+                      managedService.cancellationStatus === 'rejected') && (
+                      <button
+                        type="button"
+                        onClick={() => setShowSvcCancelForm((v) => !v)}
+                        className="min-h-[38px] px-3.5 py-2 rounded-lg border border-red-200 text-[#DC2626] hover:bg-red-50 text-xs font-semibold cursor-pointer"
+                      >
+                        Request Cancellation
+                      </button>
+                    )}
                 </div>
               </div>
             </div>
@@ -4423,464 +5621,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
         </div>
       )}
 
-      {/* ============================ DOMAIN DNS MODAL ============================ */}
-      {managedDomain && (
-        <div className="fixed inset-0 z-50 bg-slate-900/45 flex items-center justify-center p-4">
-          <div className="w-full max-w-lg bg-white border border-[#E2E8F0] rounded-2xl shadow-xl overflow-hidden">
-            <div className="px-6 py-4 border-b border-[#E2E8F0] flex items-center justify-between">
-              <div>
-                <p className="font-mono text-xs text-slate-500">{managedDomain.id}</p>
-                <h3 className="font-display text-lg font-bold text-[#0F172A]">
-                  {managedDomain.domainOrHost}
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setManagedDomainId(null)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-[#0F172A] cursor-pointer"
-              >
-                <X className="w-5 h-5" aria-hidden="true" />
-              </button>
-            </div>
-
-            <div className="p-6 space-y-5">
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-semibold text-[#0F172A]">
-                    Nameservers (Anycast DNS)
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setNs1Input('ns1.cpcloudhost.com');
-                      setNs2Input('ns2.cpcloudhost.com');
-                    }}
-                    className="text-xs font-semibold text-[#0E6B63] hover:underline cursor-pointer"
-                  >
-                    Use Default Nameservers
-                  </button>
-                </div>
-                <input
-                  type="text"
-                  value={ns1Input}
-                  onChange={(e) => setNs1Input(e.target.value)}
-                  className="w-full min-h-[40px] px-3 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
-                  placeholder="ns1.cpcloudhost.com"
-                />
-                <input
-                  type="text"
-                  value={ns2Input}
-                  onChange={(e) => setNs2Input(e.target.value)}
-                  className="w-full min-h-[40px] px-3 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
-                  placeholder="ns2.cpcloudhost.com"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const nextAuto = !(managedDomain.autoRenew !== false);
-                    updateClientOrderSettings(managedDomain.id, { autoRenew: nextAuto });
-                    showToast(
-                      `Auto-Renew ${nextAuto ? 'enabled' : 'disabled'} for ${managedDomain.domainOrHost}`
-                    );
-                  }}
-                  className="min-h-[40px] px-3 py-2 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] font-semibold text-[#0F172A] cursor-pointer"
-                >
-                  Auto-Renew: {managedDomain.autoRenew !== false ? 'ON' : 'OFF'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const nextLock = !(managedDomain.registrarLock !== false);
-                    updateClientOrderSettings(managedDomain.id, { registrarLock: nextLock });
-                    showToast(
-                      `Registrar Lock ${nextLock ? 'enabled' : 'disabled'} for ${managedDomain.domainOrHost}`
-                    );
-                  }}
-                  className="min-h-[40px] px-3 py-2 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] font-semibold text-[#0F172A] cursor-pointer"
-                >
-                  Transfer Lock: {managedDomain.registrarLock !== false ? 'ON' : 'OFF'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const nextPrivacy = !(managedDomain.whoisPrivacy !== false);
-                    updateClientOrderSettings(managedDomain.id, { whoisPrivacy: nextPrivacy });
-                    showToast(
-                      `WHOIS Privacy ${nextPrivacy ? 'enabled' : 'disabled'} for ${managedDomain.domainOrHost}`
-                    );
-                  }}
-                  className="min-h-[40px] px-3 py-2 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] font-semibold text-[#0F172A] cursor-pointer"
-                >
-                  WHOIS Privacy: {managedDomain.whoisPrivacy !== false ? 'ON' : 'OFF'}
-                </button>
-              </div>
-
-              <div className="border border-[#E2E8F0] rounded-xl p-3.5 bg-[#F8FAFC] flex items-center justify-between text-xs">
-                <div>
-                  <span className="text-slate-500 block">EPP / Transfer Auth Code</span>
-                  <span className="font-mono font-semibold text-[#0F172A]">
-                    {showEppCode ? `EPP-${managedDomain.id.slice(-4)}-92XQ` : '••••••••••••'}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowEppCode((prev) => !prev)}
-                    className="text-xs font-semibold text-slate-600 hover:text-[#0F172A] cursor-pointer"
-                  >
-                    {showEppCode ? 'Hide' : 'Reveal'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleCopy(
-                        'epp',
-                        `EPP-${managedDomain.id.slice(-4)}-92XQ`,
-                        'EPP Auth Code'
-                      )
-                    }
-                    className="text-xs font-semibold text-[#0E6B63] hover:underline cursor-pointer"
-                  >
-                    Copy
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2 border-t border-[#E2E8F0]">
-                <button
-                  type="button"
-                  onClick={() => setManagedDomainId(null)}
-                  className="min-h-[40px] px-4 py-2 rounded-lg border border-[#E2E8F0] text-xs font-semibold text-slate-600 cursor-pointer"
-                >
-                  Close
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    updateClientOrderSettings(managedDomain.id, {
-                      nameservers: [
-                        ns1Input.trim() || 'ns1.cpcloudhost.com',
-                        ns2Input.trim() || 'ns2.cpcloudhost.com',
-                      ],
-                    });
-                    setManagedDomainId(null);
-                    showToast(`Nameservers updated for ${managedDomain.domainOrHost}`);
-                  }}
-                  className="min-h-[40px] px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
-                >
-                  Save Nameservers
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ============================ INVOICE / PAY MODAL ============================ */}
-      {selectedInvoice && (
-        <div className="fixed inset-0 z-50 bg-slate-900/45 flex items-center justify-center p-4 overflow-y-auto">
-          <div className="w-full max-w-2xl bg-white border border-[#E2E8F0] rounded-2xl shadow-xl overflow-hidden my-6">
-            <div className="px-6 py-4 border-b border-[#E2E8F0] flex items-center justify-between">
-              <div>
-                <p className="font-mono text-xs text-slate-500">
-                  {selectedInvoice.id}
-                  {selectedInvoice.orderId ? ` · ${selectedInvoice.orderId}` : ''}
-                </p>
-                <h3 className="font-display text-lg font-bold text-[#0F172A]">
-                  Invoice Summary &amp; Settlement
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedInvoiceOrderId(null);
-                  setPaymentTxError('');
-                }}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-[#0F172A] cursor-pointer"
-              >
-                <X className="w-5 h-5" aria-hidden="true" />
-              </button>
-            </div>
-
-            <div className="p-6 space-y-5 text-sm">
-              <div className="flex flex-wrap items-start justify-between gap-4 text-xs border-b border-[#E2E8F0] pb-4">
-                <div>
-                  <p className="font-bold text-[#0F172A]">Billed To</p>
-                  <p className="text-slate-600 mt-0.5">{selectedInvoice.clientName}</p>
-                  <p className="font-mono text-slate-500">{selectedInvoice.clientEmail}</p>
-                </div>
-                <div className="text-right space-y-1">
-                  <StatusIndicator
-                    tone={
-                      selectedInvoice.status === 'paid'
-                        ? 'emerald'
-                        : selectedInvoice.status === 'overdue'
-                          ? 'red'
-                          : 'amber'
-                    }
-                    label={selectedInvoice.status.toUpperCase()}
-                  />
-                  <p className="font-mono-num text-slate-500">
-                    Start: {selectedInvoice.issuedDate} · Due: {selectedInvoice.dueDate}
-                  </p>
-                  {selectedInvoice.transactionRef && (
-                    <p className="font-mono text-[#0E6B63]">
-                      TID: {selectedInvoice.transactionRef}
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              {/* Line Items Table */}
-              <div className="border border-[#E2E8F0] rounded-xl overflow-hidden">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead>
-                    <tr className="bg-[#F8FAFC] border-b border-[#E2E8F0] text-[11px] font-semibold text-slate-500">
-                      <th className="py-2.5 px-3">Product / Service</th>
-                      <th className="py-2.5 px-3">Domain / Host</th>
-                      <th className="py-2.5 px-3 text-right">Qty × Unit</th>
-                      <th className="py-2.5 px-3 text-right">Line Total</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#E2E8F0]">
-                    {selectedInvoice.items.map((item) => (
-                      <tr key={item.id}>
-                        <td className="py-2.5 px-3">
-                          <span className="font-semibold text-[#0F172A] block">
-                            {item.description}
-                          </span>
-                          <span className="text-[11px] text-slate-500">
-                            {item.productType} · {item.billingCycle}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-3 font-mono text-[#0E6B63]">
-                          {item.domainOrHost}
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-mono-num text-slate-600">
-                          {item.quantity} × {formatPrice(item.unitPriceUsd)}
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-mono-num font-bold text-[#0F172A]">
-                          {formatPrice(item.lineTotalUsd)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <div className="bg-[#F8FAFC] border-t border-[#E2E8F0] px-4 py-3 space-y-1 text-xs">
-                  <div className="flex justify-between text-slate-600">
-                    <span>Subtotal</span>
-                    <span className="font-mono-num">
-                      {formatPrice(selectedInvoice.subtotalUsd)}
-                    </span>
-                  </div>
-                  {selectedInvoice.discountUsd > 0 && (
-                    <div className="flex justify-between text-[#16A34A]">
-                      <span>Discount</span>
-                      <span className="font-mono-num">
-                        -{formatPrice(selectedInvoice.discountUsd)}
-                      </span>
-                    </div>
-                  )}
-                  {selectedInvoice.taxRatePercent > 0 && (
-                    <div className="flex justify-between text-slate-600">
-                      <span>Tax ({selectedInvoice.taxRatePercent}%)</span>
-                      <span className="font-mono-num">
-                        {formatPrice(
-                          ((selectedInvoice.subtotalUsd - selectedInvoice.discountUsd) *
-                            selectedInvoice.taxRatePercent) /
-                            100
-                        )}
-                      </span>
-                    </div>
-                  )}
-                  <div className="flex justify-between pt-1.5 border-t border-[#E2E8F0] font-bold text-sm text-[#0F172A]">
-                    <span>
-                      {selectedInvoice.status === 'paid' ? 'Total Paid' : 'Total Due'}
-                    </span>
-                    <span className="font-mono-num text-[#0E6B63]">
-                      {formatPrice(selectedInvoice.amountUsd)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {(selectedInvoice.status === 'unpaid' ||
-                selectedInvoice.status === 'overdue' ||
-                selectedInvoice.status === 'pending') && (
-                <div className="space-y-3 pt-2 border-t border-[#E2E8F0]">
-                  <div>
-                    <label className="block text-xs font-semibold text-[#0F172A] mb-1.5">
-                      Select Active Payment Method
-                    </label>
-                    <select
-                      value={selectedPayMethod}
-                      onChange={(e) => {
-                        setSelectedPayMethod(e.target.value);
-                        setPaymentTxError('');
-                      }}
-                      className="w-full min-h-[40px] px-3 py-2 text-xs border border-[#CBD5E1] rounded-lg bg-white"
-                    >
-                      {enabledPaymentMethods.map((method) => (
-                        <option key={method.id} value={method.name}>
-                          {method.name} ({method.currencyHint})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {activePaymentGateway && (
-                    <div className="bg-[#F8FAFC] border border-[#E2E8F0] rounded-xl p-4 space-y-2 text-xs">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="font-display font-bold text-[#0F172A]">
-                          {activePaymentGateway.name}
-                        </span>
-                        <span className="text-[11px] font-semibold text-[#0E6B63]">
-                          {activePaymentGateway.bankOrProviderName}
-                        </span>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                        <div>
-                          <span className="text-slate-500 text-[11px] block">
-                            Account Title
-                          </span>
-                          <span className="font-semibold text-[#0F172A]">
-                            {activePaymentGateway.accountTitle}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-slate-500 text-[11px] block">
-                            Account / Wallet Number
-                          </span>
-                          <span className="font-mono font-bold text-[#0E6B63]">
-                            {activePaymentGateway.accountNumber}
-                          </span>
-                        </div>
-                      </div>
-
-                      {activePaymentGateway.ibanOrRouting && (
-                        <p className="font-mono text-[11px] text-slate-600">
-                          IBAN / Ref: {activePaymentGateway.ibanOrRouting}
-                        </p>
-                      )}
-
-                      <p className="text-slate-600 leading-relaxed pt-1 border-t border-slate-200/70">
-                        {activePaymentGateway.instructions}
-                      </p>
-
-                      {activePaymentGateway.requiresTransactionId && (
-                        <div className="pt-2">
-                          <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
-                            Transaction ID / Reference (TID) <span className="text-[#DC2626]">*</span>
-                          </label>
-                          <input
-                            type="text"
-                            value={paymentTxRef}
-                            onChange={(e) => {
-                              setPaymentTxRef(e.target.value);
-                              if (paymentTxError) setPaymentTxError('');
-                            }}
-                            placeholder="Enter Easypaisa / JazzCash TID or Bank Reference #"
-                            className="w-full px-3 py-2 text-xs font-mono bg-white border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
-                          />
-                          {paymentTxError && (
-                            <p className="text-[11px] font-semibold text-[#DC2626] mt-1">
-                              {paymentTxError}
-                            </p>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#E2E8F0]">
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      downloadInvoicePdf(
-                        selectedInvoice,
-                        invoiceTemplateConfig,
-                        paymentMethods,
-                        {
-                          code: currency.code,
-                          formattedTotal: formatPrice(selectedInvoice.amountUsd),
-                        }
-                      );
-                      showToast(`Downloaded ${selectedInvoice.id}.pdf`);
-                    }}
-                    className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-[#0E6B63]/40 bg-[#F2FAF8] hover:bg-[#0E6B63] hover:text-white text-xs font-semibold text-[#0E6B63] transition-colors cursor-pointer"
-                  >
-                    <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>Download PDF Invoice</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => window.print()}
-                    className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] cursor-pointer"
-                  >
-                    <Printer className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>Print Receipt</span>
-                  </button>
-                </div>
-
-                {selectedInvoice.status === 'unpaid' ||
-                selectedInvoice.status === 'overdue' ||
-                selectedInvoice.status === 'pending' ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (
-                        activePaymentGateway?.requiresTransactionId &&
-                        !paymentTxRef.trim()
-                      ) {
-                        setPaymentTxError(
-                          `Enter your ${activePaymentGateway.name} Transaction ID (TID) before submitting.`
-                        );
-                        return;
-                      }
-                      const result = payClientOrderInvoice(
-                        selectedInvoice.id,
-                        selectedPayMethod,
-                        { transactionRef: paymentTxRef }
-                      );
-                      setSelectedInvoiceOrderId(null);
-                      setPaymentTxRef('');
-                      if (result && result.status === 'pending') {
-                        showToast(
-                          `TID submitted for ${selectedInvoice.id} — Pending Billing Desk verification`
-                        );
-                      } else {
-                        showToast(
-                          `Payment settled for ${selectedInvoice.id} — Service activated`
-                        );
-                      }
-                    }}
-                    className="min-h-[40px] px-5 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
-                  >
-                    {activePaymentGateway && !activePaymentGateway.autoActivate
-                      ? `Submit ${activePaymentGateway.name} TID`
-                      : `Pay ${formatPrice(selectedInvoice.amountUsd)}`}
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setSelectedInvoiceOrderId(null)}
-                    className="min-h-[40px] px-4 py-2 rounded-lg bg-[#0E6B63] text-white text-xs font-semibold cursor-pointer"
-                  >
-                    Done
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* ============================ DEDICATED DOMAIN & INVOICE PAGES RENDERED ABOVE (NO POPUP MODALS) ============================ */}
 
       {/* ============================ QUICK SERVICE ORDER MODAL ============================ */}
       {showQuickOrderModal && (

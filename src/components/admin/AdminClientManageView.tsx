@@ -93,8 +93,8 @@ const DATACENTERS = [
   'Singapore, SG',
 ];
 
-const MAX_ATTACHMENT_COUNT = 4;
-const MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024;
+const MAX_ATTACHMENT_COUNT = 5;
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const ACCEPTED_ATTACHMENT_TYPES =
   'image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/csv,application/zip,.log,.txt,.json';
 
@@ -199,7 +199,7 @@ export const AdminClientManageView: React.FC<AdminClientManageViewProps> = ({
     paymentMethods,
     invoiceTemplateConfig,
   } = usePlatform();
-  const { formatPrice, currency } = useCurrency();
+  const { formatPrice, currency, rate } = useCurrency();
 
   const [activeTab, setActiveTab] = useState<ClientManageTab>('profile');
   const [pinRevealed, setPinRevealed] = useState(false);
@@ -670,7 +670,7 @@ export const AdminClientManageView: React.FC<AdminClientManageViewProps> = ({
     const loaded: TicketAttachment[] = [];
     for (const file of list) {
       if (file.size > MAX_ATTACHMENT_BYTES) {
-        setTktError(`${file.name} exceeds 2 MB limit.`);
+        setTktError(`${file.name} exceeds 10 MB limit.`);
         continue;
       }
       const dataUrl = await new Promise<string>((resolve) => {
@@ -2494,6 +2494,11 @@ export const AdminClientManageView: React.FC<AdminClientManageViewProps> = ({
                             tone={invoiceStatusTone(inv.status)}
                             label={inv.status.toUpperCase()}
                           />
+                          {inv.refundStatus && inv.refundStatus !== 'none' && (
+                            <span className="block mt-1 text-[10px] font-semibold text-[#0E6B63]">
+                              Refund: {inv.refundStatus.toUpperCase()}
+                            </span>
+                          )}
                         </td>
                         <td className="py-3 px-4 text-right whitespace-nowrap space-x-1.5">
                           <button
@@ -2516,6 +2521,10 @@ export const AdminClientManageView: React.FC<AdminClientManageViewProps> = ({
                                 paymentMethods,
                                 {
                                   code: currency.code,
+                                  symbol: currency.symbol,
+                                  rate,
+                                  decimals: currency.decimals,
+                                  spaceAfterSymbol: currency.spaceAfterSymbol,
                                   formattedTotal: formatPrice(inv.amountUsd),
                                 }
                               );
@@ -2644,6 +2653,11 @@ export const AdminClientManageView: React.FC<AdminClientManageViewProps> = ({
                             tone={orderStatusTone(ord.status)}
                             label={ord.status.toUpperCase()}
                           />
+                          {ord.cancellationStatus && ord.cancellationStatus !== 'none' && (
+                            <span className="block mt-1 text-[10px] font-semibold text-[#D97706]">
+                              Cancel: {ord.cancellationStatus.toUpperCase()}
+                            </span>
+                          )}
                         </td>
                       </tr>
                     ))

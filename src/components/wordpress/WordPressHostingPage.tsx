@@ -46,7 +46,7 @@ export const WordPressHostingPage: React.FC<WordPressHostingPageProps> = ({
   onNavigatePath,
 }) => {
   const { formatPrice } = useCurrency();
-  const { cmsPages, setOrderCheckoutDraft } = usePlatform();
+  const { cmsPages, lastSearchedDomain, setOrderCheckoutDraft } = usePlatform();
   const pageCms = cmsPages.find((p) => p.id === 'wordpress-hosting');
   const [selectedRegion] = useState<'uk'>('uk');
   const [selectedPlan, setSelectedPlan] = useState<WordPressPlan | null>(null);
@@ -88,8 +88,14 @@ export const WordPressHostingPage: React.FC<WordPressHostingPageProps> = ({
       billingCycle: '1 Year',
       datacenterId: 'uk',
       datacenterLabel: 'London, UK',
-      domainOption: 'register',
-      domainName: '',
+      domainOption: lastSearchedDomain ? lastSearchedDomain.mode : 'register',
+      domainName: lastSearchedDomain?.domain || '',
+      domainTld: lastSearchedDomain?.tld,
+      domainYears: lastSearchedDomain?.minYears,
+      domainPriceUsd: lastSearchedDomain?.priceUsd,
+      eppAuthCode: lastSearchedDomain?.eppAuthCode,
+      preselectedFromSite: true,
+      domainSearchedFromSite: Boolean(lastSearchedDomain),
       step: 1,
       sourceOrigin: 'public',
       updatedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',

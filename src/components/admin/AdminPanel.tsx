@@ -25,6 +25,7 @@ import {
   MapPin,
   Maximize2,
   Menu,
+  MessageSquare,
   Minimize2,
   Paperclip,
   Plus,
@@ -38,6 +39,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   ShoppingBag,
+  Sparkles,
   Tag,
   Trash2,
   UserCheck,
@@ -79,6 +81,8 @@ import { AdminModulesView } from './AdminModulesView';
 import { AdminAnalyticsView } from './AdminAnalyticsView';
 import { AdminSystemView } from './AdminSystemView';
 import { AdminPromoCodesView } from './AdminPromoCodesView';
+import { AdminLiveChatView } from './AdminLiveChatView';
+import type { LiveChatSession } from '../../types/liveChat';
 
 interface AdminPanelProps {
   initialRoutePath?: string;
@@ -92,6 +96,7 @@ interface AdminPanelProps {
 type AdminSection =
   | 'overview'
   | 'analytics'
+  | 'live-chat'
   | 'tickets'
   | 'cms'
   | 'users'
@@ -114,6 +119,7 @@ const ADMIN_NAV_ITEMS: {
 }[] = [
   { id: 'overview', label: 'Overview', path: '/admin', icon: LayoutDashboard },
   { id: 'analytics', label: 'Sales Analytics', path: '/admin/analytics', icon: BarChart3 },
+  { id: 'live-chat', label: 'Live Chat Desk', path: '/admin/live-chat', icon: MessageSquare },
   { id: 'orders', label: 'Orders & Billing', path: '/admin/orders', icon: ShoppingBag },
   { id: 'promos', label: 'Promo Codes', path: '/admin/promos', icon: Tag },
   { id: 'domains', label: 'Domains & TLDs', path: '/admin/domains', icon: Globe },
@@ -148,8 +154,8 @@ const ORDER_PRODUCT_TYPES: PlatformOrder['productType'][] = [
   'Domain Transfer',
 ];
 
-const MAX_ATTACHMENT_COUNT = 4;
-const MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024;
+const MAX_ATTACHMENT_COUNT = 5;
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const ACCEPTED_ATTACHMENT_TYPES =
   'image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/csv,application/zip,.log,.txt,.json';
 
@@ -164,6 +170,15 @@ function parseAdminRoute(rawPath?: string): {
   const parts = clean.replace(/^\/admin\/?/, '').split('/').filter(Boolean);
   const sub = (parts[0] || '').toLowerCase();
 
+  if (sub === 'live-chat') {
+    return {
+      section: 'live-chat',
+      ticketId: null,
+      cmsPageId: null,
+      cmsCreatingNew: false,
+      managingUserId: null,
+    };
+  }
   if (sub === 'tickets') {
     return {
       section: 'tickets',
@@ -330,7 +345,7 @@ function readFilesAsAttachments(
     (file) =>
       new Promise<TicketAttachment | null>((resolve) => {
         if (file.size > MAX_ATTACHMENT_BYTES) {
-          warnings.push(`${file.name} exceeds the 2 MB limit.`);
+          warnings.push(`${file.name} exceeds the 10 MB limit.`);
           resolve(null);
           return;
         }
@@ -467,6 +482,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     approveOrderWithServer,
     generateInvoiceForOrder,
     adminUpdateOrderDetails,
+    adminHandleCancellation,
+    adminProcessRefund,
     replyTicketAsAdmin,
     updateTicketByAdmin,
     saveCmsPage,
@@ -476,7 +493,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     updateCmsSiteSettings,
     moderateAbuseComplaint,
   } = usePlatform();
-  const { formatPrice, currency } = useCurrency();
+  const { formatPrice, currency, rate } = useCurrency();
 
   const initialParsed = useMemo(() => parseAdminRoute(initialRoutePath), [initialRoutePath]);
   const [activeSection, setActiveSection] = useState<AdminSection>(initialParsed.section);
@@ -561,6 +578,57 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   }, []);
 
   // =========================================================================
+  // LIVE CHAT QUEUE BADGE STREAM
+  // =========================================================================
+  const [liveChatAttentionCount, setLiveChatAttentionCount] = useState(0);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    let cancelled = false;
+    const countAttention = (list: LiveChatSession[]) =>
+      list.filter(
+        (s) => s.status === 'waiting_admin' || (s.status !== 'closed' && s.unreadForAdmin > 0)
+      ).length;
+
+    fetch('/api/live-chat/sessions')
+      .then((r) => r.json())
+      .then((d: { ok?: boolean; sessions?: LiveChatSession[] }) => {
+        if (!cancelled && d.ok && Array.isArray(d.sessions)) {
+          setLiveChatAttentionCount(countAttention(d.sessions));
+        }
+      })
+      .catch(() => undefined);
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/live-chat?role=admin`);
+    const sessionsMap = new Map<string, LiveChatSession>();
+    ws.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(String(evt.data)) as {
+          type?: string;
+          sessions?: LiveChatSession[];
+          session?: LiveChatSession;
+        };
+        if (msg.type === 'chat:sessions_list' && Array.isArray(msg.sessions)) {
+          sessionsMap.clear();
+          msg.sessions.forEach((s) => sessionsMap.set(s.id, s));
+          setLiveChatAttentionCount(countAttention(Array.from(sessionsMap.values())));
+        } else if (msg.type === 'chat:session_updated' && msg.session) {
+          sessionsMap.set(msg.session.id, msg.session);
+          setLiveChatAttentionCount(countAttention(Array.from(sessionsMap.values())));
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    return () => {
+      cancelled = true;
+      ws.close();
+    };
+  }, [isAdmin]);
+
+  // =========================================================================
   // SUPPORT TICKET DESK STATE
   // =========================================================================
   const [ticketSearch, setTicketSearch] = useState('');
@@ -571,6 +639,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [staffAttachments, setStaffAttachments] = useState<TicketAttachment[]>([]);
   const [staffAttachWarning, setStaffAttachWarning] = useState('');
   const [staffReplyError, setStaffReplyError] = useState('');
+  const [generatingTicketAiDraft, setGeneratingTicketAiDraft] = useState(false);
   const [expandedImageIds, setExpandedImageIds] = useState<Record<string, boolean>>({});
   const replyFileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -629,6 +698,40 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setStaffAttachWarning('');
     setStaffReplyError('');
     showToast(`Reply sent to ${selectedSupportTicket.id} (${staffReplyStatus})`);
+  };
+
+  const handleGenerateTicketAiDraft = async () => {
+    if (!selectedSupportTicket || generatingTicketAiDraft) return;
+    setGeneratingTicketAiDraft(true);
+    setStaffReplyError('');
+    try {
+      const res = await fetch('/api/ai/admin-draft', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contextType: 'ticket',
+          subject: selectedSupportTicket.subject,
+          department: selectedSupportTicket.department,
+          relatedService: selectedSupportTicket.relatedService,
+          history: selectedSupportTicket.messages.map((m) => ({
+            sender: `${m.authorRole.toUpperCase()} (${m.authorName})`,
+            body: m.body,
+            attachments: m.attachments,
+          })),
+        }),
+      });
+      const data = (await res.json()) as { ok?: boolean; draft?: string; error?: string };
+      if (!res.ok || !data.ok || !data.draft) {
+        setStaffReplyError(data.error || 'Could not generate AI troubleshooting draft.');
+        return;
+      }
+      setStaffReplyBody(data.draft);
+      showToast('AI troubleshooting reply draft inserted');
+    } catch (err) {
+      setStaffReplyError(err instanceof Error ? err.message : 'AI draft request failed.');
+    } finally {
+      setGeneratingTicketAiDraft(false);
+    }
   };
 
   // =========================================================================
@@ -892,8 +995,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [revealedPins, setRevealedPins] = useState<Record<string, boolean>>({});
 
   const [orderSearch, setOrderSearch] = useState('');
-  const [orderStatusFilter, setOrderStatusFilter] = useState<'all' | OrderStatus>('all');
+  const [orderStatusFilter, setOrderStatusFilter] = useState<
+    'all' | OrderStatus | 'cancel_requests' | 'refund_requests'
+  >('all');
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  const [adminCancelNote, setAdminCancelNote] = useState('');
+  const [adminRefundNote, setAdminRefundNote] = useState('');
+  const [adminRefundAmountUsd, setAdminRefundAmountUsd] = useState('');
   const [editingOrderMode, setEditingOrderMode] = useState(false);
   const [editOrderPlan, setEditOrderPlan] = useState('');
   const [editOrderDomain, setEditOrderDomain] = useState('');
@@ -1003,10 +1111,41 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     });
   }, [users, userSearch, userRoleFilter, userStatusFilter]);
 
+  const pendingCancelRequestsCount = useMemo(
+    () =>
+      orders.filter(
+        (o) =>
+          o.cancellationStatus === 'requested' || o.cancellationStatus === 'approved'
+      ).length,
+    [orders]
+  );
+
+  const pendingOrderRefundRequestsCount = useMemo(
+    () =>
+      orders.filter((o) => {
+        const inv = invoices.find((i) => i.orderId === o.id);
+        const rStatus = inv?.refundStatus || o.refundStatus;
+        return rStatus === 'requested' || rStatus === 'approved';
+      }).length,
+    [orders, invoices]
+  );
+
   const filteredOrders = useMemo(() => {
     const q = orderSearch.trim().toLowerCase();
     return orders.filter((o) => {
-      if (orderStatusFilter !== 'all' && o.status !== orderStatusFilter) return false;
+      if (orderStatusFilter === 'cancel_requests') {
+        if (o.cancellationStatus !== 'requested' && o.cancellationStatus !== 'approved') {
+          return false;
+        }
+      } else if (orderStatusFilter === 'refund_requests') {
+        const inv = invoices.find((i) => i.orderId === o.id);
+        const rStatus = inv?.refundStatus || o.refundStatus;
+        if (rStatus !== 'requested' && rStatus !== 'approved') {
+          return false;
+        }
+      } else if (orderStatusFilter !== 'all' && o.status !== orderStatusFilter) {
+        return false;
+      }
       if (!q) return true;
       return (
         o.id.toLowerCase().includes(q) ||
@@ -1017,7 +1156,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         o.productType.toLowerCase().includes(q)
       );
     });
-  }, [orders, orderSearch, orderStatusFilter]);
+  }, [orders, invoices, orderSearch, orderStatusFilter]);
 
   const filteredAbuse = useMemo(() => {
     const q = abuseSearch.trim().toLowerCase();
@@ -1056,6 +1195,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   useEffect(() => {
     if (selectedOrder) {
+      const linkedInv = invoices.find((i) => i.orderId === selectedOrder.id);
+      setAdminCancelNote(selectedOrder.cancellationAdminNote || '');
+      setAdminRefundNote(linkedInv?.refundAdminNote || selectedOrder.refundAdminNote || '');
+      setAdminRefundAmountUsd(
+        String(
+          linkedInv?.refundAmountUsd ??
+            selectedOrder.refundAmountUsd ??
+            linkedInv?.amountUsd ??
+            selectedOrder.amountUsd
+        )
+      );
       setEditingOrderMode(false);
       setEditOrderPlan(selectedOrder.planName);
       setEditOrderDomain(selectedOrder.domainOrHost);
@@ -1464,7 +1614,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               const Icon = item.icon;
               const isActive = activeSection === item.id;
               const badgeCount =
-                item.id === 'tickets'
+                item.id === 'live-chat'
+                  ? liveChatAttentionCount > 0
+                    ? liveChatAttentionCount
+                    : null
+                  : item.id === 'tickets'
                   ? metrics.openTicketsCount
                   : item.id === 'cms'
                   ? cmsPages.length
@@ -1504,7 +1658,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       className={`font-mono-num text-[11px] font-semibold ${
                         isActive
                           ? 'text-emerald-100'
-                          : item.id === 'tickets' && metrics.openTicketsCount > 0
+                          : (item.id === 'tickets' && metrics.openTicketsCount > 0) ||
+                            (item.id === 'live-chat' && liveChatAttentionCount > 0)
                           ? 'text-amber-300'
                           : 'text-slate-400'
                       }`}
@@ -2208,18 +2363,34 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         Post Official Support Staff Response
                       </h2>
 
-                      <select
-                        aria-label="Ticket status after reply"
-                        value={staffReplyStatus}
-                        onChange={(e) =>
-                          setStaffReplyStatus(e.target.value as TicketStatus)
-                        }
-                        className="px-3 py-1.5 text-xs font-semibold border border-[#CBD5E1] rounded-lg bg-white cursor-pointer"
-                      >
-                        <option value="pending">Set Status: Pending Client</option>
-                        <option value="open">Keep Status: Open</option>
-                        <option value="resolved">Set Status: Resolved</option>
-                      </select>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={generatingTicketAiDraft}
+                          onClick={() => void handleGenerateTicketAiDraft()}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#0E6B63]/30 bg-[#F2FAF8] hover:bg-[#0E6B63]/10 text-xs font-semibold text-[#0E6B63] cursor-pointer"
+                        >
+                          {generatingTicketAiDraft ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                          ) : (
+                            <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
+                          )}
+                          <span>AI Draft Fix</span>
+                        </button>
+
+                        <select
+                          aria-label="Ticket status after reply"
+                          value={staffReplyStatus}
+                          onChange={(e) =>
+                            setStaffReplyStatus(e.target.value as TicketStatus)
+                          }
+                          className="px-3 py-1.5 text-xs font-semibold border border-[#CBD5E1] rounded-lg bg-white cursor-pointer"
+                        >
+                          <option value="pending">Set Status: Pending Client</option>
+                          <option value="open">Keep Status: Open</option>
+                          <option value="resolved">Set Status: Resolved</option>
+                        </select>
+                      </div>
                     </div>
 
                     <textarea
@@ -2229,7 +2400,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         setStaffReplyBody(e.target.value);
                         if (staffReplyError) setStaffReplyError('');
                       }}
-                      placeholder="Write technical resolution notes or instructions for the client (updates Client Dashboard immediately)..."
+                      placeholder="Write technical resolution notes or instructions for the client (updates Client Dashboard & dispatches notification email)..."
                       className="w-full px-3.5 py-2.5 text-sm border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
                     />
 
@@ -2247,7 +2418,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           Attach screenshot, log file, or PDF report
                         </p>
                         <p className="text-[11px] text-slate-500 mt-0.5">
-                          Up to 4 files (max 2 MB each) · Drag &amp; drop or choose file
+                          Up to 5 files (max 10 MB each) · Drag &amp; drop or choose file
                         </p>
                       </div>
                       <input
@@ -3653,6 +3824,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           paymentMethods,
                           {
                             code: currency.code,
+                            symbol: currency.symbol,
+                            rate,
+                            decimals: currency.decimals,
+                            spaceAfterSymbol: currency.spaceAfterSymbol,
                             formattedTotal: formatPrice(lastApprovedInvoiceNotice.invoice.amountUsd),
                           }
                         );
@@ -3825,6 +4000,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       'all',
                       'pending',
                       'active',
+                      'cancel_requests',
+                      'refund_requests',
                       'suspended',
                       'expired',
                       'transferred',
@@ -3836,13 +4013,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       key={st}
                       type="button"
                       onClick={() => setOrderStatusFilter(st)}
-                      className={`px-2.5 py-1 text-xs font-semibold rounded-md capitalize transition-colors cursor-pointer ${
+                      className={`px-2.5 py-1 text-xs font-semibold rounded-md capitalize transition-colors whitespace-nowrap cursor-pointer ${
                         orderStatusFilter === st
                           ? 'bg-white text-[#0F172A] shadow-sm'
                           : 'text-slate-600 hover:text-[#0F172A]'
                       }`}
                     >
-                      {st}
+                      {st === 'cancel_requests'
+                        ? `Cancel Requests (${pendingCancelRequestsCount})`
+                        : st === 'refund_requests'
+                        ? `Refund Requests (${pendingOrderRefundRequestsCount})`
+                        : st}
                     </button>
                   ))}
                 </div>
@@ -3961,6 +4142,29 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                   <option value="refunded">REFUNDED</option>
                                   <option value="cancelled">CANCELLED</option>
                                 </select>
+                                {ord.cancellationStatus && ord.cancellationStatus !== 'none' && (
+                                  <span className="block mt-1 text-[10px] font-semibold text-[#D97706]">
+                                    Cancel: {ord.cancellationStatus.toUpperCase()}
+                                  </span>
+                                )}
+                                {(() => {
+                                  const linkedInv = invoices.find((i) => i.orderId === ord.id);
+                                  const rStat = linkedInv?.refundStatus || ord.refundStatus;
+                                  if (!rStat || rStat === 'none') return null;
+                                  return (
+                                    <span
+                                      className={`block mt-0.5 text-[10px] font-semibold ${
+                                        rStat === 'processed'
+                                          ? 'text-[#16A34A]'
+                                          : rStat === 'rejected'
+                                          ? 'text-[#DC2626]'
+                                          : 'text-[#0E6B63]'
+                                      }`}
+                                    >
+                                      Refund: {rStat.toUpperCase()}
+                                    </span>
+                                  );
+                                })()}
                               </td>
                               <td
                                 className="py-3 px-4 text-right whitespace-nowrap space-x-1.5"
@@ -4308,6 +4512,90 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           </button>
                         )}
 
+                        {selectedOrder.cancellationStatus &&
+                          selectedOrder.cancellationStatus !== 'none' && (
+                            <div className="p-3.5 bg-amber-50/50 border border-amber-200 rounded-xl space-y-2.5 text-xs">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-display font-bold text-[#0F172A]">
+                                  Service Cancellation Request
+                                </span>
+                                <span className="font-mono text-[10px] font-bold uppercase text-[#D97706]">
+                                  {selectedOrder.cancellationStatus} ·{' '}
+                                  {selectedOrder.cancellationType === 'immediate'
+                                    ? 'Immediate'
+                                    : 'End of Period'}
+                                </span>
+                              </div>
+                              {selectedOrder.cancellationReason && (
+                                <p className="text-[11px] text-slate-700">
+                                  Reason: {selectedOrder.cancellationReason}
+                                </p>
+                              )}
+                              {selectedOrder.cancellationRequestedAt && (
+                                <p className="text-[10px] font-mono text-slate-500">
+                                  Requested: {selectedOrder.cancellationRequestedAt}
+                                </p>
+                              )}
+                              <input
+                                type="text"
+                                value={adminCancelNote}
+                                onChange={(e) => setAdminCancelNote(e.target.value)}
+                                placeholder="Admin cancellation review memo..."
+                                className="w-full px-3 py-1.5 text-[11px] bg-white border border-[#CBD5E1] rounded-lg"
+                              />
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const res = adminHandleCancellation(
+                                      selectedOrder.id,
+                                      'approved',
+                                      adminCancelNote
+                                    );
+                                    if (res.ok) {
+                                      showToast(`Cancellation approved for ${selectedOrder.id}`);
+                                    }
+                                  }}
+                                  className="px-2.5 py-1.5 rounded-lg border border-[#0E6B63] text-[#0E6B63] bg-white text-[11px] font-semibold cursor-pointer"
+                                >
+                                  Approve
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const res = adminHandleCancellation(
+                                      selectedOrder.id,
+                                      'completed',
+                                      adminCancelNote
+                                    );
+                                    if (res.ok) {
+                                      showToast(`Service ${selectedOrder.id} cancelled & closed`);
+                                    }
+                                  }}
+                                  className="px-2.5 py-1.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-[11px] font-semibold cursor-pointer"
+                                >
+                                  Complete Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const res = adminHandleCancellation(
+                                      selectedOrder.id,
+                                      'rejected',
+                                      adminCancelNote
+                                    );
+                                    if (res.ok) {
+                                      showToast(`Cancellation declined for ${selectedOrder.id}`);
+                                    }
+                                  }}
+                                  className="px-2.5 py-1.5 rounded-lg border border-red-200 text-[#DC2626] bg-white text-[11px] font-semibold cursor-pointer"
+                                >
+                                  Reject
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
                         {(() => {
                           const linkedInvoice = invoices.find(
                             (inv) => inv.orderId === selectedOrder.id
@@ -4352,6 +4640,127 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                       ? ' · Auto-generated on approval'
                                       : ''}
                                   </p>
+                                  {(linkedInvoice.paymentSubmittedAt ||
+                                    linkedInvoice.paymentDetailsNote) && (
+                                    <div className="p-2.5 rounded-lg bg-white border border-[#E2E8F0] text-[11px] space-y-0.5">
+                                      {linkedInvoice.paymentSubmittedAt && (
+                                        <p className="text-slate-600 font-mono">
+                                          Proof submitted: {linkedInvoice.paymentSubmittedAt}
+                                        </p>
+                                      )}
+                                      {linkedInvoice.paymentDetailsNote && (
+                                        <p className="text-slate-700">
+                                          Note: {linkedInvoice.paymentDetailsNote}
+                                        </p>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {linkedInvoice.refundStatus &&
+                                    linkedInvoice.refundStatus !== 'none' && (
+                                      <div className="p-3 rounded-lg bg-white border border-[#CBD5E1] space-y-2">
+                                        <div className="flex items-center justify-between text-[11px]">
+                                          <span className="font-bold text-[#0F172A]">
+                                            Refund Status
+                                          </span>
+                                          <span className="font-mono font-bold uppercase text-[#0E6B63]">
+                                            {linkedInvoice.refundStatus}
+                                          </span>
+                                        </div>
+                                        {linkedInvoice.refundReason && (
+                                          <p className="text-[11px] text-slate-600">
+                                            Reason: {linkedInvoice.refundReason}
+                                          </p>
+                                        )}
+                                        <div className="grid grid-cols-2 gap-2">
+                                          <input
+                                            type="number"
+                                            step="0.01"
+                                            min="0"
+                                            value={adminRefundAmountUsd}
+                                            onChange={(e) =>
+                                              setAdminRefundAmountUsd(e.target.value)
+                                            }
+                                            placeholder="Refund USD"
+                                            className="px-2.5 py-1.5 text-[11px] font-mono border border-[#CBD5E1] rounded-lg"
+                                          />
+                                          <input
+                                            type="text"
+                                            value={adminRefundNote}
+                                            onChange={(e) => setAdminRefundNote(e.target.value)}
+                                            placeholder="Refund memo..."
+                                            className="px-2.5 py-1.5 text-[11px] border border-[#CBD5E1] rounded-lg"
+                                          />
+                                        </div>
+                                        <div className="flex flex-wrap gap-1.5">
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              const res = adminProcessRefund(
+                                                linkedInvoice.id,
+                                                'approved',
+                                                {
+                                                  refundAmountUsd:
+                                                    parseFloat(adminRefundAmountUsd) ||
+                                                    linkedInvoice.amountUsd,
+                                                  note: adminRefundNote,
+                                                }
+                                              );
+                                              if (res.ok) {
+                                                showToast(
+                                                  `Refund approved for ${linkedInvoice.id}`
+                                                );
+                                              }
+                                            }}
+                                            className="px-2.5 py-1 rounded border border-[#0E6B63] text-[#0E6B63] text-[11px] font-semibold cursor-pointer"
+                                          >
+                                            Approve
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              const res = adminProcessRefund(
+                                                linkedInvoice.id,
+                                                'processed',
+                                                {
+                                                  refundAmountUsd:
+                                                    parseFloat(adminRefundAmountUsd) ||
+                                                    linkedInvoice.amountUsd,
+                                                  note: adminRefundNote,
+                                                }
+                                              );
+                                              if (res.ok) {
+                                                showToast(
+                                                  `Refund processed for ${linkedInvoice.id}`
+                                                );
+                                              }
+                                            }}
+                                            className="px-2.5 py-1 rounded bg-[#0E6B63] text-white text-[11px] font-semibold cursor-pointer"
+                                          >
+                                            Mark Refunded
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              const res = adminProcessRefund(
+                                                linkedInvoice.id,
+                                                'rejected',
+                                                { note: adminRefundNote }
+                                              );
+                                              if (res.ok) {
+                                                showToast(
+                                                  `Refund declined for ${linkedInvoice.id}`
+                                                );
+                                              }
+                                            }}
+                                            className="px-2.5 py-1 rounded border border-red-200 text-[#DC2626] text-[11px] font-semibold cursor-pointer"
+                                          >
+                                            Reject
+                                          </button>
+                                        </div>
+                                      </div>
+                                    )}
+
                                   <div className="flex items-center gap-2 pt-1">
                                     <button
                                       type="button"
@@ -4362,6 +4771,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                           paymentMethods,
                                           {
                                             code: currency.code,
+                                            symbol: currency.symbol,
+                                            rate,
+                                            decimals: currency.decimals,
+                                            spaceAfterSymbol: currency.spaceAfterSymbol,
                                             formattedTotal: formatPrice(linkedInvoice.amountUsd),
                                           }
                                         );
@@ -4455,6 +4868,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           {/* ==================== PAYMENT METHODS (EASYPAISA, JAZZCASH, CARD, WIRE) ==================== */}
           {activeSection === 'payments' && (
             <AdminPaymentMethodsView onShowToast={showToast} />
+          )}
+
+          {/* ==================== LIVE CHAT MANAGEMENT DESK ==================== */}
+          {activeSection === 'live-chat' && (
+            <AdminLiveChatView
+              onShowToast={showToast}
+              onManageClient={(userId) => navigateAdmin('users', { userId })}
+            />
           )}
 
           {/* ==================== EMAIL TEMPLATES SYSTEM ==================== */}

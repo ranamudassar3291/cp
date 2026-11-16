@@ -4,6 +4,18 @@ import https from 'node:https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import nodemailer from 'nodemailer';
+import { WebSocketServer, WebSocket } from 'ws';
+import {
+  liveChatStore,
+  MAX_CHAT_ATTACHMENT_BYTES,
+  MAX_CHAT_ATTACHMENT_COUNT,
+} from './server/liveChatStore';
+import {
+  generateAdminDraftReply,
+  generateLiveChatAiReply,
+  generateTicketTriageAi,
+} from './server/geminiSupport';
+import type { LiveChatAttachment, LiveChatSession } from './src/types/liveChat';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -67,9 +79,164 @@ function requestWhmJson(opts: {
   });
 }
 
+function escapeHtmlText(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function isExplicitHumanAgentRequest(text: string): boolean {
+  const lower = text.trim().toLowerCase();
+  if (!lower) return false;
+  return (
+    /\b(human agent|live agent|real person|real human|speak to (?:a |an )?(?:human|agent|admin|staff)|talk to (?:a |an )?(?:human|agent|admin|staff)|connect (?:me )?(?:to|with) (?:a |an )?(?:human|live agent|agent|admin|support)|transfer (?:me )?(?:to )?(?:a )?(?:human|live|agent|admin)|need live agent|live chat agent)\b/.test(
+      lower
+    ) ||
+    /\b(admin se baat|insaan se|live agent chahiye|agent se connect)\b/.test(lower)
+  );
+}
+
+function validateAttachments(raw: unknown): {
+  ok: boolean;
+  attachments: LiveChatAttachment[];
+  error?: string;
+} {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return { ok: true, attachments: [] };
+  }
+  if (raw.length > MAX_CHAT_ATTACHMENT_COUNT) {
+    return {
+      ok: false,
+      attachments: [],
+      error: `Up to ${MAX_CHAT_ATTACHMENT_COUNT} attachments allowed per message.`,
+    };
+  }
+  const clean: LiveChatAttachment[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const att = item as Partial<LiveChatAttachment>;
+    const size = Number(att.sizeBytes || 0);
+    if (size > MAX_CHAT_ATTACHMENT_BYTES) {
+      return {
+        ok: false,
+        attachments: [],
+        error: `Attachment "${att.name || 'file'}" exceeds the 10 MB limit.`,
+      };
+    }
+    if (att.name && att.dataUrl) {
+      clean.push({
+        id: att.id || `ATT-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name: String(att.name).slice(0, 180),
+        mimeType: String(att.mimeType || 'application/octet-stream'),
+        sizeBytes: size,
+        dataUrl: String(att.dataUrl),
+      });
+    }
+  }
+  return { ok: true, attachments: clean };
+}
+
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '2mb' }));
+  const httpServer = http.createServer(app);
+  app.use(express.json({ limit: '60mb' }));
+
+  interface WsClientMeta {
+    ws: WebSocket;
+    role: 'admin' | 'client';
+    sessionId?: string;
+  }
+  const wsClients = new Set<WsClientMeta>();
+
+  const wss = new WebSocketServer({
+    server: httpServer,
+    path: '/ws/live-chat',
+    maxPayload: 60 * 1024 * 1024,
+  });
+
+  const broadcastSessionUpdate = (
+    session: LiveChatSession,
+    extra?: { suggestHumanTransfer?: boolean }
+  ) => {
+    const payload = JSON.stringify({
+      type: 'chat:session_updated',
+      session,
+      ...(extra?.suggestHumanTransfer ? { suggestHumanTransfer: true } : {}),
+    });
+    for (const client of wsClients) {
+      if (client.ws.readyState !== WebSocket.OPEN) continue;
+      if (client.role === 'admin' || client.sessionId === session.id) {
+        client.ws.send(payload);
+      }
+    }
+  };
+
+  const broadcastAiTyping = (sessionId: string, typing: boolean) => {
+    const payload = JSON.stringify({ type: 'chat:ai_typing', sessionId, typing });
+    for (const client of wsClients) {
+      if (client.ws.readyState !== WebSocket.OPEN) continue;
+      if (client.role === 'admin' || client.sessionId === sessionId) {
+        client.ws.send(payload);
+      }
+    }
+  };
+
+  wss.on('connection', (ws, req) => {
+    const reqUrl = new URL(req.url || '/ws/live-chat', `http://localhost:${PORT}`);
+    const role = reqUrl.searchParams.get('role') === 'admin' ? 'admin' : 'client';
+    const sessionId = reqUrl.searchParams.get('sessionId') || undefined;
+
+    const meta: WsClientMeta = { ws, role, sessionId };
+    wsClients.add(meta);
+
+    if (role === 'admin') {
+      ws.send(
+        JSON.stringify({
+          type: 'chat:sessions_list',
+          sessions: liveChatStore.listSessions(),
+        })
+      );
+    } else if (sessionId) {
+      const sess = liveChatStore.getSession(sessionId);
+      if (sess) {
+        ws.send(JSON.stringify({ type: 'chat:session_updated', session: sess }));
+      }
+    }
+
+    ws.on('message', (rawBuf) => {
+      try {
+        const msg = JSON.parse(rawBuf.toString('utf8')) as {
+          type?: string;
+          sessionId?: string;
+        };
+        if (msg.type === 'subscribe' && msg.sessionId) {
+          meta.sessionId = msg.sessionId;
+          const sess = liveChatStore.getSession(msg.sessionId);
+          if (sess && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'chat:session_updated', session: sess }));
+          }
+        }
+      } catch {
+        // Ignore malformed ping/control frames
+      }
+    });
+
+    ws.on('close', () => {
+      wsClients.delete(meta);
+    });
+  });
+
+  // Periodic 24-hour auto-close sweep every 60 seconds
+  const autoCloseInterval = setInterval(() => {
+    const closedList = liveChatStore.sweepExpiredSessions();
+    for (const sess of closedList) {
+      broadcastSessionUpdate(sess);
+    }
+  }, 60 * 1000);
+  autoCloseInterval.unref?.();
 
   app.get('/api/health', (_req, res) => {
     res.json({
@@ -570,6 +737,254 @@ async function startServer() {
     }
   });
 
+  // Real WHM change cPanel account password
+  app.post('/api/modules/whm/passwd', async (req, res) => {
+    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, newPassword } =
+      (req.body || {}) as {
+        hostname?: string;
+        port?: number | string;
+        useSsl?: boolean;
+        username?: string;
+        apiToken?: string;
+        ignoreSslErrors?: boolean;
+        acctUsername?: string;
+        newPassword?: string;
+      };
+    if (!hostname || !username || !apiToken || !acctUsername || !newPassword) {
+      res.status(400).json({ ok: false, error: 'Missing required WHM parameters for password reset.' });
+      return;
+    }
+    try {
+      const qs = new URLSearchParams({
+        'api.version': '1',
+        user: acctUsername.trim(),
+        password: newPassword,
+      });
+      const resp = await requestWhmJson({
+        hostname,
+        port: Number(port || 2087),
+        useSsl: useSsl !== false,
+        path: `/json-api/passwd?${qs.toString()}`,
+        username,
+        apiToken,
+        ignoreSslErrors: Boolean(ignoreSslErrors),
+      });
+      const parsed = JSON.parse(resp.bodyText) as {
+        metadata?: { result?: number; reason?: string };
+      };
+      if (parsed.metadata?.result !== 1) {
+        res.status(400).json({
+          ok: false,
+          error: parsed.metadata?.reason || 'WHM passwd returned an error.',
+        });
+        return;
+      }
+      res.json({ ok: true, reason: parsed.metadata?.reason || 'Password updated on WHM server.' });
+    } catch (err) {
+      const errorObj = err as { message?: string };
+      res.status(400).json({ ok: false, error: errorObj.message || 'WHM passwd request failed.' });
+    }
+  });
+
+  // Real WHM suspend cPanel account
+  app.post('/api/modules/whm/suspend', async (req, res) => {
+    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, reason } =
+      (req.body || {}) as {
+        hostname?: string;
+        port?: number | string;
+        useSsl?: boolean;
+        username?: string;
+        apiToken?: string;
+        ignoreSslErrors?: boolean;
+        acctUsername?: string;
+        reason?: string;
+      };
+    if (!hostname || !username || !apiToken || !acctUsername) {
+      res.status(400).json({ ok: false, error: 'Missing required WHM parameters to suspend account.' });
+      return;
+    }
+    try {
+      const qs = new URLSearchParams({
+        'api.version': '1',
+        user: acctUsername.trim(),
+        reason: (reason || 'Administrative suspension').trim(),
+      });
+      const resp = await requestWhmJson({
+        hostname,
+        port: Number(port || 2087),
+        useSsl: useSsl !== false,
+        path: `/json-api/suspendacct?${qs.toString()}`,
+        username,
+        apiToken,
+        ignoreSslErrors: Boolean(ignoreSslErrors),
+      });
+      const parsed = JSON.parse(resp.bodyText) as {
+        metadata?: { result?: number; reason?: string };
+      };
+      if (parsed.metadata?.result !== 1) {
+        res.status(400).json({
+          ok: false,
+          error: parsed.metadata?.reason || 'WHM suspendacct failed.',
+        });
+        return;
+      }
+      res.json({ ok: true, reason: parsed.metadata?.reason || 'Account suspended on WHM server.' });
+    } catch (err) {
+      const errorObj = err as { message?: string };
+      res.status(400).json({ ok: false, error: errorObj.message || 'WHM suspendacct request failed.' });
+    }
+  });
+
+  // Real WHM unsuspend cPanel account
+  app.post('/api/modules/whm/unsuspend', async (req, res) => {
+    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername } =
+      (req.body || {}) as {
+        hostname?: string;
+        port?: number | string;
+        useSsl?: boolean;
+        username?: string;
+        apiToken?: string;
+        ignoreSslErrors?: boolean;
+        acctUsername?: string;
+      };
+    if (!hostname || !username || !apiToken || !acctUsername) {
+      res.status(400).json({ ok: false, error: 'Missing required WHM parameters to unsuspend account.' });
+      return;
+    }
+    try {
+      const qs = new URLSearchParams({
+        'api.version': '1',
+        user: acctUsername.trim(),
+      });
+      const resp = await requestWhmJson({
+        hostname,
+        port: Number(port || 2087),
+        useSsl: useSsl !== false,
+        path: `/json-api/unsuspendacct?${qs.toString()}`,
+        username,
+        apiToken,
+        ignoreSslErrors: Boolean(ignoreSslErrors),
+      });
+      const parsed = JSON.parse(resp.bodyText) as {
+        metadata?: { result?: number; reason?: string };
+      };
+      if (parsed.metadata?.result !== 1) {
+        res.status(400).json({
+          ok: false,
+          error: parsed.metadata?.reason || 'WHM unsuspendacct failed.',
+        });
+        return;
+      }
+      res.json({ ok: true, reason: parsed.metadata?.reason || 'Account unsuspended on WHM server.' });
+    } catch (err) {
+      const errorObj = err as { message?: string };
+      res.status(400).json({ ok: false, error: errorObj.message || 'WHM unsuspendacct request failed.' });
+    }
+  });
+
+  // Real WHM upgrade / downgrade package
+  app.post('/api/modules/whm/changepackage', async (req, res) => {
+    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, pkg } =
+      (req.body || {}) as {
+        hostname?: string;
+        port?: number | string;
+        useSsl?: boolean;
+        username?: string;
+        apiToken?: string;
+        ignoreSslErrors?: boolean;
+        acctUsername?: string;
+        pkg?: string;
+      };
+    if (!hostname || !username || !apiToken || !acctUsername || !pkg) {
+      res.status(400).json({ ok: false, error: 'Missing required WHM parameters for changepkg.' });
+      return;
+    }
+    try {
+      const qs = new URLSearchParams({
+        'api.version': '1',
+        user: acctUsername.trim(),
+        pkg: pkg.trim(),
+      });
+      const resp = await requestWhmJson({
+        hostname,
+        port: Number(port || 2087),
+        useSsl: useSsl !== false,
+        path: `/json-api/changepackage?${qs.toString()}`,
+        username,
+        apiToken,
+        ignoreSslErrors: Boolean(ignoreSslErrors),
+      });
+      const parsed = JSON.parse(resp.bodyText) as {
+        metadata?: { result?: number; reason?: string };
+      };
+      if (parsed.metadata?.result !== 1) {
+        res.status(400).json({
+          ok: false,
+          error: parsed.metadata?.reason || 'WHM changepackage failed.',
+        });
+        return;
+      }
+      res.json({ ok: true, reason: parsed.metadata?.reason || 'WHM package updated.' });
+    } catch (err) {
+      const errorObj = err as { message?: string };
+      res.status(400).json({ ok: false, error: errorObj.message || 'WHM changepackage request failed.' });
+    }
+  });
+
+  // Real WHM create_user_session SSO Direct Control Panel Login
+  app.post('/api/modules/whm/sso-login', async (req, res) => {
+    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, service } =
+      (req.body || {}) as {
+        hostname?: string;
+        port?: number | string;
+        useSsl?: boolean;
+        username?: string;
+        apiToken?: string;
+        ignoreSslErrors?: boolean;
+        acctUsername?: string;
+        service?: string;
+      };
+    if (!hostname || !username || !apiToken || !acctUsername) {
+      res.status(400).json({ ok: false, error: 'Missing required WHM parameters for SSO session.' });
+      return;
+    }
+    try {
+      const qs = new URLSearchParams({
+        'api.version': '1',
+        user: acctUsername.trim(),
+        service: service?.trim() || 'cpaneld',
+      });
+      const resp = await requestWhmJson({
+        hostname,
+        port: Number(port || 2087),
+        useSsl: useSsl !== false,
+        path: `/json-api/create_user_session?${qs.toString()}`,
+        username,
+        apiToken,
+        ignoreSslErrors: Boolean(ignoreSslErrors),
+      });
+      const parsed = JSON.parse(resp.bodyText) as {
+        metadata?: { result?: number; reason?: string };
+        data?: { url?: string; expires?: number };
+      };
+      if (parsed.metadata?.result !== 1 || !parsed.data?.url) {
+        res.status(400).json({
+          ok: false,
+          error: parsed.metadata?.reason || 'WHM create_user_session did not return an SSO URL.',
+        });
+        return;
+      }
+      res.json({
+        ok: true,
+        ssoUrl: parsed.data.url,
+        expires: parsed.data.expires,
+      });
+    } catch (err) {
+      const errorObj = err as { message?: string };
+      res.status(400).json({ ok: false, error: errorObj.message || 'WHM SSO session request failed.' });
+    }
+  });
+
   // Real Google ID token / access token verification endpoint
   app.post('/api/auth/google/verify', async (req, res) => {
     const { idToken, accessToken, expectedClientId } = (req.body || {}) as {
@@ -648,6 +1063,452 @@ async function startServer() {
     }
   });
 
+  // Reusable templated SMTP email dispatch (Support Tickets + System Alerts)
+  app.post('/api/system/send-templated-email', async (req, res) => {
+    const {
+      smtp,
+      toEmail,
+      companyName,
+      companyEmail,
+      companyWebsite,
+      accentColor,
+      subject,
+      preheader,
+      heading,
+      body,
+      ctaLabel,
+      ctaUrl,
+      footerNote,
+    } = (req.body || {}) as {
+      smtp?: {
+        host?: string;
+        port?: number | string;
+        encryption?: 'ssl' | 'tls' | 'none';
+        username?: string;
+        password?: string;
+        fromName?: string;
+        fromEmail?: string;
+      };
+      toEmail?: string;
+      companyName?: string;
+      companyEmail?: string;
+      companyWebsite?: string;
+      accentColor?: string;
+      subject?: string;
+      preheader?: string;
+      heading?: string;
+      body?: string;
+      ctaLabel?: string;
+      ctaUrl?: string;
+      footerNote?: string;
+    };
+
+    const cleanHost = (smtp?.host || '').trim();
+    const cleanUser = (smtp?.username || '').trim();
+    const cleanPass = smtp?.password || '';
+    const numericPort = Number(smtp?.port || 465);
+
+    if (!cleanHost || !cleanUser || !cleanPass || !toEmail || !subject || !body) {
+      res.status(400).json({ ok: false, error: 'Missing SMTP credentials, recipient, or email body.' });
+      return;
+    }
+
+    const useSsl =
+      smtp?.encryption === 'ssl' ||
+      (smtp?.encryption !== 'tls' && smtp?.encryption !== 'none' && numericPort === 465);
+    const brand = (companyName || 'CPCloudHost').trim();
+    const senderLabel = (smtp?.fromName || brand).replace(/"/g, '').trim();
+    const fromEmail = (smtp?.fromEmail || cleanUser).trim();
+    const primaryAccent = /^#[0-9a-fA-F]{3,8}$/.test(accentColor || '')
+      ? accentColor!
+      : '#0E6B63';
+
+    const htmlBodyParagraphs = escapeHtmlText(body)
+      .split(/\n/)
+      .map((line) => (line.trim() ? `<p style="margin: 0 0 10px;">${line}</p>` : '<div style="height: 8px;"></div>'))
+      .join('');
+
+    const cleanCtaUrl = (ctaUrl || '').trim();
+    const cleanCtaLabel = (ctaLabel || '').trim();
+
+    try {
+      const transporter = nodemailer.createTransport({
+        host: cleanHost,
+        port: numericPort,
+        secure: useSsl,
+        auth: { user: cleanUser, pass: cleanPass },
+        tls: { rejectUnauthorized: false },
+        connectionTimeout: 10000,
+        greetingTimeout: 8000,
+        socketTimeout: 12000,
+      });
+
+      const info = await transporter.sendMail({
+        from: `"${senderLabel}" <${fromEmail}>`,
+        to: toEmail.trim(),
+        subject: subject.trim(),
+        text: [
+          heading ? `${heading}\n` : '',
+          body,
+          cleanCtaLabel && cleanCtaUrl ? `\n${cleanCtaLabel}: ${cleanCtaUrl}` : '',
+          footerNote ? `\n---\n${footerNote}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n'),
+        html: `
+          <div style="font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 580px; margin: 0 auto; border: 1px solid #E2E8F0; border-radius: 12px; overflow: hidden; background: #FFFFFF;">
+            ${preheader ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0;">${escapeHtmlText(preheader)}</div>` : ''}
+            <div style="background: ${primaryAccent}; padding: 20px 24px; color: #FFFFFF;">
+              <div style="font-size: 11px; font-weight: 700; letter-spacing: 0.05em; opacity: 0.9;">${escapeHtmlText(brand.toUpperCase())} · SUPPORT DESK</div>
+              <h1 style="margin: 6px 0 0; font-size: 18px; font-weight: 700; line-height: 1.3;">${escapeHtmlText(heading || subject)}</h1>
+            </div>
+            <div style="padding: 24px; color: #0F172A; font-size: 14px; line-height: 1.65;">
+              ${htmlBodyParagraphs}
+              ${
+                cleanCtaLabel && cleanCtaUrl
+                  ? `<div style="margin-top: 20px;">
+                       <a href="${escapeHtmlText(cleanCtaUrl)}" style="display: inline-block; padding: 11px 20px; background: ${primaryAccent}; color: #FFFFFF; text-decoration: none; border-radius: 8px; font-size: 13px; font-weight: 600;">${escapeHtmlText(cleanCtaLabel)}</a>
+                     </div>`
+                  : ''
+              }
+            </div>
+            <div style="padding: 16px 24px; background: #F8FAFC; border-top: 1px solid #E2E8F0; font-size: 12px; color: #64748B;">
+              ${footerNote ? `<p style="margin: 0 0 6px;">${escapeHtmlText(footerNote)}</p>` : ''}
+              <p style="margin: 0; font-family: monospace;">${escapeHtmlText(companyEmail || fromEmail)}${companyWebsite ? ` · ${escapeHtmlText(companyWebsite)}` : ''}</p>
+            </div>
+          </div>
+        `,
+      });
+
+      res.json({ ok: true, messageId: info.messageId });
+    } catch (err) {
+      const errorObj = err as { message?: string };
+      res.status(400).json({
+        ok: false,
+        error: errorObj.message || 'SMTP templated email dispatch failed.',
+      });
+    }
+  });
+
+  // =========================================================================
+  // LIVE CHAT REST API (SYNCED WITH WEBSOCKETS + GEMINI AI + 24H AUTO-CLOSE)
+  // =========================================================================
+  app.get('/api/live-chat/sessions', (_req, res) => {
+    res.json({ ok: true, sessions: liveChatStore.listSessions() });
+  });
+
+  app.get('/api/live-chat/sessions/:id', (req, res) => {
+    const sess = liveChatStore.getSession(req.params.id);
+    if (!sess) {
+      res.status(404).json({ ok: false, error: 'Live chat session not found.' });
+      return;
+    }
+    res.json({ ok: true, session: sess });
+  });
+
+  app.post('/api/live-chat/sessions', (req, res) => {
+    const body = (req.body || {}) as {
+      sessionId?: string;
+      visitorId?: string;
+      clientName?: string;
+      clientEmail?: string;
+      isAuthenticatedClient?: boolean;
+      pageContext?: string;
+    };
+    const session = liveChatStore.createOrResumeSession(body);
+    broadcastSessionUpdate(session);
+    res.json({ ok: true, session });
+  });
+
+  app.post('/api/live-chat/sessions/:id/read', (req, res) => {
+    const session = liveChatStore.markAdminRead(req.params.id);
+    if (!session) {
+      res.status(404).json({ ok: false, error: 'Live chat session not found.' });
+      return;
+    }
+    broadcastSessionUpdate(session);
+    res.json({ ok: true, session });
+  });
+
+  app.post('/api/live-chat/sessions/:id/messages', async (req, res) => {
+    const sess = liveChatStore.getSession(req.params.id);
+    if (!sess) {
+      res.status(404).json({ ok: false, error: 'Live chat session not found.' });
+      return;
+    }
+    if (sess.status === 'closed') {
+      res.status(400).json({
+        ok: false,
+        error: 'This chat session is closed. Start a new chat to continue.',
+        session: sess,
+      });
+      return;
+    }
+
+    const {
+      senderRole,
+      senderName,
+      body,
+      attachments: rawAttachments,
+    } = (req.body || {}) as {
+      senderRole?: 'client' | 'admin';
+      senderName?: string;
+      body?: string;
+      attachments?: unknown;
+    };
+
+    const role: 'client' | 'admin' = senderRole === 'admin' ? 'admin' : 'client';
+    const textBody = (body || '').trim();
+    const attCheck = validateAttachments(rawAttachments);
+    if (!attCheck.ok) {
+      res.status(400).json({ ok: false, error: attCheck.error });
+      return;
+    }
+
+    if (!textBody && attCheck.attachments.length === 0) {
+      res.status(400).json({ ok: false, error: 'Enter a message or attach a file.' });
+      return;
+    }
+
+    const appended = liveChatStore.appendMessage(sess.id, {
+      senderRole: role,
+      senderName: (senderName || '').trim() || (role === 'admin' ? 'Support Engineer' : sess.clientName),
+      body: textBody || 'Sent file attachment(s) for review.',
+      attachments: attCheck.attachments,
+      markAdminRead: role === 'admin',
+      incrementAdminUnread: role === 'client',
+    });
+
+    if (!appended) {
+      res.status(404).json({ ok: false, error: 'Live chat session not found.' });
+      return;
+    }
+
+    let latestSession = appended.session;
+    broadcastSessionUpdate(latestSession);
+
+    // If client message while in AI mode:
+    // 1. Transfer immediately if explicit human/agent requested
+    // 2. Otherwise ACK client message immediately and stream AI reply via WebSocket for instant UX
+    if (role === 'client' && latestSession.status === 'ai') {
+      if (isExplicitHumanAgentRequest(textBody)) {
+        const transferred = liveChatStore.transferToAdmin(latestSession.id);
+        if (transferred) {
+          latestSession = transferred;
+          broadcastSessionUpdate(latestSession);
+        }
+        res.json({
+          ok: true,
+          session: latestSession,
+          aiPending: false,
+          suggestHumanTransfer: false,
+        });
+        return;
+      }
+
+      const targetSessionId = latestSession.id;
+      const snapshotClientName = latestSession.clientName;
+      const snapshotClientEmail = latestSession.clientEmail;
+      const snapshotPageContext = latestSession.pageContext;
+      const snapshotHistory = [...latestSession.messages];
+      const snapshotAttachments = attCheck.attachments;
+
+      broadcastAiTyping(targetSessionId, true);
+
+      res.json({
+        ok: true,
+        session: latestSession,
+        aiPending: true,
+        suggestHumanTransfer: false,
+      });
+
+      void (async () => {
+        try {
+          const aiRes = await generateLiveChatAiReply({
+            clientName: snapshotClientName,
+            clientEmail: snapshotClientEmail,
+            pageContext: snapshotPageContext,
+            history: snapshotHistory,
+            latestMessage: textBody,
+            attachments: snapshotAttachments,
+          });
+          const aiAppend = liveChatStore.appendMessage(targetSessionId, {
+            senderRole: 'ai',
+            senderName: 'CPCloudHost AI Engineer',
+            body: aiRes.reply,
+          });
+          if (aiAppend) {
+            broadcastSessionUpdate(aiAppend.session, {
+              suggestHumanTransfer: aiRes.suggestHumanTransfer,
+            });
+          }
+        } catch {
+          const fallbackAppend = liveChatStore.appendMessage(targetSessionId, {
+            senderRole: 'ai',
+            senderName: 'CPCloudHost AI Engineer',
+            body: 'I could not reach automated diagnostics right now. Click "Transfer to Live Agent" below to connect directly with a senior human support engineer.',
+          });
+          if (fallbackAppend) {
+            broadcastSessionUpdate(fallbackAppend.session, { suggestHumanTransfer: true });
+          }
+        } finally {
+          broadcastAiTyping(targetSessionId, false);
+        }
+      })();
+      return;
+    }
+
+    res.json({
+      ok: true,
+      session: latestSession,
+      aiPending: false,
+      suggestHumanTransfer: false,
+    });
+  });
+
+  app.post('/api/live-chat/sessions/:id/transfer', (req, res) => {
+    const sess = liveChatStore.getSession(req.params.id);
+    if (!sess) {
+      res.status(404).json({ ok: false, error: 'Live chat session not found.' });
+      return;
+    }
+    if (sess.status === 'closed') {
+      res.status(400).json({ ok: false, error: 'Closed sessions cannot be transferred.' });
+      return;
+    }
+    const updated = liveChatStore.transferToAdmin(sess.id);
+    if (!updated) {
+      res.status(400).json({ ok: false, error: 'Unable to transfer session.' });
+      return;
+    }
+    broadcastSessionUpdate(updated);
+    res.json({ ok: true, session: updated });
+  });
+
+  app.post('/api/live-chat/sessions/:id/join', (req, res) => {
+    const { adminName, adminEmail } = (req.body || {}) as {
+      adminName?: string;
+      adminEmail?: string;
+    };
+    const updated = liveChatStore.joinAsAdmin(
+      req.params.id,
+      (adminName || '').trim() || 'Senior Support Engineer',
+      adminEmail
+    );
+    if (!updated) {
+      res.status(404).json({ ok: false, error: 'Active chat session not found.' });
+      return;
+    }
+    broadcastSessionUpdate(updated);
+    res.json({ ok: true, session: updated });
+  });
+
+  app.post('/api/live-chat/sessions/:id/return-ai', (req, res) => {
+    const { adminName } = (req.body || {}) as { adminName?: string };
+    const updated = liveChatStore.returnToAi(
+      req.params.id,
+      (adminName || '').trim() || 'Support Staff'
+    );
+    if (!updated) {
+      res.status(404).json({ ok: false, error: 'Active chat session not found.' });
+      return;
+    }
+    broadcastSessionUpdate(updated);
+    res.json({ ok: true, session: updated });
+  });
+
+  app.post('/api/live-chat/sessions/:id/close', (req, res) => {
+    const { closedBy, actorName } = (req.body || {}) as {
+      closedBy?: 'client' | 'admin';
+      actorName?: string;
+    };
+    const updated = liveChatStore.closeSession(
+      req.params.id,
+      closedBy === 'admin' ? 'admin' : 'client',
+      actorName
+    );
+    if (!updated) {
+      res.status(404).json({ ok: false, error: 'Live chat session not found.' });
+      return;
+    }
+    broadcastSessionUpdate(updated);
+    res.json({ ok: true, session: updated });
+  });
+
+  // =========================================================================
+  // GEMINI AI SUPPORT TICKET TRIAGE & ADMIN DRAFT ASSISTANT
+  // =========================================================================
+  app.post('/api/ai/ticket-triage', async (req, res) => {
+    const {
+      department,
+      priority,
+      relatedService,
+      subject,
+      description,
+      attachments: rawAttachments,
+    } = (req.body || {}) as {
+      department?: string;
+      priority?: string;
+      relatedService?: string;
+      subject?: string;
+      description?: string;
+      attachments?: unknown;
+    };
+
+    if (!subject?.trim() || !description?.trim()) {
+      res.status(400).json({
+        ok: false,
+        error: 'Subject and description are required for AI diagnostics.',
+      });
+      return;
+    }
+
+    const attCheck = validateAttachments(rawAttachments);
+    if (!attCheck.ok) {
+      res.status(400).json({ ok: false, error: attCheck.error });
+      return;
+    }
+
+    try {
+      const triage = await generateTicketTriageAi({
+        department: department || 'Technical Support',
+        priority: priority || 'Normal',
+        relatedService,
+        subject: subject.trim(),
+        description: description.trim(),
+        attachments: attCheck.attachments,
+      });
+      res.json({ ok: true, triage });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'AI diagnostics failed.';
+      res.status(500).json({ ok: false, error: msg });
+    }
+  });
+
+  app.post('/api/ai/admin-draft', async (req, res) => {
+    const { contextType, subject, department, relatedService, history } = (req.body || {}) as {
+      contextType?: 'live-chat' | 'ticket';
+      subject?: string;
+      department?: string;
+      relatedService?: string;
+      history?: Array<{ sender: string; body: string; attachments?: LiveChatAttachment[] }>;
+    };
+
+    try {
+      const draft = await generateAdminDraftReply({
+        contextType: contextType === 'live-chat' ? 'live-chat' : 'ticket',
+        subject,
+        department,
+        relatedService,
+        history: Array.isArray(history) ? history : [],
+      });
+      res.json({ ok: true, draft });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Could not generate AI reply draft.';
+      res.status(500).json({ ok: false, error: msg });
+    }
+  });
+
   if (!IS_PROD) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -663,8 +1524,8 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`CPCloudHost server listening on http://0.0.0.0:${PORT}`);
+  httpServer.listen(PORT, '0.0.0.0', () => {
+    console.log(`CPCloudHost server & WebSocket desk listening on http://0.0.0.0:${PORT}`);
   });
 }
 
