@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import http from 'node:http';
 import https from 'node:https';
@@ -9,13 +10,13 @@ import {
   liveChatStore,
   MAX_CHAT_ATTACHMENT_BYTES,
   MAX_CHAT_ATTACHMENT_COUNT,
-} from './server/liveChatStore';
+} from './server/liveChatStore.ts';
 import {
   generateAdminDraftReply,
   generateLiveChatAiReply,
   generateTicketTriageAi,
-} from './server/geminiSupport';
-import type { LiveChatAttachment, LiveChatSession } from './src/types/liveChat';
+} from './server/geminiSupport.ts';
+import type { LiveChatAttachment, LiveChatSession } from './src/types/liveChat.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

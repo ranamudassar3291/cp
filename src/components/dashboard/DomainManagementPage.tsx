@@ -2,9 +2,11 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
+  ArrowRightLeft,
   Calendar,
   CheckCircle2,
   Copy,
+  CreditCard,
   Eye,
   EyeOff,
   Globe,
@@ -43,7 +45,7 @@ interface DomainManagementPageProps {
   onShowToast: (msg: string) => void;
 }
 
-type DomainConsoleTab = 'overview' | 'dns' | 'transfer' | 'whois';
+type DomainConsoleTab = 'overview' | 'renew' | 'dns' | 'transfer' | 'account-transfer' | 'whois';
 
 export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
   domain,
@@ -54,18 +56,41 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
   onShowToast,
 }) => {
   const {
+    invoices,
+    paymentMethods,
     domainContactAddresses,
     updateClientOrderSettings,
     updateDomainTransferLock,
     regenerateDomainEppCode,
     updateDomainDnsRecords,
     updateDomainWhoisContact,
+    createServiceOrDomainRenewalInvoice,
+    payClientOrderInvoice,
+    transferOrderToAccountByEmail,
   } = usePlatform();
   const { formatPrice } = useCurrency();
 
   const lifecycle = useMemo(() => evaluateDomainLifecycle(domain), [domain]);
 
   const [activeTab, setActiveTab] = useState<DomainConsoleTab>('overview');
+
+  // Domain Renewal state
+  const [renewalCycle, setRenewalCycle] = useState<PlatformOrder['billingCycle']>(
+    domain.billingCycle === '5-Year' ? '5-Year' : '1 Year'
+  );
+  const [renewalNotice, setRenewalNotice] = useState('');
+  const [renewalError, setRenewalError] = useState('');
+  const [generatedRenewalInvoice, setGeneratedRenewalInvoice] =
+    useState<PlatformInvoice | null>(null);
+  const [selectedPayMethod, setSelectedPayMethod] = useState(
+    () => paymentMethods.find((m) => m.enabled)?.name || 'Credit / Debit Card'
+  );
+  const [payTxRef, setPayTxRef] = useState('');
+
+  // Account Ownership Transfer by Email state
+  const [targetAccountEmail, setTargetAccountEmail] = useState('');
+  const [accountTransferError, setAccountTransferError] = useState('');
+  const [accountTransferSuccess, setAccountTransferSuccess] = useState('');
 
   // Nameservers form state
   const currentNs1 = domain.nameservers?.[0] || 'ns1.cpcloudhost.com';
@@ -157,7 +182,92 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
     setRevealEpp(false);
     setTransferError('');
     setNsError('');
+    setRenewalNotice('');
+    setRenewalError('');
+    setAccountTransferError('');
+    setAccountTransferSuccess('');
   }, [domain.id, domain.nameservers, defaultRecords]);
+
+  const domainInvoices = useMemo(
+    () => invoices.filter((inv) => inv.orderId === domain.id),
+    [invoices, domain.id]
+  );
+
+  const estimatedRenewalUsd = useMemo(() => {
+    const baseAnnual =
+      domain.billingCycle === '5-Year'
+        ? Math.max(9.99, domain.amountUsd / 5)
+        : domain.billingCycle === '2 Years'
+          ? Math.max(9.99, domain.amountUsd / 2)
+          : Math.max(9.99, domain.amountUsd);
+    if (renewalCycle === '2 Years') return Number((baseAnnual * 2).toFixed(2));
+    if (renewalCycle === '5-Year') return Number((baseAnnual * 5).toFixed(2));
+    return Number(baseAnnual.toFixed(2));
+  }, [domain.amountUsd, domain.billingCycle, renewalCycle]);
+
+  const handleGenerateDomainRenewalInvoice = () => {
+    setRenewalError('');
+    setRenewalNotice('');
+    const res = createServiceOrDomainRenewalInvoice({
+      orderId: domain.id,
+      billingCycle: renewalCycle,
+      customAmountUsd: estimatedRenewalUsd,
+    });
+    if (!res.ok || !res.invoice) {
+      setRenewalError(res.error || 'Could not generate domain renewal invoice.');
+      return;
+    }
+    setGeneratedRenewalInvoice(res.invoice);
+    setRenewalNotice(
+      `Domain renewal invoice ${res.invoice.id} (${formatPrice(res.invoice.amountUsd)}) generated and emailed to ${domain.clientEmail}.`
+    );
+    onShowToast(`Renewal invoice ${res.invoice.id} created & emailed`);
+  };
+
+  const handlePayGeneratedRenewalInvoice = (invoiceId: string) => {
+    const res = payClientOrderInvoice(invoiceId, selectedPayMethod, {
+      transactionRef: payTxRef.trim() || `REN-${Date.now().toString().slice(-6)}`,
+      paymentDetailsNote: `Domain renewal settled (${renewalCycle})`,
+    });
+    if (!res) {
+      setRenewalError('Unable to settle renewal invoice. Please ensure you are signed in.');
+      return;
+    }
+    setGeneratedRenewalInvoice(null);
+    if (res.status === 'pending') {
+      setRenewalNotice(
+        `Payment proof submitted for Invoice ${invoiceId}. Domain ${domain.domainOrHost} will extend once verified.`
+      );
+      onShowToast(`Payment proof submitted for ${invoiceId}`);
+    } else {
+      setRenewalNotice(
+        `Invoice ${invoiceId} settled! Domain ${domain.domainOrHost} expiration date has been extended.`
+      );
+      onShowToast(`Domain ${domain.domainOrHost} renewed!`);
+    }
+  };
+
+  const handleTransferDomainToAccountByEmail = (e: React.FormEvent) => {
+    e.preventDefault();
+    setAccountTransferError('');
+    setAccountTransferSuccess('');
+    const res = transferOrderToAccountByEmail({
+      orderId: domain.id,
+      targetEmail: targetAccountEmail,
+    });
+    if (!res.ok) {
+      setAccountTransferError(
+        res.error || 'Could not transfer domain to the specified account email.'
+      );
+      return;
+    }
+    const msg = `Domain ${domain.domainOrHost} transferred to ${res.targetUserName} (${targetAccountEmail.trim()}) with registration date ${lifecycle.registeredDateIso}, due date ${lifecycle.dueDateIso}, and all linked invoices.`;
+    setAccountTransferSuccess(msg);
+    onShowToast(msg);
+    window.setTimeout(() => {
+      onBackToDomains();
+    }, 1100);
+  };
 
   const effectiveEppCode =
     domain.eppCode || generateDeterministicEppCode(domain.id);
@@ -338,6 +448,22 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
+              onClick={() => setActiveTab('renew')}
+              className="min-h-[36px] inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer whitespace-nowrap"
+            >
+              <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Renew Domain</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('account-transfer')}
+              className="min-h-[36px] inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] cursor-pointer whitespace-nowrap"
+            >
+              <ArrowRightLeft className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+              <span>Transfer to Account</span>
+            </button>
+            <button
+              type="button"
               onClick={() => onOpenSupportTicket(domain.domainOrHost)}
               className="min-h-[36px] inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] cursor-pointer whitespace-nowrap"
             >
@@ -350,7 +476,7 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
                 onClick={() => onOpenInvoice(linkedInvoice.id)}
                 className={`min-h-[36px] inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold cursor-pointer whitespace-nowrap ${
                   linkedInvoice.status !== 'paid'
-                    ? 'bg-[#0E6B63] hover:bg-[#0A534D] text-white'
+                    ? 'bg-[#0F172A] hover:bg-slate-800 text-white'
                     : 'border border-[#E2E8F0] hover:border-[#0E6B63] text-[#0F172A]'
                 }`}
               >
@@ -532,8 +658,10 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
           {(
             [
               { id: 'overview', label: 'Domain Overview' },
+              { id: 'renew', label: 'Renew Domain' },
               { id: 'dns', label: 'DNS & Nameservers' },
               { id: 'transfer', label: 'Transfer Lock & EPP Code' },
+              { id: 'account-transfer', label: 'Transfer to Another Account' },
               { id: 'whois', label: 'WHOIS Contact & Address' },
             ] as const
           ).map((tab) => {
@@ -617,6 +745,25 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
                 </dd>
               </div>
             </dl>
+
+            <div className="pt-3 border-t border-[#E2E8F0] grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setActiveTab('renew')}
+                className="min-h-[40px] inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Renew Domain Registration</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('account-transfer')}
+                className="min-h-[40px] inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-[#CBD5E1] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] cursor-pointer"
+              >
+                <ArrowRightLeft className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+                <span>Transfer to Another Account</span>
+              </button>
+            </div>
           </div>
 
           <div className="lg:col-span-5 space-y-5">
@@ -686,6 +833,211 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
                 <span>Manage Transfer Lock &amp; EPP</span>
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================== TAB: RENEW DOMAIN ========================== */}
+      {activeTab === 'renew' && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <div className="lg:col-span-7 bg-white border border-[#E2E8F0] rounded-xl p-6 space-y-5">
+            <div>
+              <h2 className="font-display text-base font-bold text-[#0F172A]">
+                Renew Domain Registration · {domain.domainOrHost}
+              </h2>
+              <p className="text-xs text-slate-500 mt-1">
+                Generate an official domain renewal invoice to extend your domain expiration date. A copy of the invoice is automatically emailed to {domain.clientEmail}.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {(
+                [
+                  { cycle: '1 Year' as const, label: '1 Year Renewal', years: 1 },
+                  { cycle: '2 Years' as const, label: '2 Years Renewal', years: 2 },
+                  { cycle: '5-Year' as const, label: '5 Years Renewal', years: 5 },
+                ]
+              ).map((opt) => {
+                const selected = renewalCycle === opt.cycle;
+                const baseAnnual =
+                  domain.billingCycle === '5-Year'
+                    ? Math.max(9.99, domain.amountUsd / 5)
+                    : domain.billingCycle === '2 Years'
+                      ? Math.max(9.99, domain.amountUsd / 2)
+                      : Math.max(9.99, domain.amountUsd);
+                const price = Number((baseAnnual * opt.years).toFixed(2));
+                return (
+                  <button
+                    key={opt.cycle}
+                    type="button"
+                    onClick={() => setRenewalCycle(opt.cycle)}
+                    className={`p-4 rounded-xl border text-left transition-all cursor-pointer ${
+                      selected
+                        ? 'border-[#0E6B63] bg-[#F2FAF8] ring-1 ring-[#0E6B63]'
+                        : 'border-[#E2E8F0] bg-white hover:border-slate-300'
+                    }`}
+                  >
+                    <p className="text-xs font-bold text-[#0F172A]">{opt.label}</p>
+                    <p className="font-mono text-base font-extrabold text-[#0E6B63] mt-1">
+                      {formatPrice(price)}
+                    </p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      +{opt.years} {opt.years === 1 ? 'Year' : 'Years'} from current expiry
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="rounded-xl border border-[#E2E8F0] bg-[#F8FAFC] p-4 space-y-2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Current Expiration / Due Date</span>
+                <span className="font-mono font-semibold text-[#0F172A]">
+                  {lifecycle.dueDateIso}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Selected Renewal Term</span>
+                <span className="font-semibold text-[#0F172A]">{renewalCycle}</span>
+              </div>
+              <div className="flex items-center justify-between pt-2 border-t border-[#E2E8F0]">
+                <span className="font-bold text-[#0F172A]">Total Renewal Invoice Due</span>
+                <span className="font-mono text-base font-extrabold text-[#0E6B63]">
+                  {formatPrice(estimatedRenewalUsd)}
+                </span>
+              </div>
+            </div>
+
+            {renewalError && (
+              <p className="text-xs font-semibold text-[#DC2626]">{renewalError}</p>
+            )}
+            {renewalNotice && (
+              <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-[#16A34A] font-semibold">
+                {renewalNotice}
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={handleGenerateDomainRenewalInvoice}
+                className="min-h-[42px] inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+              >
+                <Receipt className="w-4 h-4" aria-hidden="true" />
+                <span>
+                  Generate Renewal Invoice ({formatPrice(estimatedRenewalUsd)})
+                </span>
+              </button>
+            </div>
+
+            {generatedRenewalInvoice && generatedRenewalInvoice.status !== 'paid' && (
+              <div className="p-4 rounded-xl border border-[#0E6B63]/30 bg-[#F2FAF8] space-y-3 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="font-mono font-bold text-[#0E6B63]">
+                      {generatedRenewalInvoice.id} · UNPAID RENEWAL INVOICE
+                    </p>
+                    <p className="text-slate-600 mt-0.5">
+                      Settle now to immediately extend {domain.domainOrHost} expiration date to{' '}
+                      <span className="font-mono font-bold text-[#0F172A]">
+                        {generatedRenewalInvoice.dueDate}
+                      </span>
+                      .
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onOpenInvoice(generatedRenewalInvoice.id)}
+                    className="px-3 py-1.5 rounded-lg border border-[#0E6B63]/40 bg-white text-[#0E6B63] font-semibold cursor-pointer"
+                  >
+                    Open Full Invoice
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
+                      Payment Method
+                    </label>
+                    <select
+                      value={selectedPayMethod}
+                      onChange={(e) => setSelectedPayMethod(e.target.value)}
+                      className="w-full px-3 py-2 text-xs border border-[#CBD5E1] rounded-lg bg-white"
+                    >
+                      {paymentMethods
+                        .filter((m) => m.enabled)
+                        .map((m) => (
+                          <option key={m.id} value={m.name}>
+                            {m.name}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
+                      Transaction Reference (TID)
+                    </label>
+                    <input
+                      type="text"
+                      value={payTxRef}
+                      onChange={(e) => setPayTxRef(e.target.value)}
+                      placeholder="Optional payment reference"
+                      className="w-full px-3 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg bg-white"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handlePayGeneratedRenewalInvoice(generatedRenewalInvoice.id)}
+                  className="min-h-[40px] w-full inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-[#0F172A] hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer"
+                >
+                  <CreditCard className="w-4 h-4" aria-hidden="true" />
+                  <span>
+                    Pay &amp; Extend Domain Now ({formatPrice(generatedRenewalInvoice.amountUsd)})
+                  </span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="lg:col-span-5 bg-white border border-[#E2E8F0] rounded-xl p-6 space-y-4">
+            <h3 className="font-display text-sm font-bold text-[#0F172A]">
+              Domain Invoices Ledger ({domainInvoices.length})
+            </h3>
+            {domainInvoices.length === 0 ? (
+              <p className="text-xs text-slate-500">
+                No invoices recorded for this domain yet.
+              </p>
+            ) : (
+              <div className="divide-y divide-[#E2E8F0] text-xs">
+                {domainInvoices.map((inv) => (
+                  <div
+                    key={inv.id}
+                    className="py-3 flex items-center justify-between gap-3"
+                  >
+                    <div>
+                      <p className="font-mono font-bold text-[#0F172A]">{inv.id}</p>
+                      <p className="text-[11px] text-slate-500">
+                        Due {inv.dueDate} · {inv.status.toUpperCase()}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-semibold text-[#0F172A]">
+                        {formatPrice(inv.amountUsd)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => onOpenInvoice(inv.id)}
+                        className="px-2.5 py-1 rounded border border-[#CBD5E1] hover:border-[#0E6B63] text-[11px] font-semibold text-[#0E6B63] cursor-pointer"
+                      >
+                        View
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1148,6 +1500,85 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* ========================== TAB: TRANSFER DOMAIN TO ANOTHER ACCOUNT ========================== */}
+      {activeTab === 'account-transfer' && (
+        <div className="bg-white border border-[#E2E8F0] rounded-xl p-6 space-y-5 max-w-2xl">
+          <div>
+            <h2 className="font-display text-base font-bold text-[#0F172A] flex items-center gap-2">
+              <ArrowRightLeft className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+              <span>Transfer Domain Ownership to Another Account</span>
+            </h2>
+            <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+              Transfer <span className="font-mono font-bold text-[#0F172A]">{domain.domainOrHost}</span> directly to another registered CPCloudHost client account by entering their account email address below. The domain will move immediately with its exact same registration date, next due date, DNS zone, and linked invoices.
+            </p>
+          </div>
+
+          <div className="rounded-xl border border-[#E2E8F0] bg-[#F8FAFC] p-4 grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+            <div>
+              <span className="text-slate-500 block">Preserved Registration Date</span>
+              <span className="font-mono font-bold text-[#0F172A]">
+                {lifecycle.registeredDateIso}
+              </span>
+            </div>
+            <div>
+              <span className="text-slate-500 block">Preserved Next Due Date</span>
+              <span className="font-mono font-bold text-[#0F172A]">
+                {lifecycle.dueDateIso}
+              </span>
+            </div>
+            <div>
+              <span className="text-slate-500 block">Linked Invoices Transferred</span>
+              <span className="font-mono font-bold text-[#0E6B63]">
+                {domainInvoices.length} {domainInvoices.length === 1 ? 'Invoice' : 'Invoices'}
+              </span>
+            </div>
+          </div>
+
+          <form onSubmit={handleTransferDomainToAccountByEmail} className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-[#0F172A] mb-1.5">
+                Recipient Account Email Address *
+              </label>
+              <input
+                type="email"
+                required
+                value={targetAccountEmail}
+                onChange={(e) => {
+                  setTargetAccountEmail(e.target.value);
+                  if (accountTransferError) setAccountTransferError('');
+                }}
+                placeholder="Paste recipient's registered CPCloudHost account email..."
+                className="w-full min-h-[42px] px-3.5 py-2 text-xs font-mono border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+              />
+              <p className="text-[11px] text-slate-500 mt-1">
+                Tip: If you are moving this domain to a new account, register the new account first, then paste its email here and click Transfer.
+              </p>
+            </div>
+
+            {accountTransferError && (
+              <p className="text-xs font-semibold text-[#DC2626] flex items-center gap-1.5">
+                <AlertCircle className="w-4 h-4 shrink-0" aria-hidden="true" />
+                <span>{accountTransferError}</span>
+              </p>
+            )}
+
+            {accountTransferSuccess && (
+              <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-semibold text-[#16A34A]">
+                {accountTransferSuccess}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              className="min-h-[42px] inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+            >
+              <ArrowRightLeft className="w-4 h-4" aria-hidden="true" />
+              <span>Transfer Domain &amp; Invoices Now</span>
+            </button>
+          </form>
         </div>
       )}
 

@@ -150,8 +150,7 @@ export const GoogleSignInButton: React.FC<GoogleSignInButtonProps> = ({
     }
   };
 
-  const handleInlineGoogleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleInlineGoogleSubmit = () => {
     const cleanEmail = googleEmailInput.trim().toLowerCase();
     if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(cleanEmail)) {
       onError('Enter a valid Google email address.');
@@ -164,6 +163,13 @@ export const GoogleSignInButton: React.FC<GoogleSignInButtonProps> = ({
         .replace(/[._-]+/g, ' ')
         .replace(/\b\w/g, (c) => c.toUpperCase());
     completeGoogleSignIn(cleanEmail, cleanName, `google-oauth-${Date.now()}`);
+  };
+
+  const handleInlineKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleInlineGoogleSubmit();
+    }
   };
 
   return (
@@ -264,11 +270,12 @@ export const GoogleSignInButton: React.FC<GoogleSignInButtonProps> = ({
             </div>
           )}
 
-          <form onSubmit={handleInlineGoogleSubmit} className="space-y-2 pt-1">
+          <div className="space-y-2 pt-1">
             <input
               type="email"
               value={googleEmailInput}
               onChange={(e) => setGoogleEmailInput(e.target.value)}
+              onKeyDown={handleInlineKeyDown}
               placeholder="yourname@gmail.com"
               className="w-full px-3 py-2 text-xs bg-white border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
             />
@@ -276,16 +283,18 @@ export const GoogleSignInButton: React.FC<GoogleSignInButtonProps> = ({
               type="text"
               value={googleNameInput}
               onChange={(e) => setGoogleNameInput(e.target.value)}
+              onKeyDown={handleInlineKeyDown}
               placeholder="Full Name (optional for new account)"
               className="w-full px-3 py-2 text-xs bg-white border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
             />
             <button
-              type="submit"
+              type="button"
+              onClick={handleInlineGoogleSubmit}
               className="w-full py-2 px-3 text-xs font-semibold text-white bg-[#0E6B63] hover:bg-[#0A534D] rounded-lg cursor-pointer"
             >
               Verify &amp; Continue with Google
             </button>
-          </form>
+          </div>
         </div>
       )}
     </div>

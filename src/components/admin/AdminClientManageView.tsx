@@ -18,17 +18,22 @@ import {
   Lock,
   LogIn,
   Paperclip,
+  PauseCircle,
+  PlayCircle,
   Plus,
   Receipt,
   RefreshCw,
   Save,
   Server,
   ShoppingBag,
+  Terminal,
   Unlock,
   User,
   X,
+  XCircle,
 } from 'lucide-react';
 import {
+  deriveServiceControlPanelAccess,
   InvoiceStatus,
   ManagedUserAccount,
   OrderStatus,
@@ -196,6 +201,12 @@ export const AdminClientManageView: React.FC<AdminClientManageViewProps> = ({
     adminTransferOrderToClient,
     adminUpdateInvoiceStatus,
     adminCreateTicketForClient,
+    changeServiceControlPanelPassword,
+    launchControlPanelSso,
+    adminSuspendService,
+    adminUnsuspendService,
+    createServiceOrDomainRenewalInvoice,
+    closeSupportTicket,
     paymentMethods,
     invoiceTemplateConfig,
   } = usePlatform();
@@ -574,6 +585,10 @@ export const AdminClientManageView: React.FC<AdminClientManageViewProps> = ({
   const [transferTargetUserId, setTransferTargetUserId] = useState<string>(
     otherClientAccounts[0]?.id || ''
   );
+  const [cpPassOrderId, setCpPassOrderId] = useState<string | null>(null);
+  const [cpPassDraft, setCpPassDraft] = useState('');
+  const [cpSsoNotice, setCpSsoNotice] = useState<{ orderId: string; url: string } | null>(null);
+  const [svcActionBusy, setSvcActionBusy] = useState<string | null>(null);
 
   useEffect(() => {
     if (
@@ -1574,6 +1589,95 @@ export const AdminClientManageView: React.FC<AdminClientManageViewProps> = ({
                       <div className="flex flex-wrap items-center gap-2 shrink-0">
                         <button
                           type="button"
+                          disabled={svcActionBusy !== null}
+                          onClick={async () => {
+                            setSvcActionBusy(`sso-${svc.id}`);
+                            const res = await launchControlPanelSso(svc.id);
+                            setSvcActionBusy(null);
+                            if (!res.ok) {
+                              onShowToast(res.error || 'Unable to launch SSO');
+                              return;
+                            }
+                            const cpInfo = deriveServiceControlPanelAccess(svc);
+                            const url = res.url || res.ssoUrl || cpInfo.cpUrl;
+                            setCpSsoNotice({ orderId: svc.id, url });
+                            onShowToast(res.message || `SSO ready for ${cpInfo.cpUsername}`);
+                          }}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[#0E6B63] hover:bg-[#0A534D] rounded-lg cursor-pointer disabled:opacity-50"
+                        >
+                          <Terminal className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>CP Login</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCpPassOrderId(cpPassOrderId === svc.id ? null : svc.id);
+                            setCpPassDraft('');
+                          }}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#0F172A] border border-[#E2E8F0] hover:border-[#0E6B63] rounded-lg cursor-pointer"
+                        >
+                          <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>CP Pass</span>
+                        </button>
+                        {svc.status === 'suspended' ? (
+                          <button
+                            type="button"
+                            disabled={svcActionBusy !== null}
+                            onClick={async () => {
+                              setSvcActionBusy(`unsuspend-${svc.id}`);
+                              const res = await adminUnsuspendService(svc.id);
+                              setSvcActionBusy(null);
+                              onShowToast(
+                                res.ok
+                                  ? res.message || `${svc.domainOrHost} unsuspended`
+                                  : res.error || 'Could not unsuspend service'
+                              );
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[#16A34A] hover:bg-emerald-700 rounded-lg cursor-pointer disabled:opacity-50"
+                          >
+                            <PlayCircle className="w-3.5 h-3.5" aria-hidden="true" />
+                            <span>Unsuspend</span>
+                          </button>
+                        ) : svc.status === 'active' ? (
+                          <button
+                            type="button"
+                            disabled={svcActionBusy !== null}
+                            onClick={async () => {
+                              setSvcActionBusy(`suspend-${svc.id}`);
+                              const res = await adminSuspendService(svc.id, 'Suspended via client management console');
+                              setSvcActionBusy(null);
+                              onShowToast(
+                                res.ok
+                                  ? res.message || `${svc.domainOrHost} suspended`
+                                  : res.error || 'Could not suspend service'
+                              );
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#DC2626] border border-red-200 hover:bg-red-50 rounded-lg cursor-pointer disabled:opacity-50"
+                          >
+                            <PauseCircle className="w-3.5 h-3.5" aria-hidden="true" />
+                            <span>Suspend</span>
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const res = createServiceOrDomainRenewalInvoice({
+                              orderId: svc.id,
+                              billingCycle: svc.billingCycle,
+                            });
+                            onShowToast(
+                              res.ok && res.invoice
+                                ? `Renewal invoice ${res.invoice.id} created & emailed`
+                                : res.error || 'Could not create renewal invoice'
+                            );
+                          }}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#0F172A] border border-[#E2E8F0] hover:border-[#0E6B63] rounded-lg cursor-pointer"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+                          <span>Renew Invoice</span>
+                        </button>
+                        <button
+                          type="button"
                           onClick={() =>
                             isEditing
                               ? setEditingOrderId(null)
@@ -1605,6 +1709,70 @@ export const AdminClientManageView: React.FC<AdminClientManageViewProps> = ({
                         </button>
                       </div>
                     </div>
+
+                    {cpSsoNotice && cpSsoNotice.orderId === svc.id && (
+                      <div className="p-2.5 rounded-lg bg-[#F2FAF8] border border-[#0E6B63]/25 flex items-center justify-between gap-2 text-xs">
+                        <span className="font-mono text-[11px] text-[#0E6B63] truncate">
+                          SSO Ready: {cpSsoNotice.url}
+                        </span>
+                        <a
+                          href={cpSsoNotice.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-[#0E6B63] text-white text-[11px] font-semibold shrink-0"
+                        >
+                          <span>Launch Panel</span>
+                          <ExternalLink className="w-3 h-3" aria-hidden="true" />
+                        </a>
+                      </div>
+                    )}
+
+                    {cpPassOrderId === svc.id && (
+                      <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center gap-2 bg-[#F8FAFC] p-3 rounded-lg">
+                        <input
+                          type="text"
+                          value={cpPassDraft}
+                          onChange={(e) => setCpPassDraft(e.target.value)}
+                          placeholder="Enter new Control Panel password (min 8 chars)..."
+                          className="flex-1 min-w-[220px] px-3 py-1.5 text-xs font-mono border border-[#CBD5E1] rounded-lg bg-white"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setCpPassDraft(generateStrongPassword())}
+                          className="px-2.5 py-1.5 text-xs font-semibold text-[#0E6B63] border border-[#0E6B63]/30 bg-white rounded-lg cursor-pointer"
+                        >
+                          Generate
+                        </button>
+                        <button
+                          type="button"
+                          disabled={svcActionBusy !== null}
+                          onClick={async () => {
+                            if (cpPassDraft.trim().length < 8) {
+                              onShowToast('CP password must be at least 8 characters.');
+                              return;
+                            }
+                            setSvcActionBusy(`passwd-${svc.id}`);
+                            const res = await changeServiceControlPanelPassword(
+                              svc.id,
+                              cpPassDraft.trim()
+                            );
+                            setSvcActionBusy(null);
+                            if (res.ok) {
+                              setCpPassDraft('');
+                              setCpPassOrderId(null);
+                            }
+                            onShowToast(
+                              res.ok
+                                ? res.message || `CP password updated for ${svc.domainOrHost}`
+                                : res.error || 'Could not update CP password'
+                            );
+                          }}
+                          className="px-3.5 py-1.5 text-xs font-semibold text-white bg-[#0F172A] hover:bg-slate-800 rounded-lg cursor-pointer disabled:opacity-50"
+                        >
+                          Update CP Password &amp; Email
+                        </button>
+                      </div>
+                    )}
 
                     {/* Inline Date & Settings Editor */}
                     {isEditing && (
@@ -2024,6 +2192,24 @@ export const AdminClientManageView: React.FC<AdminClientManageViewProps> = ({
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const res = createServiceOrDomainRenewalInvoice({
+                              orderId: dom.id,
+                              billingCycle: dom.billingCycle,
+                            });
+                            onShowToast(
+                              res.ok && res.invoice
+                                ? `Domain renewal invoice ${res.invoice.id} created & emailed`
+                                : res.error || 'Could not create domain renewal invoice'
+                            );
+                          }}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#0F172A] border border-[#E2E8F0] hover:border-[#0E6B63] rounded-lg cursor-pointer"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+                          <span>Renew Invoice</span>
+                        </button>
                         <button
                           type="button"
                           onClick={() =>
@@ -2931,22 +3117,39 @@ export const AdminClientManageView: React.FC<AdminClientManageViewProps> = ({
                         <td className="py-3 px-4">
                           <StatusChip
                             tone={
-                              tkt.status === 'resolved'
-                                ? 'emerald'
-                                : tkt.status === 'pending'
-                                  ? 'amber'
-                                  : 'teal'
+                              tkt.status === 'closed'
+                                ? 'slate'
+                                : tkt.status === 'resolved'
+                                  ? 'emerald'
+                                  : tkt.status === 'pending'
+                                    ? 'amber'
+                                    : 'teal'
                             }
                             label={
-                              tkt.status === 'resolved'
-                                ? 'Resolved'
-                                : tkt.status === 'pending'
-                                  ? 'Pending'
-                                  : 'Open'
+                              tkt.status === 'closed'
+                                ? 'Closed'
+                                : tkt.status === 'resolved'
+                                  ? 'Resolved'
+                                  : tkt.status === 'pending'
+                                    ? 'Pending'
+                                    : 'Open'
                             }
                           />
                         </td>
-                        <td className="py-3 px-4 text-right whitespace-nowrap">
+                        <td className="py-3 px-4 text-right whitespace-nowrap space-x-1.5">
+                          {tkt.status !== 'closed' && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                closeSupportTicket(tkt.id);
+                                onShowToast(`Ticket ${tkt.id} closed`);
+                              }}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-slate-700 border border-[#CBD5E1] hover:border-[#DC2626] hover:text-[#DC2626] rounded cursor-pointer"
+                            >
+                              <XCircle className="w-3 h-3" aria-hidden="true" />
+                              <span>Close</span>
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => onOpenTicket(tkt.id)}

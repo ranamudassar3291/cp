@@ -23,6 +23,7 @@ export interface NavDropdownItem {
     | 'shared-hosting'
     | 'wordpress-hosting'
     | 'windows-hosting'
+    | 'reseller-hosting'
     | 'free-trial'
     | 'vps-hosting'
     | 'n8n-hosting'
@@ -58,6 +59,7 @@ export interface ServiceMatrixItem {
     | 'shared-hosting'
     | 'wordpress-hosting'
     | 'windows-hosting'
+    | 'reseller-hosting'
     | 'free-trial'
     | 'vps-hosting'
     | 'n8n-hosting'
@@ -124,9 +126,10 @@ export const NAV_MENUS: NavMenu[] = [
         pageTarget: 'windows-hosting',
       },
       {
-        label: 'Reseller Program',
-        description: 'White-label cPanel & StackCP suites for web agencies',
-        scrollTo: '#services',
+        label: 'Reseller Hosting',
+        description: 'White-label WHM/cPanel & StackCP suites for web agencies',
+        scrollTo: '#top',
+        pageTarget: 'reseller-hosting',
       },
       {
         label: 'cPanel Web Hosting',
@@ -243,10 +246,11 @@ export const SERVICE_MATRIX: ServiceMatrixItem[] = [
   },
   {
     id: 'reseller',
-    title: 'Reseller Program',
-    subtitle: 'White-label client portals for freelancers and agencies.',
+    title: 'Reseller Hosting',
+    subtitle: 'White-label WHM & client portals for freelancers and agencies.',
     startingPrice: '$14.99/mo',
-    scrollTo: '#infrastructure',
+    scrollTo: '#top',
+    pageTarget: 'reseller-hosting',
   },
   {
     id: 'cpanel',

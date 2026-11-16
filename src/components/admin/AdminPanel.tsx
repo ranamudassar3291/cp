@@ -42,6 +42,11 @@ import {
   Sparkles,
   Tag,
   Trash2,
+  Terminal,
+  PauseCircle,
+  PlayCircle,
+  RefreshCw,
+  Copy,
   UserCheck,
   UserPlus,
   Users,
@@ -56,6 +61,7 @@ import {
   CmsPageCategory,
   CmsPageRecord,
   CmsSectionItem,
+  deriveServiceControlPanelAccess,
   OrderStatus,
   PlatformInvoice,
   PlatformOrder,
@@ -398,8 +404,9 @@ function StatusTextBadge({
 
 function getTicketStatusMeta(status: TicketStatus): {
   label: string;
-  tone: 'emerald' | 'amber' | 'teal';
+  tone: 'emerald' | 'amber' | 'teal' | 'slate';
 } {
+  if (status === 'closed') return { label: 'Closed', tone: 'slate' };
   if (status === 'resolved') return { label: 'Resolved', tone: 'emerald' };
   if (status === 'pending') return { label: 'Pending', tone: 'amber' };
   return { label: 'Open', tone: 'teal' };
@@ -484,8 +491,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     adminUpdateOrderDetails,
     adminHandleCancellation,
     adminProcessRefund,
+    changeServiceControlPanelPassword,
+    launchControlPanelSso,
+    adminSuspendService,
+    adminUnsuspendService,
+    createServiceOrDomainRenewalInvoice,
     replyTicketAsAdmin,
     updateTicketByAdmin,
+    closeSupportTicket,
     saveCmsPage,
     createCmsPage,
     deleteCmsPage,
@@ -1014,8 +1027,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [editOrderServerIp, setEditOrderServerIp] = useState('');
   const [editOrderModuleId, setEditOrderModuleId] = useState('');
   const [editOrderPackage, setEditOrderPackage] = useState('');
+  const [editOrderCpUsername, setEditOrderCpUsername] = useState('');
+  const [editOrderCpPassword, setEditOrderCpPassword] = useState('');
+  const [editOrderCpUrl, setEditOrderCpUrl] = useState('');
   const [editOrderAutoRenew, setEditOrderAutoRenew] = useState(true);
   const [editOrderNotes, setEditOrderNotes] = useState('');
+  const [adminNewCpPassword, setAdminNewCpPassword] = useState('');
+  const [adminSuspendReason, setAdminSuspendReason] = useState('');
+  const [adminSsoUrlNotice, setAdminSsoUrlNotice] = useState<string | null>(null);
+  const [adminActionBusy, setAdminActionBusy] = useState<string | null>(null);
+  const [revealAdminCpPass, setRevealAdminCpPass] = useState(false);
   const [showCreateOrder, setShowCreateOrder] = useState(false);
   const [newOrderEmail, setNewOrderEmail] = useState('tariq@lahorecommerce.pk');
   const [newOrderType, setNewOrderType] =
@@ -1078,7 +1099,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       .filter((o) => o.status === 'active' || o.status === 'pending')
       .reduce((sum, o) => sum + o.amountUsd, 0);
     const pendingOrdersCount = orders.filter((o) => o.status === 'pending').length;
-    const openTicketsCount = tickets.filter((t) => t.status !== 'resolved').length;
+    const openTicketsCount = tickets.filter(
+      (t) => t.status !== 'resolved' && t.status !== 'closed'
+    ).length;
     const openAbuseCount = abuseComplaints.filter(
       (a) => a.status === 'open' || a.status === 'investigating'
     ).length;
@@ -1218,8 +1241,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setEditOrderServerIp(selectedOrder.serverIp || '');
       setEditOrderModuleId(selectedOrder.serverModuleId || '');
       setEditOrderPackage(selectedOrder.serverPackageName || '');
+      setEditOrderCpUsername(selectedOrder.cpUsername || '');
+      setEditOrderCpPassword(selectedOrder.cpPassword || '');
+      setEditOrderCpUrl(selectedOrder.cpUrl || '');
       setEditOrderAutoRenew(selectedOrder.autoRenew ?? true);
       setEditOrderNotes(selectedOrder.notes || '');
+      setAdminNewCpPassword('');
+      setAdminSuspendReason('');
+      setAdminSsoUrlNotice(null);
+      setRevealAdminCpPass(false);
     }
   }, [selectedOrder]);
 
@@ -1239,6 +1269,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       serverIp: editOrderServerIp.trim() || undefined,
       serverModuleId: editOrderModuleId || undefined,
       serverPackageName: editOrderPackage.trim() || undefined,
+      cpUsername: editOrderCpUsername.trim() || undefined,
+      cpPassword: editOrderCpPassword.trim() || undefined,
+      cpUrl: editOrderCpUrl.trim() || undefined,
       autoRenew: editOrderAutoRenew,
       notes: editOrderNotes.trim(),
     });
@@ -2077,7 +2110,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </select>
 
                   <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
-                    {(['all', 'open', 'pending', 'resolved'] as const).map((st) => (
+                    {(['all', 'open', 'pending', 'resolved', 'closed'] as const).map((st) => (
                       <button
                         key={st}
                         type="button"
@@ -2234,10 +2267,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           {selectedSupportTicket.subject}
                         </h1>
                       </div>
-                      <StatusTextBadge
-                        tone={getTicketStatusMeta(selectedSupportTicket.status).tone}
-                        label={getTicketStatusMeta(selectedSupportTicket.status).label}
-                      />
+                      <div className="flex items-center gap-2">
+                        <StatusTextBadge
+                          tone={getTicketStatusMeta(selectedSupportTicket.status).tone}
+                          label={getTicketStatusMeta(selectedSupportTicket.status).label}
+                        />
+                        {selectedSupportTicket.status !== 'closed' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              closeSupportTicket(selectedSupportTicket.id);
+                              showToast(`Ticket ${selectedSupportTicket.id} closed`);
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-300 bg-white hover:border-[#DC2626] hover:text-[#DC2626] text-[11px] font-semibold text-slate-700 cursor-pointer"
+                          >
+                            <XCircle className="w-3.5 h-3.5" aria-hidden="true" />
+                            <span>Close Ticket</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     {/* Messages */}
@@ -2389,6 +2437,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           <option value="pending">Set Status: Pending Client</option>
                           <option value="open">Keep Status: Open</option>
                           <option value="resolved">Set Status: Resolved</option>
+                          <option value="closed">Set Status: Closed</option>
                         </select>
                       </div>
                     </div>
@@ -2522,7 +2571,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           <option value="open">Open</option>
                           <option value="pending">Pending</option>
                           <option value="resolved">Resolved</option>
+                          <option value="closed">Closed</option>
                         </select>
+                        {selectedSupportTicket.status !== 'closed' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              closeSupportTicket(selectedSupportTicket.id);
+                              showToast(`Ticket ${selectedSupportTicket.id} closed & emailed`);
+                            }}
+                            className="mt-2 w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-[#CBD5E1] rounded-lg cursor-pointer"
+                          >
+                            <XCircle className="w-3.5 h-3.5 text-[#DC2626]" aria-hidden="true" />
+                            <span>Close Ticket Now</span>
+                          </button>
+                        )}
                       </div>
 
                       <div>
@@ -4387,6 +4450,45 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               className="w-full px-2.5 py-1.5 font-mono border border-[#CBD5E1] rounded-lg"
                             />
                           </div>
+
+                          <div>
+                            <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                              CP Username
+                            </label>
+                            <input
+                              type="text"
+                              value={editOrderCpUsername}
+                              onChange={(e) => setEditOrderCpUsername(e.target.value)}
+                              placeholder="cpanel username"
+                              className="w-full px-2.5 py-1.5 font-mono border border-[#CBD5E1] rounded-lg"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                              CP Password
+                            </label>
+                            <input
+                              type="text"
+                              value={editOrderCpPassword}
+                              onChange={(e) => setEditOrderCpPassword(e.target.value)}
+                              placeholder="Control panel password"
+                              className="w-full px-2.5 py-1.5 font-mono border border-[#CBD5E1] rounded-lg"
+                            />
+                          </div>
+
+                          <div className="sm:col-span-2">
+                            <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                              Control Panel URL
+                            </label>
+                            <input
+                              type="url"
+                              value={editOrderCpUrl}
+                              onChange={(e) => setEditOrderCpUrl(e.target.value)}
+                              placeholder="https://node.cpcloudhost.com:2083"
+                              className="w-full px-2.5 py-1.5 font-mono border border-[#CBD5E1] rounded-lg"
+                            />
+                          </div>
                         </div>
 
                         <div>
@@ -4511,6 +4613,232 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             Approve &amp; Assign Provisioning Server
                           </button>
                         )}
+
+                        {(() => {
+                          const isDomOrd =
+                            selectedOrder.productType === 'Domain Registration' ||
+                            selectedOrder.productType === 'Domain Transfer';
+                          const cpAccess = deriveServiceControlPanelAccess(selectedOrder);
+                          return (
+                            <div className="p-3.5 bg-[#F8FAFC] border border-[#E2E8F0] rounded-xl space-y-3 text-xs">
+                              <div className="flex items-center justify-between gap-2 border-b border-slate-200 pb-2">
+                                <span className="font-display font-bold text-[#0F172A] inline-flex items-center gap-1.5">
+                                  <Terminal className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+                                  <span>
+                                    {isDomOrd
+                                      ? 'Admin Domain Lifecycle Actions'
+                                      : 'Admin Hosting Control Plane'}
+                                  </span>
+                                </span>
+                                <span className="font-mono text-[10px] text-slate-500">
+                                  {cpAccess.panelLabel}
+                                </span>
+                              </div>
+
+                              {!isDomOrd && (
+                                <div className="grid grid-cols-2 gap-2 text-[11px] bg-white border border-[#E2E8F0] rounded-lg p-2.5">
+                                  <div>
+                                    <span className="text-slate-500 block">CP User</span>
+                                    <span className="font-mono font-bold text-[#0F172A]">
+                                      {cpAccess.cpUsername}
+                                    </span>
+                                  </div>
+                                  <div>
+                                    <span className="text-slate-500 block">CP Password</span>
+                                    <div className="flex items-center gap-1">
+                                      <span className="font-mono font-bold text-[#0F172A] truncate">
+                                        {revealAdminCpPass ? cpAccess.cpPassword : '••••••••••'}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => setRevealAdminCpPass((v) => !v)}
+                                        className="text-slate-400 hover:text-[#0E6B63] cursor-pointer"
+                                        aria-label={revealAdminCpPass ? 'Hide CP password' : 'Show CP password'}
+                                      >
+                                        {revealAdminCpPass ? (
+                                          <EyeOff className="w-3 h-3" />
+                                        ) : (
+                                          <Eye className="w-3 h-3" />
+                                        )}
+                                      </button>
+                                    </div>
+                                  </div>
+                                  <div className="col-span-2 pt-1 border-t border-slate-100">
+                                    <span className="text-slate-500 block">Control Panel URL</span>
+                                    <span className="font-mono text-[11px] text-[#0E6B63] break-all">
+                                      {cpAccess.cpUrl}
+                                    </span>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Primary Admin Quick Buttons: Direct SSO, Suspend/Unsuspend, Renewal Invoice */}
+                              <div className="flex flex-wrap gap-2">
+                                {!isDomOrd && (
+                                  <button
+                                    type="button"
+                                    disabled={adminActionBusy !== null}
+                                    onClick={async () => {
+                                      setAdminActionBusy('sso');
+                                      const res = await launchControlPanelSso(selectedOrder.id);
+                                      setAdminActionBusy(null);
+                                      if (!res.ok) {
+                                        showToast(res.error || 'SSO launch failed');
+                                        return;
+                                      }
+                                      const url = res.url || res.ssoUrl || cpAccess.cpUrl;
+                                      setAdminSsoUrlNotice(url);
+                                      showToast(res.message || `SSO ready for ${cpAccess.cpUsername}`);
+                                    }}
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-[11px] font-semibold cursor-pointer disabled:opacity-50"
+                                  >
+                                    <Terminal className="w-3.5 h-3.5" aria-hidden="true" />
+                                    <span>
+                                      {adminActionBusy === 'sso' ? 'Connecting...' : 'Direct Login (SSO)'}
+                                    </span>
+                                  </button>
+                                )}
+
+                                {selectedOrder.status === 'suspended' ? (
+                                  <button
+                                    type="button"
+                                    disabled={adminActionBusy !== null}
+                                    onClick={async () => {
+                                      setAdminActionBusy('unsuspend');
+                                      const res = await adminUnsuspendService(selectedOrder.id);
+                                      setAdminActionBusy(null);
+                                      showToast(
+                                        res.ok
+                                          ? res.message || `Service ${selectedOrder.id} reactivated`
+                                          : res.error || 'Could not unsuspend service'
+                                      );
+                                    }}
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#16A34A] hover:bg-emerald-700 text-white text-[11px] font-semibold cursor-pointer disabled:opacity-50"
+                                  >
+                                    <PlayCircle className="w-3.5 h-3.5" aria-hidden="true" />
+                                    <span>
+                                      {adminActionBusy === 'unsuspend' ? 'Reactivating...' : 'Unsuspend Service'}
+                                    </span>
+                                  </button>
+                                ) : selectedOrder.status === 'active' ? (
+                                  <button
+                                    type="button"
+                                    disabled={adminActionBusy !== null}
+                                    onClick={async () => {
+                                      setAdminActionBusy('suspend');
+                                      const res = await adminSuspendService(
+                                        selectedOrder.id,
+                                        adminSuspendReason.trim() || undefined
+                                      );
+                                      setAdminActionBusy(null);
+                                      if (res.ok) setAdminSuspendReason('');
+                                      showToast(
+                                        res.ok
+                                          ? res.message || `Service ${selectedOrder.id} suspended`
+                                          : res.error || 'Could not suspend service'
+                                      );
+                                    }}
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-200 bg-white hover:bg-red-50 text-[#DC2626] text-[11px] font-semibold cursor-pointer disabled:opacity-50"
+                                  >
+                                    <PauseCircle className="w-3.5 h-3.5" aria-hidden="true" />
+                                    <span>
+                                      {adminActionBusy === 'suspend' ? 'Suspending...' : 'Suspend Service'}
+                                    </span>
+                                  </button>
+                                ) : null}
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const res = createServiceOrDomainRenewalInvoice({
+                                      orderId: selectedOrder.id,
+                                      billingCycle: selectedOrder.billingCycle,
+                                    });
+                                    showToast(
+                                      res.ok && res.invoice
+                                        ? `Renewal invoice ${res.invoice.id} created & emailed`
+                                        : res.error || 'Could not create renewal invoice'
+                                    );
+                                  }}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#CBD5E1] bg-white hover:border-[#0E6B63] text-[#0F172A] text-[11px] font-semibold cursor-pointer"
+                                >
+                                  <RefreshCw className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+                                  <span>Generate Renewal Invoice</span>
+                                </button>
+                              </div>
+
+                              {adminSsoUrlNotice && (
+                                <div className="p-2.5 rounded-lg bg-[#F2FAF8] border border-[#0E6B63]/25 flex items-center justify-between gap-2">
+                                  <span className="font-mono text-[10px] text-[#0E6B63] truncate">
+                                    {adminSsoUrlNotice}
+                                  </span>
+                                  <a
+                                    href={adminSsoUrlNotice}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-[#0E6B63] text-white text-[10px] font-semibold shrink-0"
+                                  >
+                                    <span>Launch</span>
+                                    <ExternalLink className="w-3 h-3" aria-hidden="true" />
+                                  </a>
+                                </div>
+                              )}
+
+                              {!isDomOrd && (
+                                <div className="flex gap-2">
+                                  <input
+                                    type="text"
+                                    value={adminNewCpPassword}
+                                    onChange={(e) => setAdminNewCpPassword(e.target.value)}
+                                    placeholder="New CP password (min 8 chars)..."
+                                    className="flex-1 px-2.5 py-1.5 text-[11px] font-mono bg-white border border-[#CBD5E1] rounded-lg"
+                                  />
+                                  <button
+                                    type="button"
+                                    disabled={adminActionBusy !== null}
+                                    onClick={async () => {
+                                      if (adminNewCpPassword.trim().length < 8) {
+                                        showToast('CP password must be at least 8 characters');
+                                        return;
+                                      }
+                                      setAdminActionBusy('passwd');
+                                      const res = await changeServiceControlPanelPassword(
+                                        selectedOrder.id,
+                                        adminNewCpPassword.trim()
+                                      );
+                                      setAdminActionBusy(null);
+                                      if (res.ok) {
+                                        setAdminNewCpPassword('');
+                                        setRevealAdminCpPass(true);
+                                      }
+                                      showToast(
+                                        res.ok
+                                          ? res.message || 'CP password updated & emailed'
+                                          : res.error || 'Could not update CP password'
+                                      );
+                                    }}
+                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#0F172A] hover:bg-slate-800 text-white text-[11px] font-semibold cursor-pointer disabled:opacity-50"
+                                  >
+                                    <KeyRound className="w-3 h-3" aria-hidden="true" />
+                                    <span>
+                                      {adminActionBusy === 'passwd' ? 'Syncing...' : 'Set CP Pass'}
+                                    </span>
+                                  </button>
+                                </div>
+                              )}
+
+                              {selectedOrder.status === 'active' && (
+                                <input
+                                  type="text"
+                                  value={adminSuspendReason}
+                                  onChange={(e) => setAdminSuspendReason(e.target.value)}
+                                  placeholder="Optional suspension reason (included in client email)..."
+                                  className="w-full px-2.5 py-1.5 text-[11px] bg-white border border-[#CBD5E1] rounded-lg"
+                                />
+                              )}
+                            </div>
+                          );
+                        })()}
 
                         {selectedOrder.cancellationStatus &&
                           selectedOrder.cancellationStatus !== 'none' && (

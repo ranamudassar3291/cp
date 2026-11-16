@@ -3,7 +3,7 @@ import type {
   LiveChatAttachment,
   LiveChatMessage,
   TicketAiTriageResult,
-} from '../src/types/liveChat';
+} from '../src/types/liveChat.ts';
 
 const SUPPORT_MODEL = 'gemini-4-hydrogen';
 const FAST_CHAT_MODEL = 'gemini-3.1-flash-lite';
@@ -55,7 +55,7 @@ function buildAttachmentParts(attachments?: LiveChatAttachment[]): Part[] {
       if (commaIdx !== -1) {
         try {
           const decoded = Buffer.from(att.dataUrl.slice(commaIdx + 1), 'base64').toString('utf8');
-          const snippet = decoded.slice(0, 8000);
+          const snippet = decoded.slice(0, 6000);
           parts.push({
             text: `[Attached log/file "${att.name}" content preview]:\n${snippet}`,
           });
@@ -84,7 +84,7 @@ export async function generateLiveChatAiReply(params: {
   const ai = getGenAiClient();
 
   const recentTranscript = params.history
-    .slice(-8)
+    .slice(-6)
     .map((m) => {
       const label =
         m.senderRole === 'client'
@@ -104,24 +104,17 @@ export async function generateLiveChatAiReply(params: {
 
   const systemInstruction = [
     'You are the Senior Cloud & Hosting Support AI Engineer for CPCloudHost (cpcloudhost.com), an international enterprise cloud hosting, cPanel, Managed WordPress, KVM VPS, n8n Automation, and Domain Registrar platform.',
-    'Your primary job is to help clients diagnose and FIX errors step by step clearly, accurately, and concisely in a clean international tone.',
-    'Respond in the same language the client writes in (if English, answer in crisp English; if Roman Urdu or mixed Urdu/English, respond helpfully in clear, easy-to-follow English or matching clarity without slang).',
-    'When a client describes an error (e.g., 500 Internal Server Error, 502 Bad Gateway, SSL/HTTPS mismatch, DNS propagation, MX email delivery, database connection, WHM/cPanel login, PHP version, VPS SSH, Easypaisa/JazzCash invoice verification, or attaches a screenshot/log), inspect every detail including any attached screenshot or log snippet and provide:',
-    '1) Likely root cause in 1-2 sentences.',
-    '2) Numbered step-by-step fix instructions the client can apply immediately.',
-    '3) What exact info to share if the issue persists.',
-    'Never invent account passwords, fake server IPs, or pretend to execute backend root changes you cannot perform.',
-    'If the issue genuinely requires manual admin action (billing verification, manual TID approval, refund review, root hypervisor reset, domain EPP intervention, or the user asks for a live human agent), clearly answer what you can and note at the end that they can click "Transfer to Live Agent" to connect directly with our engineering desk.',
-    'Keep formatting clean plain text with simple numbered steps (no heavy markdown clutter).',
+    'Respond immediately, concisely, and accurately in the same language the client writes in (crisp English or clear Roman Urdu/English if the user writes in Roman Urdu).',
+    'Give: 1) Likely root cause in 1 sentence, 2) 3 short numbered fix steps the client can apply right now in their Service Management / cPanel / DNS / Billing console, and 3) Note they can click "Transfer to Live Agent" if manual staff intervention is needed.',
+    'Keep formatting clean plain text with short numbered steps (under 140 words) for instant readability.',
   ].join(' ');
 
   const userParts: Part[] = [
     {
       text: [
-        `Client Name: ${params.clientName || 'Website Visitor'}`,
-        params.pageContext ? `Current Page Context: ${params.pageContext}` : '',
-        recentTranscript ? `Conversation History:\n${recentTranscript}` : '',
-        `Latest Client Message:\n${params.latestMessage || '(Client sent attachment(s) without text)'}`,
+        `Client: ${params.clientName || 'Visitor'} | Page: ${params.pageContext || '/'}`,
+        recentTranscript ? `Recent Chat:\n${recentTranscript}` : '',
+        `Latest Message:\n${params.latestMessage || '(Client sent attachment(s) without text)'}`,
       ]
         .filter(Boolean)
         .join('\n\n'),
@@ -134,14 +127,14 @@ export async function generateLiveChatAiReply(params: {
     contents: userParts,
     config: {
       systemInstruction,
-      maxOutputTokens: 450,
+      maxOutputTokens: 320,
       thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
     },
   });
 
   const text = (response.text || '').trim();
   const fallbackReply =
-    'I have reviewed your message. Please verify your domain DNS records, PHP error logs in cPanel -> Metrics -> Errors, and SSL status. If you need direct intervention from an engineer, click "Transfer to Live Agent" below.';
+    'I have reviewed your message. 1) Check your domain DNS A/MX records and nameservers (ns1.cpcloudhost.com / ns2.cpcloudhost.com). 2) Inspect error logs inside your Control Panel -> Metrics -> Errors. 3) If you need manual billing or server action, click "Transfer to Live Agent" above.';
 
   const lower = (params.latestMessage + ' ' + text).toLowerCase();
   const suggestHumanTransfer =
