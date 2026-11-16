@@ -78,7 +78,6 @@ import {
   getRefundStatusDisplay,
 } from './InvoiceDetailPage';
 import { DomainManagementPage } from './DomainManagementPage';
-import { ServiceManagementPage } from './ServiceManagementPage';
 import { evaluateDomainLifecycle } from '../../utils/domainLifecycle';
 import {
   buildOtpAuthUri,
@@ -260,18 +259,14 @@ function formatOrderTone(status: PlatformOrder['status']): 'emerald' | 'amber' |
   return 'slate';
 }
 
-function formatTicketStatusTone(
-  status: TicketStatus
-): 'teal' | 'amber' | 'emerald' | 'slate' {
+function formatTicketStatusTone(status: TicketStatus): 'teal' | 'amber' | 'emerald' {
   if (status === 'resolved') return 'emerald';
-  if (status === 'closed') return 'slate';
   if (status === 'pending') return 'amber';
   return 'teal';
 }
 
 function formatTicketStatusLabel(status: TicketStatus): string {
   if (status === 'resolved') return 'Resolved';
-  if (status === 'closed') return 'Closed';
   if (status === 'pending') return 'Pending';
   return 'Open';
 }
@@ -299,26 +294,8 @@ function parseDashboardSubRoute(path?: string): {
   invoiceId: string | null;
   domainSubView: 'list' | 'detail';
   domainId: string | null;
-  serviceSubView: 'list' | 'detail';
-  serviceId: string | null;
 } {
   const normalized = (path || '/dashboard').replace(/\/+$/, '');
-  if (normalized.startsWith('/dashboard/services/')) {
-    const id = normalized.slice('/dashboard/services/'.length).trim();
-    if (id) {
-      return {
-        section: 'services',
-        ticketSubView: 'list',
-        ticketId: null,
-        billingSubView: 'list',
-        invoiceId: null,
-        domainSubView: 'list',
-        domainId: null,
-        serviceSubView: 'detail',
-        serviceId: id,
-      };
-    }
-  }
   if (normalized === '/dashboard/services') {
     return {
       section: 'services',
@@ -328,8 +305,6 @@ function parseDashboardSubRoute(path?: string): {
       invoiceId: null,
       domainSubView: 'list',
       domainId: null,
-      serviceSubView: 'list',
-      serviceId: null,
     };
   }
   if (normalized.startsWith('/dashboard/domains/')) {
@@ -343,8 +318,6 @@ function parseDashboardSubRoute(path?: string): {
         invoiceId: null,
         domainSubView: 'detail',
         domainId: id,
-        serviceSubView: 'list',
-        serviceId: null,
       };
     }
   }
@@ -357,18 +330,10 @@ function parseDashboardSubRoute(path?: string): {
       invoiceId: null,
       domainSubView: 'list',
       domainId: null,
-      serviceSubView: 'list',
-      serviceId: null,
     };
   }
-  if (
-    normalized.startsWith('/dashboard/billing/') ||
-    normalized.startsWith('/dashboard/invoices/')
-  ) {
-    const prefix = normalized.startsWith('/dashboard/invoices/')
-      ? '/dashboard/invoices/'
-      : '/dashboard/billing/';
-    const id = normalized.slice(prefix.length).trim();
+  if (normalized.startsWith('/dashboard/billing/')) {
+    const id = normalized.slice('/dashboard/billing/'.length).trim();
     if (id) {
       return {
         section: 'billing',
@@ -378,8 +343,6 @@ function parseDashboardSubRoute(path?: string): {
         invoiceId: id,
         domainSubView: 'list',
         domainId: null,
-        serviceSubView: 'list',
-        serviceId: null,
       };
     }
   }
@@ -392,8 +355,6 @@ function parseDashboardSubRoute(path?: string): {
       invoiceId: null,
       domainSubView: 'list',
       domainId: null,
-      serviceSubView: 'list',
-      serviceId: null,
     };
   }
   if (normalized === '/dashboard/account') {
@@ -405,8 +366,6 @@ function parseDashboardSubRoute(path?: string): {
       invoiceId: null,
       domainSubView: 'list',
       domainId: null,
-      serviceSubView: 'list',
-      serviceId: null,
     };
   }
   if (normalized === '/dashboard/tickets/new') {
@@ -418,8 +377,6 @@ function parseDashboardSubRoute(path?: string): {
       invoiceId: null,
       domainSubView: 'list',
       domainId: null,
-      serviceSubView: 'list',
-      serviceId: null,
     };
   }
   if (normalized.startsWith('/dashboard/tickets/')) {
@@ -433,8 +390,6 @@ function parseDashboardSubRoute(path?: string): {
         invoiceId: null,
         domainSubView: 'list',
         domainId: null,
-        serviceSubView: 'list',
-        serviceId: null,
       };
     }
   }
@@ -447,8 +402,6 @@ function parseDashboardSubRoute(path?: string): {
       invoiceId: null,
       domainSubView: 'list',
       domainId: null,
-      serviceSubView: 'list',
-      serviceId: null,
     };
   }
   return {
@@ -459,8 +412,6 @@ function parseDashboardSubRoute(path?: string): {
     invoiceId: null,
     domainSubView: 'list',
     domainId: null,
-    serviceSubView: 'list',
-    serviceId: null,
   };
 }
 
@@ -575,12 +526,6 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
   );
   const [viewedDomainId, setViewedDomainId] = useState<string | null>(
     initialParsed.domainId
-  );
-  const [serviceSubView, setServiceSubView] = useState<'list' | 'detail'>(
-    initialParsed.serviceSubView
-  );
-  const [viewedServiceId, setViewedServiceId] = useState<string | null>(
-    initialParsed.serviceId
   );
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -718,8 +663,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
     sub: 'list' | 'new' | 'detail' = 'list',
     ticketId: string | null = null,
     invoiceId: string | null = null,
-    domainId: string | null = null,
-    serviceId: string | null = null
+    domainId: string | null = null
   ) => {
     setSection(nextSection);
     setTicketSubView(nextSection === 'tickets' ? sub : 'list');
@@ -732,10 +676,6 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
       nextSection === 'domains' && domainId ? 'detail' : 'list'
     );
     setViewedDomainId(nextSection === 'domains' ? domainId : null);
-    setServiceSubView(
-      nextSection === 'services' && serviceId ? 'detail' : 'list'
-    );
-    setViewedServiceId(nextSection === 'services' ? serviceId : null);
     setSidebarOpen(false);
 
     if (onSyncRoutePath) {
@@ -751,8 +691,6 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
         onSyncRoutePath(`/dashboard/billing/${invoiceId}`);
       } else if (nextSection === 'domains' && domainId) {
         onSyncRoutePath(`/dashboard/domains/${domainId}`);
-      } else if (nextSection === 'services' && serviceId) {
-        onSyncRoutePath(`/dashboard/services/${serviceId}`);
       } else {
         const target =
           SIDEBAR_ITEMS.find((i) => i.id === nextSection)?.path ?? '/dashboard';
@@ -767,15 +705,11 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
       (inv) => inv.id === invoiceOrOrderId || inv.orderId === invoiceOrOrderId
     );
     const resolvedId = matched?.id || invoiceOrOrderId;
-    navigateWithinDashboard('billing', 'detail', null, resolvedId, null, null);
+    navigateWithinDashboard('billing', 'detail', null, resolvedId, null);
   };
 
   const handleOpenDomainManagePage = (domId: string) => {
-    navigateWithinDashboard('domains', 'detail', null, null, domId, null);
-  };
-
-  const handleOpenServiceManagePage = (svcId: string) => {
-    navigateWithinDashboard('services', 'detail', null, null, null, svcId);
+    navigateWithinDashboard('domains', 'detail', null, null, domId);
   };
 
   const handleGoToOrderCategory = (
@@ -805,8 +739,6 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
     setViewedInvoiceId(parsed.invoiceId);
     setDomainSubView(parsed.domainSubView);
     setViewedDomainId(parsed.domainId);
-    setServiceSubView(parsed.serviceSubView);
-    setViewedServiceId(parsed.serviceId);
   }, [initialRoutePath]);
 
   useEffect(() => {
@@ -819,8 +751,6 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
         ? `/dashboard/billing/${viewedInvoiceId}`
         : section === 'domains' && domainSubView === 'detail' && viewedDomainId
         ? `/dashboard/domains/${viewedDomainId}`
-        : section === 'services' && serviceSubView === 'detail' && viewedServiceId
-        ? `/dashboard/services/${viewedServiceId}`
         : SIDEBAR_ITEMS.find((i) => i.id === section)?.path ?? '/dashboard';
 
     applyPageSeoMetadata({
@@ -839,8 +769,6 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
     viewedInvoiceId,
     domainSubView,
     viewedDomainId,
-    serviceSubView,
-    viewedServiceId,
   ]);
 
   useEffect(() => {
@@ -1127,18 +1055,6 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
     setPwdChangeSuccess('Password updated successfully. Use your new password on your next sign-in.');
     showToast('Account password updated');
   };
-
-  const viewedService = useMemo<PlatformOrder | null>(() => {
-    if (!viewedServiceId) return null;
-    const targetLower = viewedServiceId.toLowerCase();
-    return (
-      myHostingServices.find(
-        (s) =>
-          s.id.toLowerCase() === targetLower ||
-          s.domainOrHost.toLowerCase() === targetLower
-      ) ?? null
-    );
-  }, [myHostingServices, viewedServiceId]);
 
   const viewedDomain = useMemo<PlatformOrder | null>(() => {
     if (!viewedDomainId) return null;
@@ -2250,8 +2166,8 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                 </span>
                                 <button
                                   type="button"
-                                  onClick={() => handleOpenServiceManagePage(svc.id)}
-                                  className="min-h-[34px] px-3.5 py-1.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold transition-colors cursor-pointer"
+                                  onClick={() => setManagedServiceId(svc.id)}
+                                  className="min-h-[34px] px-3 py-1.5 rounded-lg border border-[#E2E8F0] bg-white hover:border-[#0E6B63] hover:text-[#0E6B63] text-xs font-semibold text-[#0F172A] transition-colors cursor-pointer"
                                 >
                                   Manage
                                 </button>
@@ -2494,109 +2410,9 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
               </>
             )}
 
-            {/* ============================ SERVICES (DEDICATED UPMIND-LEVEL SERVICE MANAGEMENT PAGE + ENTERPRISE PORTFOLIO) ============================ */}
-            {section === 'services' && serviceSubView === 'detail' && viewedService && (
-              <ServiceManagementPage
-                order={viewedService}
-                onBack={() =>
-                  navigateWithinDashboard('services', 'list', null, null, null, null)
-                }
-                onNavigate={(path) => {
-                  if (
-                    path.startsWith('/dashboard/invoices/') ||
-                    path.startsWith('/dashboard/billing/')
-                  ) {
-                    const invId = path
-                      .replace('/dashboard/invoices/', '')
-                      .replace('/dashboard/billing/', '')
-                      .trim();
-                    handleOpenInvoicePage(invId);
-                  } else if (path === '/dashboard/services') {
-                    navigateWithinDashboard('services', 'list', null, null, null, null);
-                  }
-                }}
-              />
-            )}
-
-            {section === 'services' && serviceSubView === 'detail' && !viewedService && (
-              <div className="bg-white border border-[#E2E8F0] rounded-xl p-8 text-center space-y-3">
-                <Server className="w-9 h-9 text-slate-300 mx-auto" aria-hidden="true" />
-                <h2 className="font-display text-lg font-bold text-[#0F172A]">
-                  Service Not Found
-                </h2>
-                <p className="text-xs text-slate-500 max-w-md mx-auto">
-                  The requested service ({viewedServiceId}) could not be found under your client account, or may have been transferred to another account.
-                </p>
-                <button
-                  type="button"
-                  onClick={() =>
-                    navigateWithinDashboard('services', 'list', null, null, null, null)
-                  }
-                  className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#0E6B63] text-white text-xs font-semibold cursor-pointer"
-                >
-                  <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>Return to Services</span>
-                </button>
-              </div>
-            )}
-
-            {section === 'services' && serviceSubView === 'list' && (
-              <div className="space-y-5">
-                {/* Enterprise Services Portfolio KPI Strip */}
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
-                  <div className="bg-white border border-[#E2E8F0] rounded-xl p-4">
-                    <span className="text-xs font-medium text-slate-500">
-                      Total Services
-                    </span>
-                    <p className="mt-1 font-mono-num text-2xl font-bold text-[#0F172A]">
-                      {myHostingServices.length}
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-slate-500">
-                      Cloud, cPanel, WordPress &amp; VPS
-                    </p>
-                  </div>
-
-                  <div className="bg-white border border-[#E2E8F0] rounded-xl p-4">
-                    <span className="text-xs font-medium text-slate-500">
-                      Active &amp; Provisioned
-                    </span>
-                    <p className="mt-1 font-mono-num text-2xl font-bold text-[#16A34A]">
-                      {myHostingServices.filter((s) => s.status === 'active').length}
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-slate-500">
-                      Direct Control Panel SSO Ready
-                    </p>
-                  </div>
-
-                  <div className="bg-white border border-[#E2E8F0] rounded-xl p-4">
-                    <span className="text-xs font-medium text-slate-500">
-                      Pending / Queued
-                    </span>
-                    <p className="mt-1 font-mono-num text-2xl font-bold text-[#D97706]">
-                      {myHostingServices.filter((s) => s.status === 'pending').length}
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-slate-500">
-                      Awaiting activation
-                    </p>
-                  </div>
-
-                  <div className="bg-white border border-[#E2E8F0] rounded-xl p-4">
-                    <span className="text-xs font-medium text-slate-500">
-                      Active Infrastructure Value
-                    </span>
-                    <p className="mt-1 font-mono-num text-2xl font-bold text-[#0E6B63]">
-                      {formatPrice(
-                        myHostingServices
-                          .filter((s) => s.status === 'active')
-                          .reduce((acc, s) => acc + s.amountUsd, 0)
-                      )}
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-slate-500">
-                      Across active billing cycles
-                    </p>
-                  </div>
-                </div>
-
+            {/* ============================ SERVICES ============================ */}
+            {section === 'services' && (
+              <div className="space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="relative flex-1 max-w-md">
                     <Search
@@ -2670,13 +2486,13 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                       <table className="w-full text-left border-collapse">
                         <thead>
                           <tr className="border-b border-[#E2E8F0] bg-[#F8FAFC] text-xs font-semibold text-slate-500">
-                            <th className="py-3.5 px-4">Service &amp; Plan</th>
-                            <th className="py-3.5 px-4">Hostname / Server IP</th>
-                            <th className="py-3.5 px-4">Datacenter</th>
-                            <th className="py-3.5 px-4">Registration &amp; Due Date</th>
-                            <th className="py-3.5 px-4 text-right">Recurring</th>
-                            <th className="py-3.5 px-4">Status</th>
-                            <th className="py-3.5 px-4 text-right">Action</th>
+                            <th className="py-3 px-4">Service &amp; Plan</th>
+                            <th className="py-3 px-4">Hostname / IP</th>
+                            <th className="py-3 px-4">Datacenter</th>
+                            <th className="py-3 px-4">Renewal</th>
+                            <th className="py-3 px-4 text-right">Price</th>
+                            <th className="py-3 px-4">Status</th>
+                            <th className="py-3 px-4 text-right">Action</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-[#E2E8F0] text-sm">
@@ -2685,49 +2501,42 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                               key={svc.id}
                               className="hover:bg-[#F8FAFC] transition-colors"
                             >
-                              <td className="py-4 px-4">
-                                <div className="flex items-center gap-3">
-                                  <div className="w-9 h-9 rounded-lg bg-[#F2FAF8] text-[#0E6B63] flex items-center justify-center shrink-0">
-                                    <Server className="w-4 h-4" aria-hidden="true" />
-                                  </div>
-                                  <div>
-                                    <p className="font-display font-bold text-[#0F172A]">
-                                      {svc.planName}
-                                    </p>
-                                    <p className="text-xs text-slate-500">
-                                      {svc.productType} ·{' '}
-                                      <span className="font-mono">{svc.id}</span>
-                                    </p>
-                                  </div>
-                                </div>
+                              <td className="py-3.5 px-4">
+                                <p className="font-display font-semibold text-[#0F172A]">
+                                  {svc.planName}
+                                </p>
+                                <p className="text-xs text-slate-500">
+                                  {svc.productType} · <span className="font-mono">{svc.id}</span>
+                                </p>
                               </td>
-                              <td className="py-4 px-4">
-                                <p className="font-mono text-xs font-semibold text-[#0F172A]">
+                              <td className="py-3.5 px-4">
+                                <p className="font-mono text-xs font-medium text-[#0F172A]">
                                   {svc.domainOrHost}
                                 </p>
-                                <p className="font-mono text-[11px] text-slate-500">
-                                  {svc.serverIp || '185.199.110.42'}
-                                </p>
+                                {svc.serverIp && (
+                                  <p className="font-mono text-[11px] text-slate-500">
+                                    {svc.serverIp}
+                                  </p>
+                                )}
                               </td>
-                              <td className="py-4 px-4 text-xs text-slate-600">
+                              <td className="py-3.5 px-4 text-xs text-slate-600">
                                 {svc.datacenter}
                               </td>
-                              <td className="py-4 px-4">
-                                <p className="font-mono-num text-xs font-semibold text-[#0F172A]">
-                                  Due: {svc.nextDueDate ?? 'Auto-scheduled'}
+                              <td className="py-3.5 px-4">
+                                <p className="font-mono-num text-xs text-[#0F172A]">
+                                  {svc.nextDueDate ?? 'Auto-scheduled'}
                                 </p>
-                                <p className="text-[11px] text-slate-500 font-mono-num">
-                                  Reg: {svc.createdAt.slice(0, 10)} · Auto:{' '}
-                                  {svc.autoRenew !== false ? 'On' : 'Off'}
+                                <p className="text-[11px] text-slate-500">
+                                  Auto-renew: {svc.autoRenew !== false ? 'On' : 'Off'}
                                 </p>
                               </td>
-                              <td className="py-4 px-4 text-right font-mono-num font-semibold text-[#0F172A]">
+                              <td className="py-3.5 px-4 text-right font-mono-num font-semibold text-[#0F172A]">
                                 {formatPrice(svc.amountUsd)}
                                 <span className="block text-[11px] font-normal text-slate-500">
                                   {svc.billingCycle}
                                 </span>
                               </td>
-                              <td className="py-4 px-4 space-y-1">
+                              <td className="py-3.5 px-4 space-y-1">
                                 <StatusIndicator
                                   tone={
                                     isServiceLockedByBilling(svc)
@@ -2737,34 +2546,82 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                   label={
                                     isServiceLockedByBilling(svc)
                                       ? 'Locked · Due Unpaid'
-                                      : svc.status.charAt(0).toUpperCase() +
-                                        svc.status.slice(1)
+                                      : svc.status.charAt(0).toUpperCase() + svc.status.slice(1)
                                   }
                                 />
-                                {svc.cancellationStatus &&
-                                  svc.cancellationStatus !== 'none' && (
-                                    <p className="text-[11px] font-semibold text-[#D97706]">
-                                      {
-                                        getCancellationStatusDisplay(
-                                          svc.cancellationStatus
-                                        ).label
-                                      }
-                                    </p>
-                                  )}
+                                {svc.cancellationStatus && svc.cancellationStatus !== 'none' && (
+                                  <p className="text-[11px] font-semibold text-[#D97706]">
+                                    {getCancellationStatusDisplay(svc.cancellationStatus).label}
+                                  </p>
+                                )}
                                 {svc.refundStatus && svc.refundStatus !== 'none' && (
                                   <p className="text-[11px] font-semibold text-[#0E6B63]">
                                     {getRefundStatusDisplay(svc.refundStatus).label}
                                   </p>
                                 )}
                               </td>
-                              <td className="py-4 px-4 text-right whitespace-nowrap">
+                              <td className="py-3.5 px-4 text-right whitespace-nowrap space-x-1.5">
+                                {(() => {
+                                  const linkedInv = myInvoices.find(
+                                    (inv) => inv.orderId === svc.id
+                                  );
+                                  const locked = isServiceLockedByBilling(svc);
+                                  return (
+                                    <>
+                                      {locked && linkedInv && linkedInv.status !== 'paid' && (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleOpenInvoicePage(linkedInv.id)}
+                                          className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#DC2626] hover:bg-red-700 text-white text-xs font-semibold cursor-pointer"
+                                        >
+                                          <Lock className="w-3 h-3" aria-hidden="true" />
+                                          <span>Pay to Unlock</span>
+                                        </button>
+                                      )}
+                                      {linkedInv && (
+                                        <>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleOpenInvoicePage(linkedInv.id)}
+                                            className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] cursor-pointer"
+                                          >
+                                            <span>View Invoice</span>
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              downloadInvoicePdf(
+                                                linkedInv,
+                                                invoiceTemplateConfig,
+                                                paymentMethods,
+                                                {
+                                                  code: currency.code,
+                                                  symbol: currency.symbol,
+                                                  rate,
+                                                  decimals: currency.decimals,
+                                                  spaceAfterSymbol: currency.spaceAfterSymbol,
+                                                  formattedTotal: formatPrice(linkedInv.amountUsd),
+                                                }
+                                              );
+                                              showToast(`Downloaded ${linkedInv.id}.pdf`);
+                                            }}
+                                            title={`Download ${linkedInv.id}.pdf`}
+                                            className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] cursor-pointer"
+                                          >
+                                            <Download className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+                                            <span>PDF</span>
+                                          </button>
+                                        </>
+                                      )}
+                                    </>
+                                  );
+                                })()}
                                 <button
                                   type="button"
-                                  onClick={() => handleOpenServiceManagePage(svc.id)}
-                                  className="min-h-[36px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold shadow-sm transition-colors cursor-pointer"
+                                  onClick={() => setManagedServiceId(svc.id)}
+                                  className="min-h-[34px] px-3 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] hover:text-[#0E6B63] text-xs font-semibold text-[#0F172A] transition-colors cursor-pointer"
                                 >
-                                  <span>Manage</span>
-                                  <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />
+                                  {isServiceLockedByBilling(svc) ? 'View Lock' : 'Manage'}
                                 </button>
                               </td>
                             </tr>
@@ -3654,7 +3511,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                   </div>
 
                   <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg overflow-x-auto">
-                    {(['all', 'open', 'pending', 'resolved', 'closed'] as const).map((tab) => (
+                    {(['all', 'open', 'pending', 'resolved'] as const).map((tab) => (
                       <button
                         key={tab}
                         type="button"

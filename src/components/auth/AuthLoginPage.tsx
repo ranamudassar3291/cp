@@ -599,9 +599,7 @@ export const AuthLoginPage: React.FC<AuthLoginPageProps> = ({
                   </>
                 )}
               </button>
-            </form>
 
-            <div className="mt-4 sm:mt-5 space-y-4">
               <GoogleSignInButton
                 mode="login"
                 onSuccess={() => {
@@ -637,7 +635,7 @@ export const AuthLoginPage: React.FC<AuthLoginPageProps> = ({
                   </p>
                 )}
               </div>
-            </div>
+            </form>
           </div>
         )}
       </div>

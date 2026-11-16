@@ -5,7 +5,7 @@ import type {
   LiveChatMessage,
   LiveChatSenderRole,
   LiveChatSession,
-} from '../src/types/liveChat.ts';
+} from '../src/types/liveChat';
 
 const DATA_DIR = path.resolve(process.cwd(), '.data');
 const STORE_FILE = path.join(DATA_DIR, 'live-chat-sessions.json');

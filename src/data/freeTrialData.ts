@@ -11,8 +11,6 @@ export interface TrialEligiblePlan {
   name: string;
   audienceTag: string;
   highlightTone: 'amber' | 'cyan';
-  monthlyAfterTrialUsd: number;
-  serverPackageName: string;
   resources: {
     key: 'websites' | 'databases' | 'emails' | 'ssd';
     label: string;
@@ -78,8 +76,6 @@ export const TRIAL_ELIGIBLE_PLANS: TrialEligiblePlan[] = [
     name: 'Cloud Ignite',
     audienceTag: 'For CMS & Web Apps',
     highlightTone: 'amber',
-    monthlyAfterTrialUsd: 4.99,
-    serverPackageName: 'stackcp_trial_ignite',
     resources: [
       { key: 'websites', label: '6 Linux Websites' },
       { key: 'databases', label: '18x Databases' },
@@ -100,8 +96,6 @@ export const TRIAL_ELIGIBLE_PLANS: TrialEligiblePlan[] = [
     name: 'WP Core',
     audienceTag: 'For WordPress & Stores',
     highlightTone: 'cyan',
-    monthlyAfterTrialUsd: 6.99,
-    serverPackageName: 'stackcp_trial_wpcore',
     resources: [
       { key: 'websites', label: '1 WP Website' },
       { key: 'databases', label: '1 Database' },
@@ -123,8 +117,6 @@ export const TRIAL_ELIGIBLE_PLANS: TrialEligiblePlan[] = [
     name: 'WinCore Pro',
     audienceTag: 'For ASP.NET & IIS Apps',
     highlightTone: 'cyan',
-    monthlyAfterTrialUsd: 7.99,
-    serverPackageName: 'stackcp_trial_wincore',
     resources: [
       { key: 'websites', label: '6 Windows Websites' },
       { key: 'databases', label: '18 MySQL Databases' },

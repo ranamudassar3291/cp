@@ -117,13 +117,6 @@ export const LiveSupportChatWidget: React.FC<LiveSupportChatWidgetProps> = ({
     };
   }, []);
 
-  const guestNameRef = useRef(guestName);
-  guestNameRef.current = guestName;
-  const guestEmailRef = useRef(guestEmail);
-  guestEmailRef.current = guestEmail;
-  const pageContextRef = useRef(pageContext);
-  pageContextRef.current = pageContext;
-
   const ensureSession = useCallback(
     async (forceNew = false): Promise<LiveChatSession | null> => {
       setInitializing(true);
@@ -139,10 +132,10 @@ export const LiveSupportChatWidget: React.FC<LiveSupportChatWidgetProps> = ({
           body: JSON.stringify({
             sessionId: storedId,
             visitorId,
-            clientName: currentUser?.name || guestNameRef.current.trim() || 'Guest Visitor',
-            clientEmail: currentUser?.email || guestEmailRef.current.trim() || '',
+            clientName: currentUser?.name || guestName.trim() || 'Guest Visitor',
+            clientEmail: currentUser?.email || guestEmail.trim() || '',
             isAuthenticatedClient: Boolean(currentUser),
-            pageContext: pageContextRef.current,
+            pageContext,
           }),
         });
         const data = (await res.json()) as { ok?: boolean; session?: LiveChatSession; error?: string };
@@ -162,7 +155,7 @@ export const LiveSupportChatWidget: React.FC<LiveSupportChatWidgetProps> = ({
         setInitializing(false);
       }
     },
-    [currentUser?.email, currentUser?.name]
+    [currentUser, guestName, guestEmail, pageContext]
   );
 
   // Load existing persisted session immediately on mount or auth change
@@ -171,7 +164,7 @@ export const LiveSupportChatWidget: React.FC<LiveSupportChatWidgetProps> = ({
     if (existingId || open) {
       void ensureSession(false);
     }
-  }, [open, ensureSession]);
+  }, [open, currentUser?.email, ensureSession]);
 
   // Real-time WebSocket subscription for the active chat session
   useEffect(() => {
@@ -232,7 +225,7 @@ export const LiveSupportChatWidget: React.FC<LiveSupportChatWidgetProps> = ({
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [session?.id, scrollToBottom]);
+  }, [session?.id]);
 
   useEffect(() => {
     if (open && session?.messages.length) {
@@ -292,8 +285,7 @@ export const LiveSupportChatWidget: React.FC<LiveSupportChatWidgetProps> = ({
       setAttachments([]);
 
       // Optimistic client bubble for zero perceived delay
-      const nowMs = Date.now();
-      const optimisticId = `TMP-${nowMs}`;
+      const optimisticId = `TMP-${Date.now()}`;
       setSession((prev) =>
         prev
           ? {
@@ -305,8 +297,7 @@ export const LiveSupportChatWidget: React.FC<LiveSupportChatWidgetProps> = ({
                   senderRole: 'client',
                   senderName: clientSenderName,
                   body: textToSend || 'Sent file attachment(s) for review.',
-                  timestampUtc: new Date(nowMs).toISOString().replace('T', ' ').slice(0, 19) + ' UTC',
-                  timestampMs: nowMs,
+                  timestampUtc: new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC',
                   attachments: outgoingAtts.length > 0 ? outgoingAtts : undefined,
                 },
               ],

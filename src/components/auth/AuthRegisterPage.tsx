@@ -920,9 +920,7 @@ export const AuthRegisterPage: React.FC<AuthRegisterPageProps> = ({
                   </>
                 )}
               </button>
-            </form>
 
-            <div className="mt-4 space-y-4">
               <GoogleSignInButton
                 mode="register"
                 onSuccess={() => {
@@ -960,7 +958,7 @@ export const AuthRegisterPage: React.FC<AuthRegisterPageProps> = ({
                   </a>
                 </p>
               </div>
-            </div>
+            </form>
           </div>
         )}
       </div>
