@@ -1,0 +1,5023 @@
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import QRCode from 'qrcode';
+import {
+  Activity,
+  AlertCircle,
+  ArrowLeft,
+  ArrowUpRight,
+  BookOpen,
+  Check,
+  CheckCircle2,
+  Clock,
+  Copy,
+  CreditCard,
+  Download,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  FileText,
+  Globe,
+  Headphones,
+  Image as ImageIcon,
+  KeyRound,
+  LayoutGrid,
+  LifeBuoy,
+  Lock,
+  LogOut,
+  MapPin,
+  Maximize2,
+  Menu,
+  MessageSquarePlus,
+  Minimize2,
+  Monitor,
+  Paperclip,
+  Plus,
+  Printer,
+  QrCode,
+  Receipt,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  Send,
+  Server,
+  Shield,
+  ShieldCheck,
+  Terminal,
+  Trash2,
+  Unlock,
+  UserCheck,
+  X,
+} from 'lucide-react';
+import {
+  CURRENCY_CATALOG,
+  POPULAR_COUNTRIES,
+  useCurrency,
+} from '../../context/CurrencyContext';
+import {
+  LoginActivityRecord,
+  LoginActivityStatus,
+  PlatformInvoice,
+  PlatformOrder,
+  SupportTicketRecord,
+  TicketAttachment,
+  TicketDepartment,
+  TicketPriority,
+  TicketStatus,
+  usePlatform,
+} from '../../context/PlatformContext';
+import { applyPageSeoMetadata } from '../../utils/seoManager';
+import { downloadInvoicePdf } from '../../utils/invoicePdfGenerator';
+import {
+  buildOtpAuthUri,
+  generateBase32Secret,
+  generateTotpCode,
+  getTotpSecondsRemaining,
+} from '../../utils/totpSecurity';
+
+export type DashboardSection =
+  | 'overview'
+  | 'services'
+  | 'domains'
+  | 'billing'
+  | 'tickets'
+  | 'account';
+
+interface ClientDashboardPageProps {
+  initialRoutePath?: string;
+  onSyncRoutePath?: (path: string) => void;
+  onNavigateHome: () => void;
+  onOpenKnowledgeBase: () => void;
+  onSignedOut: () => void;
+  onReturnToAdminClient?: (clientUserId: string) => void;
+  onOrderSharedHosting?: () => void;
+  onNavigateOrderCategory?: (
+    category:
+      | 'shared-hosting'
+      | 'wordpress-hosting'
+      | 'windows-hosting'
+      | 'cpanel-hosting'
+      | 'domain-registration'
+      | 'domain-transfer'
+  ) => void;
+}
+
+const SIDEBAR_ITEMS: {
+  id: DashboardSection;
+  label: string;
+  path: string;
+  icon: React.FC<{ className?: string; 'aria-hidden'?: boolean }>;
+}[] = [
+  { id: 'overview', label: 'Overview', path: '/dashboard', icon: LayoutGrid },
+  { id: 'services', label: 'Services', path: '/dashboard/services', icon: Server },
+  { id: 'domains', label: 'Domains', path: '/dashboard/domains', icon: Globe },
+  { id: 'billing', label: 'Billing & Invoices', path: '/dashboard/billing', icon: Receipt },
+  { id: 'tickets', label: 'Support Tickets', path: '/dashboard/tickets', icon: LifeBuoy },
+  { id: 'account', label: 'Account & Security', path: '/dashboard/account', icon: ShieldCheck },
+];
+
+const TICKET_DEPARTMENTS: {
+  id: TicketDepartment;
+  description: string;
+}[] = [
+  {
+    id: 'Migration Site',
+    description: 'Zero-downtime cPanel, WordPress, or VPS site transfers',
+  },
+  {
+    id: 'Technical Support',
+    description: 'PHP, LiteSpeed, DNS, SSL, email routing & server health',
+  },
+  {
+    id: 'Billing',
+    description: 'Invoices, multi-currency payments, Switch Credits & renewals',
+  },
+  {
+    id: 'Account',
+    description: 'KYC verification, ownership transfer, 2FA & security',
+  },
+  {
+    id: 'Support',
+    description: 'General hosting guidance, plan upgrades & pre-sales',
+  },
+];
+
+const QUICK_ORDER_CATALOG: {
+  id: string;
+  productType: PlatformOrder['productType'];
+  planName: string;
+  monthlyUsd: number;
+  yearlyUsd: number;
+  specs: string;
+}[] = [
+  {
+    id: 'shared-velocity',
+    productType: 'Shared Cloud',
+    planName: 'Cloud Velocity NVMe',
+    monthlyUsd: 4.99,
+    yearlyUsd: 47.88,
+    specs: 'Unlimited Websites · NVMe Storage · Free SSL & Daily Backups',
+  },
+  {
+    id: 'cpanel-turbo',
+    productType: 'cPanel Hosting',
+    planName: 'cPanel Turbo Pro',
+    monthlyUsd: 16.99,
+    yearlyUsd: 179.88,
+    specs: 'LiteSpeed Enterprise · Node.js / Python · 1 Free .com Domain',
+  },
+  {
+    id: 'wp-scale',
+    productType: 'Managed WordPress',
+    planName: 'WP Scale Edge',
+    monthlyUsd: 11.99,
+    yearlyUsd: 119.88,
+    specs: 'StackCache + Redis Object Cache · One-Click Staging',
+  },
+  {
+    id: 'kvm-vps-8',
+    productType: 'Unmanaged VPS',
+    planName: 'KVM NVMe Compute 8 vCPU',
+    monthlyUsd: 39.99,
+    yearlyUsd: 429.0,
+    specs: '8 Dedicated vCPU · 16 GB ECC RAM · 200 GB Gen4 NVMe · Root SSH',
+  },
+  {
+    id: 'n8n-pro',
+    productType: 'n8n Hosting',
+    planName: 'n8n Automation Pro 8 vCPU',
+    monthlyUsd: 49.99,
+    yearlyUsd: 529.0,
+    specs: 'Docker + PostgreSQL + Redis Queue + Auto TLS Webhooks',
+  },
+  {
+    id: 'domain-com',
+    productType: 'Domain Registration',
+    planName: '.com Domain + DNSSEC',
+    monthlyUsd: 14.99,
+    yearlyUsd: 14.99,
+    specs: 'Global Anycast DNS · Free WHOIS Privacy · Registrar Lock',
+  },
+];
+
+const DATACENTER_OPTIONS = [
+  'London, UK (Tier-4)',
+  'Frankfurt, DE',
+  'Dallas, USA',
+  'Singapore, SG',
+];
+
+function StatusIndicator({
+  tone,
+  label,
+}: {
+  tone: 'emerald' | 'amber' | 'red' | 'teal' | 'slate';
+  label: string;
+}) {
+  const styles = {
+    emerald: 'text-[#16A34A] bg-[#16A34A]/10',
+    amber: 'text-[#D97706] bg-[#D97706]/10',
+    red: 'text-[#DC2626] bg-[#DC2626]/10',
+    teal: 'text-[#0E6B63] bg-[#0E6B63]/10',
+    slate: 'text-slate-600 bg-slate-100',
+  };
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold whitespace-nowrap ${styles[tone]}`}
+    >
+      {tone === 'emerald' ? (
+        <CheckCircle2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+      ) : tone === 'amber' ? (
+        <Clock className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+      ) : tone === 'red' ? (
+        <AlertCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+      ) : tone === 'teal' ? (
+        <MessageSquarePlus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+      ) : (
+        <Lock className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+      )}
+      <span>{label}</span>
+    </span>
+  );
+}
+
+function formatOrderTone(status: PlatformOrder['status']): 'emerald' | 'amber' | 'red' | 'slate' {
+  if (status === 'active') return 'emerald';
+  if (status === 'pending') return 'amber';
+  if (status === 'suspended') return 'red';
+  return 'slate';
+}
+
+function formatTicketStatusTone(status: TicketStatus): 'teal' | 'amber' | 'emerald' {
+  if (status === 'resolved') return 'emerald';
+  if (status === 'pending') return 'amber';
+  return 'teal';
+}
+
+function formatTicketStatusLabel(status: TicketStatus): string {
+  if (status === 'resolved') return 'Resolved';
+  if (status === 'pending') return 'Pending';
+  return 'Open';
+}
+
+function generateClientApiToken(): string {
+  const alphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let token = 'cph_live_';
+  for (let i = 0; i < 32; i += 1) {
+    if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
+      const arr = new Uint32Array(1);
+      window.crypto.getRandomValues(arr);
+      token += alphabet[arr[0] % alphabet.length];
+    } else {
+      token += alphabet[Math.floor(Math.random() * alphabet.length)];
+    }
+  }
+  return token;
+}
+
+function parseDashboardSubRoute(path?: string): {
+  section: DashboardSection;
+  ticketSubView: 'list' | 'new' | 'detail';
+  ticketId: string | null;
+} {
+  const normalized = (path || '/dashboard').replace(/\/+$/, '');
+  if (normalized === '/dashboard/services') {
+    return { section: 'services', ticketSubView: 'list', ticketId: null };
+  }
+  if (normalized === '/dashboard/domains') {
+    return { section: 'domains', ticketSubView: 'list', ticketId: null };
+  }
+  if (normalized === '/dashboard/billing') {
+    return { section: 'billing', ticketSubView: 'list', ticketId: null };
+  }
+  if (normalized === '/dashboard/account') {
+    return { section: 'account', ticketSubView: 'list', ticketId: null };
+  }
+  if (normalized === '/dashboard/tickets/new') {
+    return { section: 'tickets', ticketSubView: 'new', ticketId: null };
+  }
+  if (normalized.startsWith('/dashboard/tickets/')) {
+    const id = normalized.replace('/dashboard/tickets/', '').trim();
+    if (id) {
+      return { section: 'tickets', ticketSubView: 'detail', ticketId: id };
+    }
+  }
+  if (normalized === '/dashboard/tickets') {
+    return { section: 'tickets', ticketSubView: 'list', ticketId: null };
+  }
+  return { section: 'overview', ticketSubView: 'list', ticketId: null };
+}
+
+function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function readSingleFileAsAttachment(file: File): Promise<TicketAttachment> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') {
+        reject(new Error('Unable to read file content.'));
+        return;
+      }
+      resolve({
+        id: `ATT-${Date.now()}-${Math.floor(100 + Math.random() * 899)}`,
+        name: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        sizeBytes: file.size,
+        dataUrl: reader.result,
+      });
+    };
+    reader.onerror = () => reject(new Error(`Failed to read ${file.name}.`));
+    reader.readAsDataURL(file);
+  });
+}
+
+function formatLoginLogStatusTone(status: LoginActivityStatus): 'emerald' | 'amber' | 'red' {
+  if (status === 'success') return 'emerald';
+  if (status === 'blocked') return 'red';
+  return 'amber';
+}
+
+function formatLoginLogStatusLabel(status: LoginActivityStatus): string {
+  if (status === 'success') return 'Verified';
+  if (status === 'blocked') return 'Blocked';
+  return 'Warning';
+}
+
+export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
+  initialRoutePath,
+  onSyncRoutePath,
+  onNavigateHome,
+  onOpenKnowledgeBase,
+  onSignedOut,
+  onReturnToAdminClient,
+  onOrderSharedHosting,
+  onNavigateOrderCategory,
+}) => {
+  const {
+    currentUser,
+    adminImpersonation,
+    activeSupportPin,
+    users,
+    orders,
+    invoices,
+    tickets,
+    loginActivityLogs,
+    paymentMethods,
+    invoiceTemplateConfig,
+    logout,
+    exitClientImpersonation,
+    addOrder,
+    updateClientProfile,
+    changePassword,
+    updateClientOrderSettings,
+    payClientOrderInvoice,
+    createSupportTicket,
+    replySupportTicket,
+    resolveSupportTicket,
+    reopenSupportTicket,
+    rotateSupportPin,
+    clearMyLoginLogs,
+    enableTwoFactorAuth,
+    disableTwoFactorAuth,
+    regenerateTwoFactorBackupCodes,
+  } = usePlatform();
+  const {
+    countryCode,
+    currency,
+    detectionSource,
+    isDetecting,
+    formatPrice,
+    setManualCountry,
+    resetToAutoIp,
+  } = useCurrency();
+
+  const initialParsed = useMemo(
+    () => parseDashboardSubRoute(initialRoutePath),
+    [initialRoutePath]
+  );
+
+  const [section, setSection] = useState<DashboardSection>(initialParsed.section);
+  const [ticketSubView, setTicketSubView] = useState<'list' | 'new' | 'detail'>(
+    initialParsed.ticketSubView
+  );
+  const [viewedTicketId, setViewedTicketId] = useState<string | null>(
+    initialParsed.ticketId
+  );
+
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [currencyMenuOpen, setCurrencyMenuOpen] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
+
+  // Support PIN reveal (Permanent, no expiration timer)
+  const [revealSupportPin, setRevealSupportPin] = useState(false);
+
+  // Services filters & drawer
+  const [serviceSearch, setServiceSearch] = useState('');
+  const [serviceStatusFilter, setServiceStatusFilter] = useState<
+    'all' | PlatformOrder['status']
+  >('all');
+  const [managedServiceId, setManagedServiceId] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState('');
+
+  // Domains filters & drawer
+  const [domainSearch, setDomainSearch] = useState('');
+  const [managedDomainId, setManagedDomainId] = useState<string | null>(null);
+  const [ns1Input, setNs1Input] = useState('ns1.cpcloudhost.com');
+  const [ns2Input, setNs2Input] = useState('ns2.cpcloudhost.com');
+  const [showEppCode, setShowEppCode] = useState(false);
+
+  // Billing & invoice modal
+  const enabledPaymentMethods = useMemo(
+    () => paymentMethods.filter((m) => m.enabled),
+    [paymentMethods]
+  );
+  const [billingFilter, setBillingFilter] = useState<'all' | 'unpaid' | 'paid'>('all');
+  const [selectedInvoiceOrderId, setSelectedInvoiceOrderId] = useState<string | null>(null);
+  const [selectedPayMethod, setSelectedPayMethod] = useState<string>(
+    () =>
+      paymentMethods.find((m) => m.enabled)?.name || 'Easypaisa Mobile Wallet'
+  );
+  const [paymentTxRef, setPaymentTxRef] = useState('');
+  const [paymentTxError, setPaymentTxError] = useState('');
+
+  // Support tickets filters, attachments & dedicated pages (NO POPUPS)
+  const [ticketSearch, setTicketSearch] = useState('');
+  const [ticketFilter, setTicketFilter] = useState<'all' | TicketStatus>('all');
+  const [ticketReplyText, setTicketReplyText] = useState('');
+  const [replyAttachments, setReplyAttachments] = useState<TicketAttachment[]>([]);
+  const [replyAttachmentError, setReplyAttachmentError] = useState('');
+  const [expandedAttachmentId, setExpandedAttachmentId] = useState<string | null>(null);
+  const [newTicketSubject, setNewTicketSubject] = useState('');
+  const [newTicketDept, setNewTicketDept] =
+    useState<TicketDepartment>('Technical Support');
+  const [newTicketPriority, setNewTicketPriority] = useState<TicketPriority>('Normal');
+  const [newTicketService, setNewTicketService] = useState('');
+  const [newTicketBody, setNewTicketBody] = useState('');
+  const [newTicketAttachments, setNewTicketAttachments] = useState<TicketAttachment[]>([]);
+  const [newTicketError, setNewTicketError] = useState('');
+
+  // Login Activity Logs filters
+  const [loginLogFilter, setLoginLogFilter] = useState<
+    'all' | 'success' | 'alerts' | 'security'
+  >('all');
+  const [loginLogSearch, setLoginLogSearch] = useState('');
+
+  // Quick service order modal
+  const [showQuickOrderModal, setShowQuickOrderModal] = useState(false);
+  const [quickCatalogId, setQuickCatalogId] = useState(QUICK_ORDER_CATALOG[0].id);
+  const [quickDomainInput, setQuickDomainInput] = useState('');
+  const [quickCycle, setQuickCycle] = useState<'Monthly' | 'Yearly'>('Yearly');
+  const [quickDatacenter, setQuickDatacenter] = useState(DATACENTER_OPTIONS[0]);
+  const [quickOrderError, setQuickOrderError] = useState('');
+
+  // Account & Real 2FA state
+  const activeAccountRecord = useMemo(
+    () =>
+      users.find(
+        (u) => currentUser && u.email.toLowerCase() === currentUser.email.toLowerCase()
+      ) ?? null,
+    [users, currentUser]
+  );
+
+  const [profileName, setProfileName] = useState(currentUser?.name ?? '');
+  const [profileCompany, setProfileCompany] = useState(activeAccountRecord?.company ?? '');
+  const [profilePhone, setProfilePhone] = useState(activeAccountRecord?.phone ?? '');
+  const [profileCountry, setProfileCountry] = useState(
+    activeAccountRecord?.country ?? currentUser?.country ?? ''
+  );
+  const [profileError, setProfileError] = useState('');
+
+  // Account Password Change state
+  const [currentPwdInput, setCurrentPwdInput] = useState('');
+  const [newPwdInput, setNewPwdInput] = useState('');
+  const [confirmPwdInput, setConfirmPwdInput] = useState('');
+  const [showCurrentPwd, setShowCurrentPwd] = useState(false);
+  const [showNewPwd, setShowNewPwd] = useState(false);
+  const [pwdChangeError, setPwdChangeError] = useState('');
+  const [pwdChangeSuccess, setPwdChangeSuccess] = useState('');
+
+  // Real TOTP 2FA enrollment state
+  const [setup2faActive, setSetup2faActive] = useState(false);
+  const [setupSecret, setSetupSecret] = useState('');
+  const [setupQrDataUrl, setSetupQrDataUrl] = useState('');
+  const [setupLivePreviewCode, setSetupLivePreviewCode] = useState('');
+  const [totpSecondsLeft, setTotpSecondsLeft] = useState(getTotpSecondsRemaining(30));
+  const [verifyCodeInput, setVerifyCodeInput] = useState('');
+  const [twoFactorError, setTwoFactorError] = useState('');
+  const [twoFactorBusy, setTwoFactorBusy] = useState(false);
+  const [disable2faPromptOpen, setDisable2faPromptOpen] = useState(false);
+  const [disable2faConfirmInput, setDisable2faConfirmInput] = useState('');
+  const [revealedBackupCodes, setRevealedBackupCodes] = useState(false);
+
+  const [apiToken, setApiToken] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
+    try {
+      const existing = window.localStorage.getItem('cpcloud_client_api_token_v1');
+      if (existing) return existing;
+      const generated = generateClientApiToken();
+      window.localStorage.setItem('cpcloud_client_api_token_v1', generated);
+      return generated;
+    } catch {
+      return 'cph_live_7kM9pQ2xL4vR8nW5tY3bZ6cH1jF0dS';
+    }
+  });
+  const [revealApiToken, setRevealApiToken] = useState(false);
+
+  // Route sync helper
+  const navigateWithinDashboard = (
+    nextSection: DashboardSection,
+    sub: 'list' | 'new' | 'detail' = 'list',
+    ticketId: string | null = null
+  ) => {
+    setSection(nextSection);
+    setTicketSubView(sub);
+    setViewedTicketId(ticketId);
+    setSidebarOpen(false);
+
+    if (onSyncRoutePath) {
+      if (nextSection === 'tickets') {
+        if (sub === 'new') {
+          onSyncRoutePath('/dashboard/tickets/new');
+        } else if (sub === 'detail' && ticketId) {
+          onSyncRoutePath(`/dashboard/tickets/${ticketId}`);
+        } else {
+          onSyncRoutePath('/dashboard/tickets');
+        }
+      } else {
+        const target =
+          SIDEBAR_ITEMS.find((i) => i.id === nextSection)?.path ?? '/dashboard';
+        onSyncRoutePath(target);
+      }
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    const parsed = parseDashboardSubRoute(initialRoutePath);
+    setSection(parsed.section);
+    setTicketSubView(parsed.ticketSubView);
+    setViewedTicketId(parsed.ticketId);
+  }, [initialRoutePath]);
+
+  useEffect(() => {
+    const canonical =
+      section === 'tickets' && ticketSubView === 'new'
+        ? '/dashboard/tickets/new'
+        : section === 'tickets' && ticketSubView === 'detail' && viewedTicketId
+        ? `/dashboard/tickets/${viewedTicketId}`
+        : SIDEBAR_ITEMS.find((i) => i.id === section)?.path ?? '/dashboard';
+
+    applyPageSeoMetadata({
+      title: 'Client Portal Dashboard | cpcloudhost.com',
+      description:
+        'Manage cloud hosting, cPanel, VPS, n8n nodes, domain DNS, invoices, real-time support tickets, Support PIN, and 2FA security on cpcloudhost.com.',
+      canonicalPath: canonical,
+      ogType: 'website',
+      jsonLd: null,
+    });
+  }, [section, ticketSubView, viewedTicketId]);
+
+  useEffect(() => {
+    setProfileName(currentUser?.name ?? '');
+    setProfileCompany(activeAccountRecord?.company ?? '');
+    setProfilePhone(activeAccountRecord?.phone ?? '');
+    setProfileCountry(activeAccountRecord?.country ?? currentUser?.country ?? '');
+  }, [currentUser, activeAccountRecord]);
+
+  // Real TOTP QR generation + 30s live code tick during 2FA enrollment
+  useEffect(() => {
+    if (!setup2faActive || !setupSecret || !currentUser) return;
+
+    const uri = buildOtpAuthUri(currentUser.email, setupSecret, 'cpcloudhost.com');
+    QRCode.toDataURL(uri, {
+      width: 184,
+      margin: 1,
+      color: { dark: '#0F172A', light: '#FFFFFF' },
+    })
+      .then((url) => setSetupQrDataUrl(url))
+      .catch(() => setSetupQrDataUrl(''));
+
+    const refreshTotp = async () => {
+      setTotpSecondsLeft(getTotpSecondsRemaining(30));
+      const code = await generateTotpCode(setupSecret, Date.now(), 30);
+      setSetupLivePreviewCode(code);
+    };
+    refreshTotp();
+    const timer = window.setInterval(refreshTotp, 1000);
+    return () => window.clearInterval(timer);
+  }, [setup2faActive, setupSecret, currentUser]);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    window.setTimeout(() => {
+      setToastMessage((prev) => (prev === msg ? '' : prev));
+    }, 3400);
+  };
+
+  const handleCopy = (key: string, value: string, label: string) => {
+    if (typeof navigator === 'undefined') return;
+    navigator.clipboard
+      ?.writeText(value)
+      .then(() => {
+        setCopiedKey(key);
+        showToast(`${label} copied to clipboard`);
+        window.setTimeout(() => setCopiedKey(''), 1800);
+      })
+      .catch(() => {});
+  };
+
+  // All orders belonging to the signed-in client
+  const myOrders = useMemo(() => {
+    if (!currentUser) return [];
+    return orders.filter(
+      (o) => o.clientEmail.toLowerCase() === currentUser.email.toLowerCase()
+    );
+  }, [orders, currentUser]);
+
+  const myHostingServices = useMemo(
+    () =>
+      myOrders.filter(
+        (o) =>
+          o.productType !== 'Domain Registration' &&
+          o.productType !== 'Domain Transfer'
+      ),
+    [myOrders]
+  );
+
+  const myDomains = useMemo(
+    () =>
+      myOrders.filter(
+        (o) =>
+          o.productType === 'Domain Registration' ||
+          o.productType === 'Domain Transfer' ||
+          Boolean(o.nameservers?.length)
+      ),
+    [myOrders]
+  );
+
+  const myTickets = useMemo(() => {
+    if (!currentUser) return [];
+    return tickets.filter(
+      (t) => t.clientEmail.toLowerCase() === currentUser.email.toLowerCase()
+    );
+  }, [tickets, currentUser]);
+
+  const myInvoices = useMemo<PlatformInvoice[]>(() => {
+    if (!currentUser) return [];
+    return invoices.filter(
+      (inv) => inv.clientEmail.toLowerCase() === currentUser.email.toLowerCase()
+    );
+  }, [invoices, currentUser]);
+
+  const unpaidOrders = useMemo(
+    () =>
+      myInvoices.filter(
+        (inv) => inv.status === 'unpaid' || inv.status === 'overdue'
+      ),
+    [myInvoices]
+  );
+
+  const unpaidTotalUsd = useMemo(
+    () => unpaidOrders.reduce((sum, inv) => sum + inv.amountUsd, 0),
+    [unpaidOrders]
+  );
+
+  const activeServicesCount = useMemo(
+    () => myHostingServices.filter((s) => s.status === 'active').length,
+    [myHostingServices]
+  );
+
+  const openOrPendingTicketsCount = useMemo(
+    () => myTickets.filter((t) => t.status !== 'resolved').length,
+    [myTickets]
+  );
+
+  const filteredServices = useMemo(() => {
+    const q = serviceSearch.trim().toLowerCase();
+    return myHostingServices.filter((svc) => {
+      if (serviceStatusFilter !== 'all' && svc.status !== serviceStatusFilter) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        svc.planName.toLowerCase().includes(q) ||
+        svc.domainOrHost.toLowerCase().includes(q) ||
+        svc.productType.toLowerCase().includes(q) ||
+        svc.datacenter.toLowerCase().includes(q) ||
+        svc.id.toLowerCase().includes(q)
+      );
+    });
+  }, [myHostingServices, serviceSearch, serviceStatusFilter]);
+
+  const filteredDomains = useMemo(() => {
+    const q = domainSearch.trim().toLowerCase();
+    return myDomains.filter((dom) => {
+      if (!q) return true;
+      return (
+        dom.domainOrHost.toLowerCase().includes(q) ||
+        dom.planName.toLowerCase().includes(q) ||
+        dom.id.toLowerCase().includes(q)
+      );
+    });
+  }, [myDomains, domainSearch]);
+
+  const filteredInvoices = useMemo(() => {
+    return myInvoices.filter((inv) => {
+      if (billingFilter === 'paid') return inv.status === 'paid';
+      if (billingFilter === 'unpaid') {
+        return (
+          inv.status === 'unpaid' ||
+          inv.status === 'overdue' ||
+          inv.status === 'pending'
+        );
+      }
+      return true;
+    });
+  }, [myInvoices, billingFilter]);
+
+  const filteredTickets = useMemo(() => {
+    const q = ticketSearch.trim().toLowerCase();
+    return myTickets.filter((tkt) => {
+      if (ticketFilter !== 'all' && tkt.status !== ticketFilter) return false;
+      if (!q) return true;
+      return (
+        tkt.id.toLowerCase().includes(q) ||
+        tkt.subject.toLowerCase().includes(q) ||
+        tkt.department.toLowerCase().includes(q) ||
+        (tkt.relatedService ?? '').toLowerCase().includes(q)
+      );
+    });
+  }, [myTickets, ticketFilter, ticketSearch]);
+
+  const viewedTicket = useMemo(
+    () => myTickets.find((t) => t.id === viewedTicketId) ?? null,
+    [myTickets, viewedTicketId]
+  );
+
+  const myLoginLogs = useMemo<LoginActivityRecord[]>(() => {
+    if (!currentUser) return [];
+    return loginActivityLogs.filter(
+      (log) => log.userEmail.toLowerCase() === currentUser.email.toLowerCase()
+    );
+  }, [loginActivityLogs, currentUser]);
+
+  const filteredLoginLogs = useMemo(() => {
+    const q = loginLogSearch.trim().toLowerCase();
+    return myLoginLogs.filter((log) => {
+      if (loginLogFilter === 'success' && log.status !== 'success') return false;
+      if (loginLogFilter === 'alerts' && log.status === 'success') return false;
+      if (
+        loginLogFilter === 'security' &&
+        !log.eventType.includes('2FA') &&
+        !log.eventType.includes('PIN') &&
+        !log.eventType.includes('Two-Factor')
+      ) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        log.eventType.toLowerCase().includes(q) ||
+        log.deviceSummary.toLowerCase().includes(q) ||
+        log.ipAddress.toLowerCase().includes(q) ||
+        log.locationLabel.toLowerCase().includes(q) ||
+        log.authMethod.toLowerCase().includes(q)
+      );
+    });
+  }, [myLoginLogs, loginLogFilter, loginLogSearch]);
+
+  const managedService = useMemo(
+    () => myOrders.find((o) => o.id === managedServiceId) ?? null,
+    [myOrders, managedServiceId]
+  );
+
+  const isServiceLockedByBilling = useCallback(
+    (svc: PlatformOrder): boolean => {
+      if (svc.status === 'suspended') return true;
+      const linkedInv = myInvoices.find((inv) => inv.orderId === svc.id);
+      if (linkedInv && linkedInv.status === 'overdue') return true;
+      const todayUtc = new Date().toISOString().slice(0, 10);
+      if (
+        svc.invoicePaid === false &&
+        linkedInv &&
+        linkedInv.status !== 'paid' &&
+        linkedInv.dueDate <= todayUtc
+      ) {
+        return true;
+      }
+      if (
+        svc.invoicePaid === false &&
+        svc.nextDueDate &&
+        svc.nextDueDate <= todayUtc
+      ) {
+        return true;
+      }
+      return false;
+    },
+    [myInvoices]
+  );
+
+  const handleChangeAccountPassword = (e: React.FormEvent) => {
+    e.preventDefault();
+    setPwdChangeError('');
+    setPwdChangeSuccess('');
+    if (!currentPwdInput.trim()) {
+      setPwdChangeError('Enter your current account password.');
+      return;
+    }
+    if (newPwdInput.length < 8) {
+      setPwdChangeError('New password must be at least 8 characters long.');
+      return;
+    }
+    if (newPwdInput !== confirmPwdInput) {
+      setPwdChangeError('New password and confirmation do not match.');
+      return;
+    }
+    const res = changePassword(currentPwdInput, newPwdInput);
+    if (!res.ok) {
+      setPwdChangeError(res.error ?? 'Unable to update password.');
+      return;
+    }
+    setCurrentPwdInput('');
+    setNewPwdInput('');
+    setConfirmPwdInput('');
+    setPwdChangeSuccess('Password updated successfully. Use your new password on your next sign-in.');
+    showToast('Account password updated');
+  };
+
+  const managedDomain = useMemo(
+    () => myOrders.find((o) => o.id === managedDomainId) ?? null,
+    [myOrders, managedDomainId]
+  );
+
+  const selectedInvoice = useMemo<PlatformInvoice | null>(() => {
+    if (!selectedInvoiceOrderId) return null;
+    return (
+      myInvoices.find(
+        (inv) =>
+          inv.id === selectedInvoiceOrderId || inv.orderId === selectedInvoiceOrderId
+      ) ?? null
+    );
+  }, [myInvoices, selectedInvoiceOrderId]);
+
+  const activePaymentGateway = useMemo(
+    () =>
+      enabledPaymentMethods.find((m) => m.name === selectedPayMethod) ??
+      enabledPaymentMethods[0] ??
+      null,
+    [enabledPaymentMethods, selectedPayMethod]
+  );
+
+  useEffect(() => {
+    if (
+      enabledPaymentMethods.length > 0 &&
+      !enabledPaymentMethods.some((m) => m.name === selectedPayMethod)
+    ) {
+      setSelectedPayMethod(enabledPaymentMethods[0].name);
+    }
+  }, [enabledPaymentMethods, selectedPayMethod]);
+
+  useEffect(() => {
+    if (managedDomain) {
+      setNs1Input(managedDomain.nameservers?.[0] ?? 'ns1.cpcloudhost.com');
+      setNs2Input(managedDomain.nameservers?.[1] ?? 'ns2.cpcloudhost.com');
+      setShowEppCode(false);
+    }
+  }, [managedDomain]);
+
+  const currencyChoices = POPULAR_COUNTRIES.some(
+    (c) => c.currencyCode === currency.code
+  )
+    ? POPULAR_COUNTRIES
+    : [
+        {
+          countryCode,
+          countryName: currency.name,
+          currencyCode: currency.code,
+        },
+        ...POPULAR_COUNTRIES,
+      ];
+
+  const sectionTitle =
+    section === 'tickets' && ticketSubView === 'new'
+      ? 'Create New Ticket'
+      : section === 'tickets' && ticketSubView === 'detail' && viewedTicket
+      ? viewedTicket.id
+      : SIDEBAR_ITEMS.find((item) => item.id === section)?.label ?? 'Overview';
+
+  const initials = (currentUser?.name ?? 'CP')
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? '')
+    .join('');
+
+  const handleOpenQuickOrder = (presetId?: string) => {
+    if (presetId) setQuickCatalogId(presetId);
+    setQuickDomainInput('');
+    setQuickOrderError('');
+    setShowQuickOrderModal(true);
+  };
+
+  const handlePlaceQuickOrder = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser) return;
+    const item =
+      QUICK_ORDER_CATALOG.find((c) => c.id === quickCatalogId) ??
+      QUICK_ORDER_CATALOG[0];
+    const cleanHost = quickDomainInput.trim().toLowerCase();
+    if (!cleanHost || !cleanHost.includes('.')) {
+      setQuickOrderError('Enter a valid domain or node hostname (e.g. app.yourcompany.com).');
+      return;
+    }
+
+    const cycle: PlatformOrder['billingCycle'] =
+      item.productType === 'Domain Registration' ? 'Yearly' : quickCycle;
+    const amountUsd = cycle === 'Yearly' ? item.yearlyUsd : item.monthlyUsd;
+
+    const { order: created } = addOrder({
+      clientEmail: currentUser.email,
+      clientName: currentUser.name,
+      country: currentUser.country,
+      productType: item.productType,
+      planName: item.planName,
+      domainOrHost: cleanHost,
+      billingCycle: cycle,
+      amountUsd,
+      paymentMethod: 'Account Invoice (Unpaid)',
+      datacenter:
+        item.productType === 'Domain Registration'
+          ? 'Global Anycast DNS'
+          : quickDatacenter,
+      status: 'pending',
+    });
+
+    setShowQuickOrderModal(false);
+    setQuickOrderError('');
+    setSelectedInvoiceOrderId(created.id);
+    navigateWithinDashboard('billing');
+    showToast(`Order ${created.id} created — settle invoice to activate service.`);
+  };
+
+  const handleAttachFiles = async (
+    fileList: FileList | null,
+    target: 'new' | 'reply'
+  ) => {
+    if (!fileList || fileList.length === 0) return;
+    const current = target === 'new' ? newTicketAttachments : replyAttachments;
+    const setError = target === 'new' ? setNewTicketError : setReplyAttachmentError;
+    const setList =
+      target === 'new' ? setNewTicketAttachments : setReplyAttachments;
+
+    const remainingSlots = Math.max(0, 4 - current.length);
+    if (remainingSlots === 0) {
+      setError('Maximum 4 attachments allowed per message.');
+      return;
+    }
+
+    const selectedFiles = Array.from(fileList).slice(0, remainingSlots);
+    const maxBytes = 2 * 1024 * 1024;
+    const oversized = selectedFiles.find((f) => f.size > maxBytes);
+    if (oversized) {
+      setError(
+        `File "${oversized.name}" exceeds the 2 MB limit (${formatAttachmentSize(oversized.size)}).`
+      );
+      return;
+    }
+
+    try {
+      const encoded = await Promise.all(selectedFiles.map(readSingleFileAsAttachment));
+      setError('');
+      setList((prev) => [...prev, ...encoded].slice(0, 4));
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Unable to attach the selected file.'
+      );
+    }
+  };
+
+  const handleOpenCreateTicketPage = (preselectedService?: string) => {
+    setNewTicketSubject('');
+    setNewTicketDept('Technical Support');
+    setNewTicketPriority('Normal');
+    setNewTicketService(preselectedService ?? '');
+    setNewTicketBody('');
+    setNewTicketAttachments([]);
+    setNewTicketError('');
+    navigateWithinDashboard('tickets', 'new', null);
+  };
+
+  const handleCreateTicketSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newTicketSubject.trim() || newTicketSubject.trim().length < 4) {
+      setNewTicketError('Please enter a descriptive ticket subject (minimum 4 characters).');
+      return;
+    }
+    if (!newTicketBody.trim() || newTicketBody.trim().length < 10) {
+      setNewTicketError('Please describe your issue or request in detail (minimum 10 characters).');
+      return;
+    }
+
+    const created = createSupportTicket({
+      subject: newTicketSubject,
+      department: newTicketDept,
+      priority: newTicketPriority,
+      relatedService: newTicketService || undefined,
+      message: newTicketBody,
+      attachments: newTicketAttachments,
+    });
+    if (created) {
+      setNewTicketError('');
+      setNewTicketAttachments([]);
+      setTicketReplyText('');
+      setReplyAttachments([]);
+      setReplyAttachmentError('');
+      navigateWithinDashboard('tickets', 'detail', created.id);
+      showToast(
+        `Ticket ${created.id} created (${created.department}) — live engineer triage active.`
+      );
+    }
+  };
+
+  const handleReplySubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!viewedTicket) return;
+    if (!ticketReplyText.trim() && replyAttachments.length === 0) return;
+    replySupportTicket(viewedTicket.id, ticketReplyText, replyAttachments);
+    setTicketReplyText('');
+    setReplyAttachments([]);
+    setReplyAttachmentError('');
+    showToast(`Reply sent on ${viewedTicket.id} — status updated to Open`);
+  };
+
+  const handleExportLoginLogsCsv = () => {
+    if (!currentUser || myLoginLogs.length === 0) return;
+    const escapeCsv = (val: string) => `"${val.replace(/"/g, '""')}"`;
+    const header = [
+      'Log ID',
+      'Timestamp (UTC)',
+      'Event',
+      'Status',
+      'Auth Method',
+      'Device / Browser',
+      'IP Address',
+      'Location',
+    ].join(',');
+    const rows = myLoginLogs.map((log) =>
+      [
+        escapeCsv(log.id),
+        escapeCsv(log.timestampUtc),
+        escapeCsv(log.eventType),
+        escapeCsv(formatLoginLogStatusLabel(log.status)),
+        escapeCsv(log.authMethod),
+        escapeCsv(log.deviceSummary),
+        escapeCsv(log.ipAddress),
+        escapeCsv(log.locationLabel),
+      ].join(',')
+    );
+    const blob = new Blob([[header, ...rows].join('\n')], {
+      type: 'text/csv;charset=utf-8',
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `cpcloudhost-login-activity-${currentUser.username}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    showToast('Login activity CSV exported');
+  };
+
+  const handleSaveProfile = (e: React.FormEvent) => {
+    e.preventDefault();
+    const res = updateClientProfile({
+      name: profileName,
+      company: profileCompany,
+      phone: profilePhone,
+      country: profileCountry,
+    });
+    if (!res.ok) {
+      setProfileError(res.error ?? 'Unable to save profile.');
+      return;
+    }
+    setProfileError('');
+    showToast('Account and billing profile saved');
+  };
+
+  const handleStartTwoFactorSetup = () => {
+    const freshSecret = generateBase32Secret(32);
+    setSetupSecret(freshSecret);
+    setVerifyCodeInput('');
+    setTwoFactorError('');
+    setSetup2faActive(true);
+  };
+
+  const handleConfirmTwoFactorSetup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!setupSecret || twoFactorBusy) return;
+    setTwoFactorBusy(true);
+    const result = await enableTwoFactorAuth(setupSecret, verifyCodeInput);
+    setTwoFactorBusy(false);
+    if (!result.ok) {
+      setTwoFactorError(
+        result.error ?? 'Invalid 6-digit verification code. Try again.'
+      );
+      return;
+    }
+    setSetup2faActive(false);
+    setSetupSecret('');
+    setVerifyCodeInput('');
+    setTwoFactorError('');
+    setRevealedBackupCodes(true);
+    showToast('Two-Factor Authentication (TOTP) activated for your account.');
+  };
+
+  const handleDisableTwoFactor = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (twoFactorBusy) return;
+    setTwoFactorBusy(true);
+    const res = await disableTwoFactorAuth(disable2faConfirmInput);
+    setTwoFactorBusy(false);
+    if (!res.ok) {
+      setTwoFactorError(res.error ?? 'Verification failed.');
+      return;
+    }
+    setDisable2faPromptOpen(false);
+    setDisable2faConfirmInput('');
+    setTwoFactorError('');
+    showToast('Two-Factor Authentication disabled.');
+  };
+
+  const handleDownloadBackupCodes = (codes: string[]) => {
+    if (!currentUser || !codes.length) return;
+    const content = [
+      'cpcloudhost.com — Two-Factor Authentication Recovery Codes',
+      `Account: ${currentUser.email} (${currentUser.id})`,
+      `Generated: ${new Date().toISOString()}`,
+      '',
+      'Store these single-use recovery codes securely. Each code works once:',
+      ...codes.map((c, idx) => `${idx + 1}. ${c}`),
+    ].join('\n');
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `cpcloudhost-2fa-recovery-${currentUser.username}.txt`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const is2faEnabled = Boolean(activeAccountRecord?.twoFactorEnabled);
+  const backupCodes = activeAccountRecord?.twoFactorBackupCodes ?? [];
+
+  if (!currentUser) return null;
+
+  return (
+    <div className="min-h-screen bg-[#F8FAFC] text-[#0F172A] flex font-sans antialiased">
+      {/* Mobile Sidebar Backdrop */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-[1px] lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* Left Fixed Enterprise Sidebar (Upmind-style 264px) */}
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 w-[264px] bg-white border-r border-[#E2E8F0] flex flex-col transition-transform duration-200 lg:static lg:translate-x-0 ${
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
+        {/* Brand Wordmark Header */}
+        <div className="h-16 px-5 border-b border-[#E2E8F0] flex items-center justify-between shrink-0">
+          <a
+            href="/"
+            onClick={(e) => {
+              e.preventDefault();
+              onNavigateHome();
+            }}
+            className="inline-flex items-center gap-2.5 text-[#0F172A] whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#0E6B63] rounded"
+          >
+            <svg
+              width="28"
+              height="28"
+              viewBox="0 0 30 30"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
+              className="shrink-0"
+            >
+              <rect width="30" height="30" rx="7" fill="#0E6B63" />
+              <path
+                d="M9.2 18.2H20.8C22.1807 18.2 23.3 17.0807 23.3 15.7C23.3 14.4327 22.357 13.3855 21.1329 13.2215C20.7423 10.9367 18.7526 9.2 16.35 9.2C13.6714 9.2 11.5 11.3714 11.5 14.05C11.5 14.191 11.506 14.3307 11.5178 14.4688C9.69915 14.6225 8.3 16.1465 8.3 18C8.3 18.0674 8.30185 18.1343 8.3055 18.2H9.2Z"
+                fill="white"
+              />
+              <rect x="8.8" y="20.4" width="12.4" height="1.8" rx="0.9" fill="#10B981" />
+            </svg>
+            <span className="font-display text-[17px] font-bold tracking-tight">
+              cpcloudhost.com
+            </span>
+          </a>
+
+          <button
+            type="button"
+            aria-label="Close sidebar"
+            onClick={() => setSidebarOpen(false)}
+            className="lg:hidden p-1.5 rounded-lg text-slate-400 hover:text-[#0F172A] cursor-pointer"
+          >
+            <X className="w-5 h-5" aria-hidden="true" />
+          </button>
+        </div>
+
+        {/* Workspace Navigation Links */}
+        <div className="flex-1 overflow-y-auto px-3 py-5 space-y-6">
+          <nav aria-label="Client portal navigation" className="space-y-1">
+            {SIDEBAR_ITEMS.map((item) => {
+              const Icon = item.icon;
+              const isActive = section === item.id;
+              const badgeCount =
+                item.id === 'services'
+                  ? myHostingServices.length
+                  : item.id === 'domains'
+                  ? myDomains.length
+                  : item.id === 'billing'
+                  ? unpaidOrders.length
+                  : item.id === 'tickets'
+                  ? openOrPendingTicketsCount
+                  : 0;
+
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => navigateWithinDashboard(item.id, 'list', null)}
+                  className={`w-full flex items-center justify-between gap-2.5 px-3.5 py-2.5 rounded-xl text-[13.5px] font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                    isActive
+                      ? 'bg-[#F2FAF8] text-[#0E6B63] font-semibold'
+                      : 'text-slate-600 hover:bg-[#F8FAFC] hover:text-[#0F172A]'
+                  }`}
+                >
+                  <span className="inline-flex items-center gap-2.5 min-w-0">
+                    <Icon
+                      className={`w-4 h-4 shrink-0 ${
+                        isActive ? 'text-[#0E6B63]' : 'text-slate-400'
+                      }`}
+                      aria-hidden={true}
+                    />
+                    <span className="truncate">{item.label}</span>
+                  </span>
+                  {badgeCount > 0 && (
+                    <span
+                      className={`font-mono-num text-xs font-semibold ${
+                        item.id === 'billing' && unpaidOrders.length > 0
+                          ? 'text-[#D97706]'
+                          : isActive
+                          ? 'text-[#0E6B63]'
+                          : 'text-slate-400'
+                      }`}
+                    >
+                      {badgeCount}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </nav>
+
+          {/* Compact Sidebar Support PIN Card (Permanent · Never Expires) */}
+          {activeSupportPin && (
+            <div className="mx-1 rounded-xl border border-[#E2E8F0] bg-[#F8FAFC] p-3.5 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#0F172A]">
+                  <Headphones className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+                  <span>Support PIN</span>
+                </span>
+                <span className="text-[11px] font-semibold text-[#0E6B63]">
+                  Permanent
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2 bg-white border border-[#E2E8F0] rounded-lg px-2.5 py-1.5">
+                <span className="font-mono-num text-sm font-bold tracking-[0.18em] text-[#0F172A]">
+                  {revealSupportPin ? activeSupportPin.pin : '••••••'}
+                </span>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    aria-label={revealSupportPin ? 'Hide Support PIN' : 'Show Support PIN'}
+                    onClick={() => setRevealSupportPin((prev) => !prev)}
+                    className="p-1 text-slate-400 hover:text-[#0F172A] cursor-pointer"
+                  >
+                    {revealSupportPin ? (
+                      <EyeOff className="w-3.5 h-3.5" aria-hidden="true" />
+                    ) : (
+                      <Eye className="w-3.5 h-3.5" aria-hidden="true" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Copy Support PIN"
+                    onClick={() =>
+                      handleCopy('sidebar-pin', activeSupportPin.pin, 'Support PIN')
+                    }
+                    className="p-1 text-slate-400 hover:text-[#0E6B63] cursor-pointer"
+                  >
+                    {copiedKey === 'sidebar-pin' ? (
+                      <Check className="w-3.5 h-3.5 text-[#16A34A]" aria-hidden="true" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Regenerate Support PIN"
+                    onClick={() => {
+                      rotateSupportPin();
+                      setRevealSupportPin(true);
+                      showToast('New permanent Support PIN generated');
+                    }}
+                    className="p-1 text-slate-400 hover:text-[#0E6B63] cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Portal Resources & Role Navigation */}
+          <div className="pt-4 border-t border-[#E2E8F0] space-y-1">
+            <p className="px-3.5 pb-1 text-xs font-medium text-slate-400">
+              Platform Shortcuts
+            </p>
+
+            <a
+              href="/knowledge-base"
+              onClick={(e) => {
+                e.preventDefault();
+                setSidebarOpen(false);
+                onOpenKnowledgeBase();
+              }}
+              className="w-full flex items-center justify-between px-3.5 py-2 rounded-xl text-[13.5px] font-medium text-slate-600 hover:bg-[#F8FAFC] hover:text-[#0F172A] transition-colors whitespace-nowrap"
+            >
+              <span className="inline-flex items-center gap-2.5">
+                <BookOpen className="w-4 h-4 text-slate-400 shrink-0" aria-hidden="true" />
+                <span>Knowledge Base</span>
+              </span>
+              <ExternalLink className="w-3.5 h-3.5 text-slate-400 shrink-0" aria-hidden="true" />
+            </a>
+
+            <a
+              href="/"
+              onClick={(e) => {
+                e.preventDefault();
+                setSidebarOpen(false);
+                onNavigateHome();
+              }}
+              className="w-full flex items-center justify-between px-3.5 py-2 rounded-xl text-[13.5px] font-medium text-slate-600 hover:bg-[#F8FAFC] hover:text-[#0F172A] transition-colors whitespace-nowrap"
+            >
+              <span className="inline-flex items-center gap-2.5">
+                <Globe className="w-4 h-4 text-slate-400 shrink-0" aria-hidden="true" />
+                <span>Public Storefront</span>
+              </span>
+              <ExternalLink className="w-3.5 h-3.5 text-slate-400 shrink-0" aria-hidden="true" />
+            </a>
+          </div>
+        </div>
+
+        {/* Bottom Client Identity & Sign Out */}
+        <div className="p-3.5 border-t border-[#E2E8F0] space-y-2.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => navigateWithinDashboard('account')}
+            className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-[#F8FAFC] transition-colors text-left cursor-pointer"
+          >
+            <div className="w-9 h-9 rounded-lg bg-[#0E6B63] text-white font-display text-xs font-bold flex items-center justify-center shrink-0">
+              {initials}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-[#0F172A] truncate">
+                {currentUser.name}
+              </p>
+              <p className="font-mono text-[11px] text-slate-500 truncate">
+                {currentUser.username} · <span className="capitalize">{currentUser.role}</span>
+              </p>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              logout();
+              onSignedOut();
+            }}
+            className="w-full min-h-[38px] inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-[#E2E8F0] hover:border-red-300 hover:text-[#DC2626] text-xs font-semibold text-slate-600 transition-colors cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Sign Out</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Content Area */}
+      <div className="flex-1 min-w-0 flex flex-col">
+        {adminImpersonation && (
+          <div className="bg-[#0F172A] text-white px-4 sm:px-6 lg:px-8 py-2 flex flex-wrap items-center justify-between gap-2 text-xs border-b border-slate-800">
+            <span className="font-medium text-slate-200">
+              Admin Portal Session: Signed in to Client Dashboard as{' '}
+              <strong className="font-semibold text-white">
+                {currentUser.name}
+              </strong>{' '}
+              ({currentUser.email})
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                const returnedClientId = exitClientImpersonation();
+                if (returnedClientId && onReturnToAdminClient) {
+                  onReturnToAdminClient(returnedClientId);
+                }
+              }}
+              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#0E6B63] hover:bg-[#0A534D] text-white font-semibold whitespace-nowrap cursor-pointer"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Return to Admin Profile</span>
+            </button>
+          </div>
+        )}
+
+        {/* Contextual Workspace Top Bar */}
+        <header className="sticky top-0 z-30 h-16 bg-white/95 backdrop-blur-md border-b border-[#E2E8F0] px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <button
+              type="button"
+              aria-label="Open menu"
+              onClick={() => setSidebarOpen(true)}
+              className="lg:hidden p-2 rounded-lg border border-[#E2E8F0] text-[#0F172A] hover:bg-[#F8FAFC] cursor-pointer"
+            >
+              <Menu className="w-5 h-5" aria-hidden="true" />
+            </button>
+
+            <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-sm min-w-0">
+              <button
+                type="button"
+                onClick={() => navigateWithinDashboard('overview')}
+                className="text-slate-500 hover:text-[#0E6B63] hidden sm:inline whitespace-nowrap cursor-pointer"
+              >
+                Client Portal
+              </button>
+              <span className="text-slate-300 hidden sm:inline" aria-hidden="true">
+                /
+              </span>
+              {section === 'tickets' && ticketSubView !== 'list' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => navigateWithinDashboard('tickets', 'list', null)}
+                    className="text-slate-500 hover:text-[#0E6B63] whitespace-nowrap cursor-pointer"
+                  >
+                    Support Tickets
+                  </button>
+                  <span className="text-slate-300" aria-hidden="true">
+                    /
+                  </span>
+                </>
+              )}
+              <h1 className="font-display font-bold text-[#0F172A] tracking-tight truncate">
+                {sectionTitle}
+              </h1>
+            </nav>
+          </div>
+
+          <div className="flex items-center gap-2.5 shrink-0">
+            {/* Live Currency Selector */}
+            <div className="relative">
+              <button
+                type="button"
+                aria-expanded={currencyMenuOpen}
+                onClick={() => setCurrencyMenuOpen((prev) => !prev)}
+                className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[#E2E8F0] bg-white hover:border-[#0E6B63]/50 text-xs font-semibold text-[#0F172A] transition-colors whitespace-nowrap cursor-pointer"
+              >
+                <Globe className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+                <span className="font-mono">{currency.code}</span>
+              </button>
+
+              {currencyMenuOpen && (
+                <div className="absolute right-0 top-full mt-2 w-60 bg-white border border-[#E2E8F0] rounded-xl shadow-[0_18px_40px_-12px_rgba(15,23,42,0.16)] p-1.5 z-50">
+                  <div className="max-h-64 overflow-y-auto space-y-0.5">
+                    {currencyChoices.map((choice) => {
+                      const meta = CURRENCY_CATALOG[choice.currencyCode];
+                      const active = currency.code === choice.currencyCode;
+                      return (
+                        <button
+                          key={`${choice.countryCode}-${choice.currencyCode}`}
+                          type="button"
+                          onClick={() => {
+                            setManualCountry(choice.countryCode);
+                            setCurrencyMenuOpen(false);
+                          }}
+                          className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs cursor-pointer ${
+                            active
+                              ? 'bg-[#F2FAF8] text-[#0E6B63] font-semibold'
+                              : 'text-[#0F172A] hover:bg-[#F8FAFC]'
+                          }`}
+                        >
+                          <span className="truncate">
+                            <span className="font-mono font-bold mr-2">
+                              {choice.currencyCode}
+                            </span>
+                            {meta?.name ?? choice.countryName}
+                          </span>
+                          {active && <Check className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {detectionSource === 'manual' && (
+                    <button
+                      type="button"
+                      disabled={isDetecting}
+                      onClick={() => {
+                        resetToAutoIp();
+                        setCurrencyMenuOpen(false);
+                      }}
+                      className="mt-1 w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-[#0E6B63] border-t border-slate-100 hover:bg-[#F2FAF8] rounded-lg cursor-pointer"
+                    >
+                      <RefreshCw
+                        className={`w-3.5 h-3.5 ${isDetecting ? 'animate-spin' : ''}`}
+                        aria-hidden="true"
+                      />
+                      <span>Auto-Detect IP Currency</span>
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Primary Order Action */}
+            <button
+              type="button"
+              onClick={() => {
+                if (onOrderSharedHosting) {
+                  onOrderSharedHosting();
+                } else {
+                  handleOpenQuickOrder();
+                }
+              }}
+              className="min-h-[38px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs sm:text-sm font-semibold shadow-[0_4px_14px_rgba(14,107,99,0.2)] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Plus className="w-4 h-4 shrink-0" aria-hidden="true" />
+              <span>Order Hosting</span>
+            </button>
+          </div>
+        </header>
+
+        {/* Live Action Notification Toast */}
+        {toastMessage && (
+          <div className="px-4 sm:px-6 lg:px-8 pt-4">
+            <div
+              role="status"
+              className="max-w-[1280px] mx-auto flex items-center justify-between gap-3 px-4 py-2.5 rounded-xl bg-[#F2FAF8] border border-[#0E6B63]/25 text-xs sm:text-sm font-medium text-[#0E6B63]"
+            >
+              <span className="inline-flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden="true" />
+                <span>{toastMessage}</span>
+              </span>
+              <button
+                type="button"
+                aria-label="Dismiss message"
+                onClick={() => setToastMessage('')}
+                className="text-[#0E6B63] hover:text-[#0A534D] cursor-pointer"
+              >
+                <X className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Main Scrollable Viewport */}
+        <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+          <div className="max-w-[1280px] mx-auto space-y-6">
+            {/* ============================ OVERVIEW ============================ */}
+            {section === 'overview' && (
+              <>
+                <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+                  <div>
+                    <h2
+                      className="font-display text-2xl sm:text-[28px] font-bold tracking-tight text-[#0F172A]"
+                      style={{ textWrap: 'balance' }}
+                    >
+                      Welcome back, {currentUser.name}
+                    </h2>
+                    <p className="mt-1.5 text-sm text-slate-600 leading-relaxed">
+                      Account <span className="font-mono text-[#0F172A]">{currentUser.id}</span> ·{' '}
+                      <span className="font-mono text-[#0F172A]">{currentUser.email}</span> · Region:{' '}
+                      {currentUser.country}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenCreateTicketPage()}
+                      className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-[#E2E8F0] bg-white hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] transition-colors whitespace-nowrap cursor-pointer"
+                    >
+                      <MessageSquarePlus className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                      <span>New Ticket</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenQuickOrder('domain-com')}
+                      className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-[#E2E8F0] bg-white hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] transition-colors whitespace-nowrap cursor-pointer"
+                    >
+                      <Globe className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                      <span>Register Domain</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Unpaid Invoice Callout */}
+                {unpaidOrders.length > 0 && (
+                  <div className="bg-white border border-amber-300 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="flex items-start gap-3">
+                      <AlertCircle
+                        className="w-5 h-5 text-[#D97706] shrink-0 mt-0.5"
+                        aria-hidden="true"
+                      />
+                      <div>
+                        <p className="font-display text-sm font-bold text-[#0F172A]">
+                          {unpaidOrders.length} Unpaid{' '}
+                          {unpaidOrders.length === 1 ? 'Invoice' : 'Invoices'} Due
+                        </p>
+                        <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
+                          Total balance of{' '}
+                          <span className="font-mono-num font-bold text-[#0F172A]">
+                            {formatPrice(unpaidTotalUsd)}
+                          </span>{' '}
+                          awaiting settlement to activate or renew queued services.
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBillingFilter('unpaid');
+                        setSelectedInvoiceOrderId(unpaidOrders[0].id);
+                        navigateWithinDashboard('billing');
+                      }}
+                      className="min-h-[40px] px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      Pay Invoice Now
+                    </button>
+                  </div>
+                )}
+
+                {/* 4-Column KPI Summary Strip */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <button
+                    type="button"
+                    onClick={() => navigateWithinDashboard('services')}
+                    className="bg-white border border-[#E2E8F0] hover:border-[#0E6B63]/50 rounded-xl p-5 text-left transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-slate-500">
+                        Active Services
+                      </span>
+                      <Server className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                    </div>
+                    <p className="mt-2 font-mono-num text-2xl font-bold text-[#0F172A]">
+                      {activeServicesCount}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {myHostingServices.length} total cloud &amp; server plans
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => navigateWithinDashboard('domains')}
+                    className="bg-white border border-[#E2E8F0] hover:border-[#0E6B63]/50 rounded-xl p-5 text-left transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-slate-500">
+                        Managed Domains
+                      </span>
+                      <Globe className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                    </div>
+                    <p className="mt-2 font-mono-num text-2xl font-bold text-[#0F172A]">
+                      {myDomains.length}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Anycast DNS &amp; Registrar Lock
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => navigateWithinDashboard('billing')}
+                    className="bg-white border border-[#E2E8F0] hover:border-[#0E6B63]/50 rounded-xl p-5 text-left transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-slate-500">
+                        Balance Due
+                      </span>
+                      <Receipt
+                        className={`w-4 h-4 ${
+                          unpaidOrders.length > 0 ? 'text-[#D97706]' : 'text-[#16A34A]'
+                        }`}
+                        aria-hidden="true"
+                      />
+                    </div>
+                    <p className="mt-2 font-mono-num text-2xl font-bold text-[#0F172A]">
+                      {formatPrice(unpaidTotalUsd)}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {unpaidOrders.length > 0
+                        ? `${unpaidOrders.length} open invoice`
+                        : 'All invoices paid in full'}
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => navigateWithinDashboard('tickets', 'list', null)}
+                    className="bg-white border border-[#E2E8F0] hover:border-[#0E6B63]/50 rounded-xl p-5 text-left transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-slate-500">
+                        Open &amp; Pending Tickets
+                      </span>
+                      <LifeBuoy className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                    </div>
+                    <p className="mt-2 font-mono-num text-2xl font-bold text-[#0F172A]">
+                      {openOrPendingTicketsCount}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {myTickets.length} total support requests
+                    </p>
+                  </button>
+                </div>
+
+                {/* Primary 2-Column Portal Workspace Grid */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                  {/* Left: Your Cloud Services */}
+                  <section className="lg:col-span-7 bg-white border border-[#E2E8F0] rounded-xl overflow-hidden">
+                    <div className="px-5 py-4 border-b border-[#E2E8F0] flex items-center justify-between gap-3">
+                      <h3 className="font-display text-base font-bold text-[#0F172A]">
+                        Your Hosting &amp; Cloud Services
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={() => navigateWithinDashboard('services')}
+                        className="text-xs font-semibold text-[#0E6B63] hover:text-[#0A534D] whitespace-nowrap cursor-pointer"
+                      >
+                        View all
+                      </button>
+                    </div>
+
+                    {myHostingServices.length === 0 ? (
+                      <div className="p-8 text-center">
+                        <Server className="w-8 h-8 text-slate-300 mx-auto mb-3" aria-hidden="true" />
+                        <p className="text-sm font-semibold text-[#0F172A]">
+                          No active hosting or compute services yet
+                        </p>
+                        <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto leading-relaxed">
+                          Launch shared cloud hosting, managed WordPress, cPanel, or an unmanaged KVM VPS node in under 60 seconds.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenQuickOrder()}
+                          className="mt-4 min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+                        >
+                          <Plus className="w-4 h-4" aria-hidden="true" />
+                          <span>Deploy First Service</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-[#E2E8F0]">
+                        {myHostingServices.slice(0, 5).map((svc) => (
+                          <div
+                            key={svc.id}
+                            className="px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-[#F8FAFC] transition-colors"
+                          >
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2.5">
+                                <p className="font-display text-sm font-bold text-[#0F172A] truncate">
+                                  {svc.planName}
+                                </p>
+                                <StatusIndicator
+                                  tone={formatOrderTone(svc.status)}
+                                  label={svc.status.charAt(0).toUpperCase() + svc.status.slice(1)}
+                                />
+                              </div>
+                              <p className="mt-1 text-xs text-slate-500 truncate">
+                                <span className="font-mono text-[#0F172A]">
+                                  {svc.domainOrHost}
+                                </span>{' '}
+                                · {svc.datacenter} · {svc.billingCycle}
+                              </p>
+                            </div>
+                            <div className="flex items-center justify-between sm:justify-end gap-4 shrink-0">
+                              <span className="font-mono-num text-sm font-semibold text-[#0F172A]">
+                                {formatPrice(svc.amountUsd)}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setManagedServiceId(svc.id)}
+                                className="min-h-[34px] px-3 py-1.5 rounded-lg border border-[#E2E8F0] bg-white hover:border-[#0E6B63] hover:text-[#0E6B63] text-xs font-semibold text-[#0F172A] transition-colors cursor-pointer"
+                              >
+                                Manage
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+
+                  {/* Right: Support & Account Readiness */}
+                  <div className="lg:col-span-5 space-y-6">
+                    <section className="bg-white border border-[#E2E8F0] rounded-xl overflow-hidden">
+                      <div className="px-5 py-4 border-b border-[#E2E8F0] flex items-center justify-between">
+                        <h3 className="font-display text-base font-bold text-[#0F172A]">
+                          Recent Support Tickets
+                        </h3>
+                        <button
+                          type="button"
+                          onClick={() => navigateWithinDashboard('tickets', 'list', null)}
+                          className="text-xs font-semibold text-[#0E6B63] hover:text-[#0A534D] cursor-pointer"
+                        >
+                          View all
+                        </button>
+                      </div>
+
+                      {myTickets.length === 0 ? (
+                        <div className="p-6 text-center">
+                          <LifeBuoy className="w-7 h-7 text-slate-300 mx-auto mb-2" aria-hidden="true" />
+                          <p className="text-sm font-semibold text-[#0F172A]">
+                            No support requests yet
+                          </p>
+                          <p className="text-xs text-slate-500 mt-1">
+                            Our 24/7 engineering team responds within 15 minutes.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenCreateTicketPage()}
+                            className="mt-3 min-h-[38px] px-3.5 py-2 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0E6B63] cursor-pointer"
+                          >
+                            Create Support Ticket
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="divide-y divide-[#E2E8F0]">
+                          {myTickets.slice(0, 3).map((tkt) => (
+                            <div
+                              key={tkt.id}
+                              className="px-5 py-3.5 flex items-center justify-between gap-3 hover:bg-[#F8FAFC] transition-colors"
+                            >
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-mono text-xs font-semibold text-[#0E6B63]">
+                                    {tkt.id}
+                                  </span>
+                                  <StatusIndicator
+                                    tone={formatTicketStatusTone(tkt.status)}
+                                    label={formatTicketStatusLabel(tkt.status)}
+                                  />
+                                </div>
+                                <p className="mt-1 text-sm font-semibold text-[#0F172A] truncate">
+                                  {tkt.subject}
+                                </p>
+                                <p className="text-xs text-slate-500 truncate">
+                                  {tkt.department}
+                                  {tkt.relatedService ? ` · ${tkt.relatedService}` : ''}
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  navigateWithinDashboard('tickets', 'detail', tkt.id)
+                                }
+                                className="min-h-[34px] px-3 py-1.5 rounded-lg border border-[#E2E8F0] bg-white hover:border-[#0E6B63] hover:text-[#0E6B63] text-xs font-semibold text-[#0F172A] shrink-0 cursor-pointer"
+                              >
+                                View
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </section>
+
+                    <section className="bg-white border border-[#E2E8F0] rounded-xl p-5">
+                      <div className="flex items-center justify-between">
+                        <h3 className="font-display text-sm font-bold text-[#0F172A]">
+                          Security &amp; Verification Posture
+                        </h3>
+                        <button
+                          type="button"
+                          onClick={() => navigateWithinDashboard('account')}
+                          className="text-xs font-semibold text-[#0E6B63] hover:underline cursor-pointer"
+                        >
+                          Manage
+                        </button>
+                      </div>
+                      <div className="mt-3 divide-y divide-[#E2E8F0] text-xs">
+                        <div className="py-2.5 flex items-center justify-between">
+                          <span className="text-slate-600">Two-Factor Auth (TOTP)</span>
+                          <StatusIndicator
+                            tone={is2faEnabled ? 'emerald' : 'amber'}
+                            label={is2faEnabled ? 'Enabled' : 'Not Configured'}
+                          />
+                        </div>
+                        <div className="py-2.5 flex items-center justify-between">
+                          <span className="text-slate-600">Support Verification PIN</span>
+                          <span className="font-mono-num font-bold text-[#0F172A]">
+                            {activeSupportPin ? `${activeSupportPin.pin} · Permanent` : 'Ready'}
+                          </span>
+                        </div>
+                        <div className="py-2.5 flex items-center justify-between">
+                          <span className="text-slate-600">Login Activity Audit</span>
+                          <button
+                            type="button"
+                            onClick={() => navigateWithinDashboard('account')}
+                            className="font-mono-num font-semibold text-[#0E6B63] hover:underline cursor-pointer"
+                          >
+                            {myLoginLogs.length} events recorded
+                          </button>
+                        </div>
+                        <div className="py-2.5 flex items-center justify-between">
+                          <span className="text-slate-600">Last Sign In</span>
+                          <span className="font-mono text-slate-700">
+                            {currentUser.signedInAt}
+                          </span>
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* ============================ SERVICES ============================ */}
+            {section === 'services' && (
+              <div className="space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="relative flex-1 max-w-md">
+                    <Search
+                      className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                      aria-hidden="true"
+                    />
+                    <input
+                      type="text"
+                      value={serviceSearch}
+                      onChange={(e) => setServiceSearch(e.target.value)}
+                      placeholder="Search plan, hostname, datacenter, or ID..."
+                      className="w-full min-h-[42px] pl-10 pr-4 py-2 text-sm bg-white border border-[#E2E8F0] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                    />
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg overflow-x-auto">
+                      {(['all', 'active', 'pending', 'suspended'] as const).map((tab) => (
+                        <button
+                          key={tab}
+                          type="button"
+                          onClick={() => setServiceStatusFilter(tab)}
+                          className={`px-3 py-1.5 text-xs font-semibold rounded-md capitalize whitespace-nowrap transition-colors cursor-pointer ${
+                            serviceStatusFilter === tab
+                              ? 'bg-white text-[#0F172A] shadow-sm'
+                              : 'text-slate-600 hover:text-[#0F172A]'
+                          }`}
+                        >
+                          {tab}
+                        </button>
+                      ))}
+                    </div>
+
+                    {onOrderSharedHosting && (
+                      <button
+                        type="button"
+                        onClick={onOrderSharedHosting}
+                        className="min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Order Shared Hosting</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="bg-white border border-[#E2E8F0] rounded-xl overflow-hidden">
+                  {filteredServices.length === 0 ? (
+                    <div className="p-10 text-center">
+                      <Server className="w-8 h-8 text-slate-300 mx-auto mb-3" aria-hidden="true" />
+                      <p className="text-sm font-semibold text-[#0F172A]">
+                        No matching hosting or VPS services
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Adjust your search filter or deploy a new cloud plan.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (onOrderSharedHosting) onOrderSharedHosting();
+                          else handleOpenQuickOrder();
+                        }}
+                        className="mt-4 min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+                      >
+                        <Plus className="w-4 h-4" aria-hidden="true" />
+                        <span>Order Shared Hosting</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="border-b border-[#E2E8F0] bg-[#F8FAFC] text-xs font-semibold text-slate-500">
+                            <th className="py-3 px-4">Service &amp; Plan</th>
+                            <th className="py-3 px-4">Hostname / IP</th>
+                            <th className="py-3 px-4">Datacenter</th>
+                            <th className="py-3 px-4">Renewal</th>
+                            <th className="py-3 px-4 text-right">Price</th>
+                            <th className="py-3 px-4">Status</th>
+                            <th className="py-3 px-4 text-right">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#E2E8F0] text-sm">
+                          {filteredServices.map((svc) => (
+                            <tr
+                              key={svc.id}
+                              className="hover:bg-[#F8FAFC] transition-colors"
+                            >
+                              <td className="py-3.5 px-4">
+                                <p className="font-display font-semibold text-[#0F172A]">
+                                  {svc.planName}
+                                </p>
+                                <p className="text-xs text-slate-500">
+                                  {svc.productType} · <span className="font-mono">{svc.id}</span>
+                                </p>
+                              </td>
+                              <td className="py-3.5 px-4">
+                                <p className="font-mono text-xs font-medium text-[#0F172A]">
+                                  {svc.domainOrHost}
+                                </p>
+                                {svc.serverIp && (
+                                  <p className="font-mono text-[11px] text-slate-500">
+                                    {svc.serverIp}
+                                  </p>
+                                )}
+                              </td>
+                              <td className="py-3.5 px-4 text-xs text-slate-600">
+                                {svc.datacenter}
+                              </td>
+                              <td className="py-3.5 px-4">
+                                <p className="font-mono-num text-xs text-[#0F172A]">
+                                  {svc.nextDueDate ?? 'Auto-scheduled'}
+                                </p>
+                                <p className="text-[11px] text-slate-500">
+                                  Auto-renew: {svc.autoRenew !== false ? 'On' : 'Off'}
+                                </p>
+                              </td>
+                              <td className="py-3.5 px-4 text-right font-mono-num font-semibold text-[#0F172A]">
+                                {formatPrice(svc.amountUsd)}
+                                <span className="block text-[11px] font-normal text-slate-500">
+                                  {svc.billingCycle}
+                                </span>
+                              </td>
+                              <td className="py-3.5 px-4">
+                                <StatusIndicator
+                                  tone={
+                                    isServiceLockedByBilling(svc)
+                                      ? 'red'
+                                      : formatOrderTone(svc.status)
+                                  }
+                                  label={
+                                    isServiceLockedByBilling(svc)
+                                      ? 'Locked · Due Unpaid'
+                                      : svc.status.charAt(0).toUpperCase() + svc.status.slice(1)
+                                  }
+                                />
+                              </td>
+                              <td className="py-3.5 px-4 text-right whitespace-nowrap space-x-1.5">
+                                {(() => {
+                                  const linkedInv = myInvoices.find(
+                                    (inv) => inv.orderId === svc.id
+                                  );
+                                  const locked = isServiceLockedByBilling(svc);
+                                  return (
+                                    <>
+                                      {locked && linkedInv && linkedInv.status !== 'paid' && (
+                                        <button
+                                          type="button"
+                                          onClick={() => setSelectedInvoiceOrderId(linkedInv.id)}
+                                          className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#DC2626] hover:bg-red-700 text-white text-xs font-semibold cursor-pointer"
+                                        >
+                                          <Lock className="w-3 h-3" aria-hidden="true" />
+                                          <span>Pay to Unlock</span>
+                                        </button>
+                                      )}
+                                      {linkedInv && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            downloadInvoicePdf(
+                                              linkedInv,
+                                              invoiceTemplateConfig,
+                                              paymentMethods,
+                                              {
+                                                code: currency.code,
+                                                formattedTotal: formatPrice(linkedInv.amountUsd),
+                                              }
+                                            );
+                                            showToast(`Downloaded ${linkedInv.id}.pdf`);
+                                          }}
+                                          title={`Download ${linkedInv.id}.pdf`}
+                                          className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] cursor-pointer"
+                                        >
+                                          <Download className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+                                          <span>PDF</span>
+                                        </button>
+                                      )}
+                                    </>
+                                  );
+                                })()}
+                                <button
+                                  type="button"
+                                  onClick={() => setManagedServiceId(svc.id)}
+                                  className="min-h-[34px] px-3 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] hover:text-[#0E6B63] text-xs font-semibold text-[#0F172A] transition-colors cursor-pointer"
+                                >
+                                  {isServiceLockedByBilling(svc) ? 'View Lock' : 'Manage'}
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ============================ DOMAINS ============================ */}
+            {section === 'domains' && (
+              <div className="space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="relative flex-1 max-w-md">
+                    <Search
+                      className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                      aria-hidden="true"
+                    />
+                    <input
+                      type="text"
+                      value={domainSearch}
+                      onChange={(e) => setDomainSearch(e.target.value)}
+                      placeholder="Search domain name or order ID..."
+                      className="w-full min-h-[42px] pl-10 pr-4 py-2 text-sm bg-white border border-[#E2E8F0] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                    />
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (onNavigateOrderCategory) {
+                          onNavigateOrderCategory('domain-transfer');
+                        } else {
+                          handleOpenQuickOrder('domain-com');
+                        }
+                      }}
+                      className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-[#CBD5E1] bg-white hover:border-[#0E6B63] text-[#0F172A] text-xs font-semibold whitespace-nowrap cursor-pointer"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+                      <span>Transfer Domain</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (onNavigateOrderCategory) {
+                          onNavigateOrderCategory('domain-registration');
+                        } else {
+                          handleOpenQuickOrder('domain-com');
+                        }
+                      }}
+                      className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold whitespace-nowrap cursor-pointer"
+                    >
+                      <Plus className="w-4 h-4" aria-hidden="true" />
+                      <span>Register New Domain</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bg-white border border-[#E2E8F0] rounded-xl overflow-hidden">
+                  {filteredDomains.length === 0 ? (
+                    <div className="p-10 text-center">
+                      <Globe className="w-8 h-8 text-slate-300 mx-auto mb-3" aria-hidden="true" />
+                      <p className="text-sm font-semibold text-[#0F172A]">
+                        No domains found under this account
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Register a .com, .io, .co.uk, or .cloud domain with Free WHOIS privacy and DNSSEC.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (onNavigateOrderCategory) {
+                            onNavigateOrderCategory('domain-registration');
+                          } else {
+                            handleOpenQuickOrder('domain-com');
+                          }
+                        }}
+                        className="mt-4 min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+                      >
+                        <Globe className="w-4 h-4" aria-hidden="true" />
+                        <span>Register Domain</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="border-b border-[#E2E8F0] bg-[#F8FAFC] text-xs font-semibold text-slate-500">
+                            <th className="py-3 px-4">Domain</th>
+                            <th className="py-3 px-4">Nameservers</th>
+                            <th className="py-3 px-4">Auto-Renew</th>
+                            <th className="py-3 px-4">Registrar Lock</th>
+                            <th className="py-3 px-4">WHOIS Privacy</th>
+                            <th className="py-3 px-4">Next Due</th>
+                            <th className="py-3 px-4">Status</th>
+                            <th className="py-3 px-4 text-right">Manage</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#E2E8F0] text-sm">
+                          {filteredDomains.map((dom) => (
+                            <tr
+                              key={dom.id}
+                              className="hover:bg-[#F8FAFC] transition-colors"
+                            >
+                              <td className="py-3.5 px-4">
+                                <p className="font-mono text-sm font-semibold text-[#0F172A]">
+                                  {dom.domainOrHost}
+                                </p>
+                                <p className="text-xs text-slate-500">{dom.planName}</p>
+                              </td>
+                              <td className="py-3.5 px-4 font-mono text-xs text-slate-600">
+                                {(dom.nameservers ?? ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']).join(
+                                  ' · '
+                                )}
+                              </td>
+                              <td className="py-3.5 px-4">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const nextAutoRenew = !(dom.autoRenew !== false);
+                                    updateClientOrderSettings(dom.id, { autoRenew: nextAutoRenew });
+                                    showToast(
+                                      `Auto-renew ${nextAutoRenew ? 'enabled' : 'disabled'} for ${dom.domainOrHost}`
+                                    );
+                                  }}
+                                  className={`px-2.5 py-1 rounded-full text-[11px] font-bold cursor-pointer transition-colors ${
+                                    dom.autoRenew !== false
+                                      ? 'bg-[#E6F4F2] text-[#0E6B63]'
+                                      : 'bg-slate-100 text-slate-600'
+                                  }`}
+                                >
+                                  {dom.autoRenew !== false ? 'Auto-Renew ON' : 'OFF'}
+                                </button>
+                              </td>
+                              <td className="py-3.5 px-4 text-xs font-medium text-[#0F172A]">
+                                {dom.registrarLock !== false ? (
+                                  <span className="inline-flex items-center gap-1 text-[#16A34A]">
+                                    <Lock className="w-3.5 h-3.5" aria-hidden="true" />
+                                    Locked
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 text-[#D97706]">
+                                    <Unlock className="w-3.5 h-3.5" aria-hidden="true" />
+                                    Unlocked
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3.5 px-4 text-xs text-slate-600">
+                                {dom.whoisPrivacy !== false ? 'Protected' : 'Public'}
+                              </td>
+                              <td className="py-3.5 px-4 font-mono-num text-xs text-slate-700">
+                                {dom.nextDueDate ?? '2027-11-01'}
+                              </td>
+                              <td className="py-3.5 px-4">
+                                <StatusIndicator
+                                  tone={formatOrderTone(dom.status)}
+                                  label={dom.status.charAt(0).toUpperCase() + dom.status.slice(1)}
+                                />
+                              </td>
+                              <td className="py-3.5 px-4 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => setManagedDomainId(dom.id)}
+                                  className="min-h-[34px] px-3 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] hover:text-[#0E6B63] text-xs font-semibold text-[#0F172A] transition-colors cursor-pointer"
+                                >
+                                  Manage DNS
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ============================ BILLING & INVOICES ============================ */}
+            {section === 'billing' && (
+              <div className="space-y-5">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="bg-white border border-[#E2E8F0] rounded-xl p-5">
+                    <span className="text-xs font-medium text-slate-500">
+                      Unpaid Balance Due
+                    </span>
+                    <p className="mt-1.5 font-mono-num text-2xl font-bold text-[#0F172A]">
+                      {formatPrice(unpaidTotalUsd)}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {unpaidOrders.length} open{' '}
+                      {unpaidOrders.length === 1 ? 'invoice' : 'invoices'}
+                    </p>
+                  </div>
+
+                  <div className="bg-white border border-[#E2E8F0] rounded-xl p-5">
+                    <span className="text-xs font-medium text-slate-500">
+                      Total Lifetime Billed
+                    </span>
+                    <p className="mt-1.5 font-mono-num text-2xl font-bold text-[#0F172A]">
+                      {formatPrice(
+                        myInvoices.reduce((sum, inv) => sum + inv.amountUsd, 0)
+                      )}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Across {myInvoices.length} issued invoices
+                    </p>
+                  </div>
+
+                  <div className="bg-white border border-[#E2E8F0] rounded-xl p-5">
+                    <span className="text-xs font-medium text-slate-500">
+                      Active Checkout Gateway
+                    </span>
+                    <p className="mt-1.5 font-mono text-sm font-bold text-[#0F172A] flex items-center gap-2">
+                      <CreditCard className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                      <span className="truncate">{selectedPayMethod}</span>
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {enabledPaymentMethods.length} active channels · Currency {currency.code}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="font-display text-lg font-bold text-[#0F172A]">
+                    Invoices &amp; Transactions
+                  </h2>
+
+                  <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
+                    {(['all', 'unpaid', 'paid'] as const).map((tab) => (
+                      <button
+                        key={tab}
+                        type="button"
+                        onClick={() => setBillingFilter(tab)}
+                        className={`px-3 py-1.5 text-xs font-semibold rounded-md capitalize cursor-pointer ${
+                          billingFilter === tab
+                            ? 'bg-white text-[#0F172A] shadow-sm'
+                            : 'text-slate-600 hover:text-[#0F172A]'
+                        }`}
+                      >
+                        {tab}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-white border border-[#E2E8F0] rounded-xl overflow-hidden">
+                  {filteredInvoices.length === 0 ? (
+                    <div className="p-10 text-center">
+                      <Receipt className="w-8 h-8 text-slate-300 mx-auto mb-3" aria-hidden="true" />
+                      <p className="text-sm font-semibold text-[#0F172A]">
+                        No invoices match this filter
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="border-b border-[#E2E8F0] bg-[#F8FAFC] text-xs font-semibold text-slate-500">
+                            <th className="py-3 px-4">Invoice</th>
+                            <th className="py-3 px-4">Service / Description</th>
+                            <th className="py-3 px-4">Payment Method</th>
+                            <th className="py-3 px-4">Start / Due</th>
+                            <th className="py-3 px-4 text-right">Amount</th>
+                            <th className="py-3 px-4">Status</th>
+                            <th className="py-3 px-4 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#E2E8F0] text-sm">
+                          {filteredInvoices.map((inv) => {
+                            const statusMeta: {
+                              label: string;
+                              tone: 'emerald' | 'amber' | 'red' | 'slate';
+                            } =
+                              inv.status === 'paid'
+                                ? { label: 'Paid', tone: 'emerald' }
+                                : inv.status === 'pending'
+                                  ? { label: 'Pending Review', tone: 'amber' }
+                                  : inv.status === 'overdue'
+                                    ? { label: 'Overdue', tone: 'red' }
+                                    : inv.status === 'cancelled'
+                                      ? { label: 'Cancelled', tone: 'slate' }
+                                      : inv.status === 'refunded'
+                                        ? { label: 'Refunded', tone: 'slate' }
+                                        : { label: 'Unpaid', tone: 'amber' };
+                            const needsAction =
+                              inv.status === 'unpaid' || inv.status === 'overdue';
+                            return (
+                              <tr key={inv.id} className="hover:bg-[#F8FAFC]">
+                                <td className="py-3.5 px-4 font-mono text-xs font-semibold text-[#0F172A] whitespace-nowrap">
+                                  <span className="block">{inv.id}</span>
+                                  {inv.autoGeneratedTrigger === 'order_approved' && (
+                                    <span className="inline-block mt-0.5 font-sans text-[10px] font-semibold text-[#0E6B63] bg-[#F2FAF8] px-1.5 py-0.5 rounded">
+                                      Auto-Generated
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="py-3.5 px-4">
+                                  <p className="font-display font-semibold text-[#0F172A]">
+                                    {inv.planName}
+                                    {inv.items && inv.items.length > 1 && (
+                                      <span className="ml-1.5 text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+                                        +{inv.items.length - 1} items
+                                      </span>
+                                    )}
+                                  </p>
+                                  <p className="text-xs text-slate-500 font-mono">
+                                    {inv.domainOrHost} · {inv.billingCycle}
+                                  </p>
+                                </td>
+                                <td className="py-3.5 px-4 text-xs text-slate-600">
+                                  <span className="block">{inv.paymentMethod}</span>
+                                  {inv.transactionRef && (
+                                    <span className="font-mono text-[11px] text-[#0E6B63]">
+                                      TID: {inv.transactionRef}
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="py-3.5 px-4 font-mono-num text-xs text-slate-600 whitespace-nowrap">
+                                  <div>{inv.issuedDate}</div>
+                                  <div className="text-[11px] text-slate-400">
+                                    Due {inv.dueDate}
+                                  </div>
+                                </td>
+                                <td className="py-3.5 px-4 text-right font-mono-num font-semibold text-[#0F172A] whitespace-nowrap">
+                                  {formatPrice(inv.amountUsd)}
+                                </td>
+                                <td className="py-3.5 px-4 whitespace-nowrap">
+                                  <StatusIndicator
+                                    tone={statusMeta.tone}
+                                    label={statusMeta.label}
+                                  />
+                                </td>
+                                <td className="py-3.5 px-4 text-right whitespace-nowrap space-x-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      downloadInvoicePdf(
+                                        inv,
+                                        invoiceTemplateConfig,
+                                        paymentMethods,
+                                        {
+                                          code: currency.code,
+                                          formattedTotal: formatPrice(inv.amountUsd),
+                                        }
+                                      );
+                                      showToast(`Downloaded ${inv.id}.pdf`);
+                                    }}
+                                    className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] cursor-pointer"
+                                  >
+                                    <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                                    <span>PDF</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setPaymentTxRef(inv.transactionRef || '');
+                                      setPaymentTxError('');
+                                      setSelectedInvoiceOrderId(inv.id);
+                                    }}
+                                    className={`min-h-[34px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                                      needsAction
+                                        ? 'bg-[#0E6B63] text-white hover:bg-[#0A534D]'
+                                        : 'border border-[#E2E8F0] text-[#0F172A] hover:border-[#0E6B63]'
+                                    }`}
+                                  >
+                                    {needsAction ? 'Pay Now' : 'View Invoice'}
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ============================ SUPPORT TICKETS (DEDICATED MULTI-PAGE UX, NO POPUPS) ============================ */}
+            {section === 'tickets' && ticketSubView === 'list' && (
+              <div className="space-y-5">
+                {/* Support Header & Live Support PIN Verification Strip */}
+                <div className="bg-white border border-[#E2E8F0] rounded-xl p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                  <div>
+                    <h2 className="font-display text-xl font-bold tracking-tight text-[#0F172A]">
+                      Support Tickets &amp; Priority Engineering Desk
+                    </h2>
+                    <p className="text-sm text-slate-600 mt-1">
+                      Select a ticket number to view full conversation history, or create a request linked to any service.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-3 shrink-0">
+                    {activeSupportPin && (
+                      <div className="inline-flex items-center gap-2.5 px-3.5 py-2 rounded-xl border border-[#E2E8F0] bg-[#F8FAFC]">
+                        <Headphones className="w-4 h-4 text-[#0E6B63] shrink-0" aria-hidden="true" />
+                        <div className="text-xs">
+                          <span className="text-slate-500">Support PIN: </span>
+                          <span className="font-mono-num font-bold text-[#0F172A] tracking-wider">
+                            {activeSupportPin.pin}
+                          </span>
+                          <span className="text-[#0E6B63] font-medium ml-1.5">
+                            · No Expiry
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          aria-label="Copy Support PIN"
+                          onClick={() =>
+                            handleCopy('tkt-pin', activeSupportPin.pin, 'Support PIN')
+                          }
+                          className="text-slate-400 hover:text-[#0E6B63] cursor-pointer"
+                        >
+                          {copiedKey === 'tkt-pin' ? (
+                            <Check className="w-3.5 h-3.5 text-[#16A34A]" aria-hidden="true" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                          )}
+                        </button>
+                      </div>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => handleOpenCreateTicketPage()}
+                      className="min-h-[42px] inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs sm:text-sm font-semibold shadow-[0_4px_14px_rgba(14,107,99,0.2)] whitespace-nowrap cursor-pointer"
+                    >
+                      <MessageSquarePlus className="w-4 h-4" aria-hidden="true" />
+                      <span>Create New Ticket</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Search & Real-Time Status Filters (Open, Pending, Resolved) */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="relative flex-1 max-w-md">
+                    <Search
+                      className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                      aria-hidden="true"
+                    />
+                    <input
+                      type="text"
+                      value={ticketSearch}
+                      onChange={(e) => setTicketSearch(e.target.value)}
+                      placeholder="Search ticket number, subject, department, or domain..."
+                      className="w-full min-h-[42px] pl-10 pr-4 py-2 text-sm bg-white border border-[#E2E8F0] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg overflow-x-auto">
+                    {(['all', 'open', 'pending', 'resolved'] as const).map((tab) => (
+                      <button
+                        key={tab}
+                        type="button"
+                        onClick={() => setTicketFilter(tab)}
+                        className={`px-3.5 py-1.5 text-xs font-semibold rounded-md capitalize whitespace-nowrap transition-colors cursor-pointer ${
+                          ticketFilter === tab
+                            ? 'bg-white text-[#0F172A] shadow-sm'
+                            : 'text-slate-600 hover:text-[#0F172A]'
+                        }`}
+                      >
+                        {tab}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Tickets Directory Table with Ticket Number & Dedicated View Button */}
+                <div className="bg-white border border-[#E2E8F0] rounded-xl overflow-hidden">
+                  {filteredTickets.length === 0 ? (
+                    <div className="p-12 text-center">
+                      <LifeBuoy className="w-9 h-9 text-slate-300 mx-auto mb-3" aria-hidden="true" />
+                      <p className="font-display text-base font-bold text-[#0F172A]">
+                        No support tickets found
+                      </p>
+                      <p className="text-xs sm:text-sm text-slate-500 mt-1 max-w-md mx-auto">
+                        Need help with a site migration, DNS config, billing, or server optimization? Open a new ticket on our dedicated request page.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenCreateTicketPage()}
+                        className="mt-4 min-h-[40px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+                      >
+                        <MessageSquarePlus className="w-4 h-4" aria-hidden="true" />
+                        <span>Create New Ticket</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="border-b border-[#E2E8F0] bg-[#F8FAFC] text-xs font-semibold text-slate-500">
+                            <th className="py-3.5 px-4">Ticket #</th>
+                            <th className="py-3.5 px-4">Subject &amp; Service</th>
+                            <th className="py-3.5 px-4">Department</th>
+                            <th className="py-3.5 px-4">Priority</th>
+                            <th className="py-3.5 px-4">Status</th>
+                            <th className="py-3.5 px-4">Last Updated</th>
+                            <th className="py-3.5 px-4 text-right">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#E2E8F0] text-sm">
+                          {filteredTickets.map((tkt) => (
+                            <tr
+                              key={tkt.id}
+                              className="hover:bg-[#F8FAFC] transition-colors"
+                            >
+                              <td className="py-4 px-4 font-mono text-xs font-bold text-[#0E6B63] whitespace-nowrap">
+                                {tkt.id}
+                              </td>
+                              <td className="py-4 px-4 min-w-[240px]">
+                                <p className="font-display font-semibold text-[#0F172A]">
+                                  {tkt.subject}
+                                </p>
+                                {(() => {
+                                  const attachmentCount = tkt.messages.reduce(
+                                    (sum, m) => sum + (m.attachments?.length ?? 0),
+                                    0
+                                  );
+                                  return (
+                                    <p className="text-xs text-slate-500 mt-0.5 flex flex-wrap items-center gap-1.5">
+                                      {tkt.relatedService ? (
+                                        <span className="font-mono text-[#0F172A]">
+                                          {tkt.relatedService}
+                                        </span>
+                                      ) : (
+                                        <span>General Account</span>
+                                      )}
+                                      <span>·</span>
+                                      <span>
+                                        {tkt.messages.length}{' '}
+                                        {tkt.messages.length === 1 ? 'message' : 'messages'}
+                                      </span>
+                                      {attachmentCount > 0 && (
+                                        <>
+                                          <span>·</span>
+                                          <span className="inline-flex items-center gap-1 text-[#0E6B63] font-medium">
+                                            <Paperclip className="w-3 h-3" aria-hidden="true" />
+                                            {attachmentCount}
+                                          </span>
+                                        </>
+                                      )}
+                                    </p>
+                                  );
+                                })()}
+                              </td>
+                              <td className="py-4 px-4 text-xs font-medium text-[#0F172A] whitespace-nowrap">
+                                {tkt.department}
+                              </td>
+                              <td className="py-4 px-4 text-xs font-medium text-slate-600 whitespace-nowrap">
+                                {tkt.priority}
+                              </td>
+                              <td className="py-4 px-4 whitespace-nowrap">
+                                <StatusIndicator
+                                  tone={formatTicketStatusTone(tkt.status)}
+                                  label={formatTicketStatusLabel(tkt.status)}
+                                />
+                              </td>
+                              <td className="py-4 px-4 font-mono-num text-xs text-slate-500 whitespace-nowrap">
+                                {tkt.updatedAtUtc}
+                              </td>
+                              <td className="py-4 px-4 text-right whitespace-nowrap">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    navigateWithinDashboard('tickets', 'detail', tkt.id)
+                                  }
+                                  className="min-h-[34px] inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg border border-[#E2E8F0] bg-white hover:border-[#0E6B63] hover:text-[#0E6B63] text-xs font-semibold text-[#0F172A] transition-colors cursor-pointer"
+                                >
+                                  <span>View</span>
+                                  <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ============================ DEDICATED CREATE TICKET PAGE (/dashboard/tickets/new — NO POPUP) ============================ */}
+            {section === 'tickets' && ticketSubView === 'new' && (
+              <div className="space-y-5">
+                <div className="flex items-center justify-between gap-4">
+                  <button
+                    type="button"
+                    onClick={() => navigateWithinDashboard('tickets', 'list', null)}
+                    className="inline-flex items-center gap-1.5 text-xs sm:text-sm font-semibold text-slate-600 hover:text-[#0E6B63] cursor-pointer"
+                  >
+                    <ArrowLeft className="w-4 h-4" aria-hidden="true" />
+                    <span>Back to Support Tickets</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                  <form
+                    onSubmit={handleCreateTicketSubmit}
+                    className="lg:col-span-8 bg-white border border-[#E2E8F0] rounded-xl p-6 sm:p-8 space-y-6"
+                  >
+                    <div>
+                      <h2 className="font-display text-xl sm:text-2xl font-bold tracking-tight text-[#0F172A]">
+                        Submit a Support Request
+                      </h2>
+                      <p className="text-sm text-slate-600 mt-1 leading-relaxed">
+                        Choose the exact department and affected service so the right engineer picks up your ticket immediately.
+                      </p>
+                    </div>
+
+                    {/* 5 Department Selector */}
+                    <div>
+                      <label className="block text-xs font-semibold text-[#0F172A] mb-2.5">
+                        Select Department <span className="text-[#DC2626]">*</span>
+                      </label>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                        {TICKET_DEPARTMENTS.map((dept) => {
+                          const selected = newTicketDept === dept.id;
+                          return (
+                            <button
+                              key={dept.id}
+                              type="button"
+                              onClick={() => setNewTicketDept(dept.id)}
+                              className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
+                                selected
+                                  ? 'border-[#0E6B63] bg-[#F2FAF8]'
+                                  : 'border-[#E2E8F0] bg-white hover:border-[#CBD5E1]'
+                              }`}
+                            >
+                              <p
+                                className={`font-display text-sm font-bold ${
+                                  selected ? 'text-[#0E6B63]' : 'text-[#0F172A]'
+                                }`}
+                              >
+                                {dept.id}
+                              </p>
+                              <p className="text-xs text-slate-500 mt-1 leading-snug">
+                                {dept.description}
+                              </p>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label
+                          htmlFor="new-tkt-service"
+                          className="block text-xs font-semibold text-[#0F172A] mb-1.5"
+                        >
+                          Affected Service / Domain
+                        </label>
+                        <select
+                          id="new-tkt-service"
+                          value={newTicketService}
+                          onChange={(e) => setNewTicketService(e.target.value)}
+                          className="w-full min-h-[44px] px-3.5 py-2 text-sm border border-[#CBD5E1] rounded-xl bg-white focus:outline-none focus:border-[#0E6B63]"
+                        >
+                          <option value="">General Account / No Specific Service</option>
+                          {myOrders.map((ord) => (
+                            <option key={ord.id} value={ord.domainOrHost}>
+                              {ord.planName} — {ord.domainOrHost} ({ord.id})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label
+                          htmlFor="new-tkt-priority"
+                          className="block text-xs font-semibold text-[#0F172A] mb-1.5"
+                        >
+                          Priority Level
+                        </label>
+                        <select
+                          id="new-tkt-priority"
+                          value={newTicketPriority}
+                          onChange={(e) =>
+                            setNewTicketPriority(e.target.value as TicketPriority)
+                          }
+                          className="w-full min-h-[44px] px-3.5 py-2 text-sm border border-[#CBD5E1] rounded-xl bg-white focus:outline-none focus:border-[#0E6B63]"
+                        >
+                          <option value="Normal">Normal (Standard SLA)</option>
+                          <option value="High">High (Production Impact)</option>
+                          <option value="Urgent">Urgent (Service Offline)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="new-tkt-subject"
+                        className="block text-xs font-semibold text-[#0F172A] mb-1.5"
+                      >
+                        Subject <span className="text-[#DC2626]">*</span>
+                      </label>
+                      <input
+                        id="new-tkt-subject"
+                        type="text"
+                        required
+                        value={newTicketSubject}
+                        onChange={(e) => {
+                          setNewTicketSubject(e.target.value);
+                          if (newTicketError) setNewTicketError('');
+                        }}
+                        placeholder="e.g. Migrate cPanel account from previous host with zero downtime"
+                        className="w-full min-h-[44px] px-3.5 py-2 text-sm border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                      />
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="new-tkt-body"
+                        className="block text-xs font-semibold text-[#0F172A] mb-1.5"
+                      >
+                        Detailed Description <span className="text-[#DC2626]">*</span>
+                      </label>
+                      <textarea
+                        id="new-tkt-body"
+                        rows={6}
+                        required
+                        value={newTicketBody}
+                        onChange={(e) => {
+                          setNewTicketBody(e.target.value);
+                          if (newTicketError) setNewTicketError('');
+                        }}
+                        placeholder="Include error logs, domain names, IPv4 addresses, or source host credentials if requesting a migration..."
+                        className="w-full px-3.5 py-3 text-sm leading-relaxed border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                      />
+                    </div>
+
+                    {/* Attach Files or Screenshots */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label
+                          htmlFor="new-tkt-files"
+                          className="block text-xs font-semibold text-[#0F172A]"
+                        >
+                          Attach Images or Files (Optional)
+                        </label>
+                        <span className="text-[11px] font-mono-num text-slate-400">
+                          {newTicketAttachments.length}/4 files · Max 2 MB each
+                        </span>
+                      </div>
+
+                      <label
+                        htmlFor="new-tkt-files"
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          handleAttachFiles(e.dataTransfer.files, 'new');
+                        }}
+                        className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3.5 rounded-xl border border-dashed border-[#CBD5E1] hover:border-[#0E6B63] bg-[#F8FAFC] transition-colors cursor-pointer"
+                      >
+                        <div className="flex items-center gap-3 text-xs text-slate-600">
+                          <span className="w-9 h-9 rounded-lg bg-white border border-[#E2E8F0] flex items-center justify-center text-[#0E6B63] shrink-0">
+                            <Paperclip className="w-4 h-4" aria-hidden="true" />
+                          </span>
+                          <div>
+                            <p className="font-semibold text-[#0F172A]">
+                              Drop screenshots, error logs, or PDFs here
+                            </p>
+                            <p className="text-[11px] text-slate-500 mt-0.5">
+                              Supports PNG, JPG, WebP, GIF, PDF, TXT, LOG, CSV, JSON, ZIP
+                            </p>
+                          </div>
+                        </div>
+                        <span className="px-3.5 py-1.5 rounded-lg bg-white border border-[#E2E8F0] text-xs font-semibold text-[#0F172A] shrink-0">
+                          Choose File
+                        </span>
+                        <input
+                          id="new-tkt-files"
+                          type="file"
+                          multiple
+                          accept="image/*,.pdf,.txt,.log,.csv,.json,.zip,.conf,.md"
+                          onChange={(e) => {
+                            handleAttachFiles(e.target.files, 'new');
+                            e.target.value = '';
+                          }}
+                          className="sr-only"
+                        />
+                      </label>
+
+                      {newTicketAttachments.length > 0 && (
+                        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                          {newTicketAttachments.map((att) => {
+                            const isImg = att.mimeType.startsWith('image/');
+                            return (
+                              <div
+                                key={att.id}
+                                className="flex items-center justify-between gap-2.5 p-2.5 rounded-xl border border-[#E2E8F0] bg-white"
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  {isImg ? (
+                                    <img
+                                      src={att.dataUrl}
+                                      alt={att.name}
+                                      className="w-10 h-10 rounded-lg object-cover border border-[#E2E8F0] shrink-0"
+                                    />
+                                  ) : (
+                                    <span className="w-10 h-10 rounded-lg bg-[#F8FAFC] border border-[#E2E8F0] flex items-center justify-center text-[#0E6B63] shrink-0">
+                                      <FileText className="w-4 h-4" aria-hidden="true" />
+                                    </span>
+                                  )}
+                                  <div className="min-w-0">
+                                    <p className="text-xs font-semibold text-[#0F172A] truncate">
+                                      {att.name}
+                                    </p>
+                                    <p className="font-mono-num text-[11px] text-slate-400">
+                                      {formatAttachmentSize(att.sizeBytes)}
+                                    </p>
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  aria-label={`Remove ${att.name}`}
+                                  onClick={() =>
+                                    setNewTicketAttachments((prev) =>
+                                      prev.filter((item) => item.id !== att.id)
+                                    )
+                                  }
+                                  className="p-1.5 text-slate-400 hover:text-[#DC2626] cursor-pointer"
+                                >
+                                  <X className="w-4 h-4" aria-hidden="true" />
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {newTicketError && (
+                      <p
+                        role="alert"
+                        className="text-xs font-semibold text-[#DC2626] bg-red-50 border border-red-200 rounded-xl px-3.5 py-2.5"
+                      >
+                        {newTicketError}
+                      </p>
+                    )}
+
+                    <div className="flex items-center justify-end gap-3 pt-2 border-t border-[#E2E8F0]">
+                      <button
+                        type="button"
+                        onClick={() => navigateWithinDashboard('tickets', 'list', null)}
+                        className="min-h-[42px] px-4 py-2 rounded-xl border border-[#E2E8F0] text-xs font-semibold text-slate-600 hover:text-[#0F172A] cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        className="min-h-[42px] inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-sm font-semibold cursor-pointer"
+                      >
+                        <Send className="w-4 h-4" aria-hidden="true" />
+                        <span>Submit Support Ticket</span>
+                      </button>
+                    </div>
+                  </form>
+
+                  {/* Right Sidebar: Support PIN & SLA Verification */}
+                  <aside className="lg:col-span-4 space-y-5">
+                    <div className="bg-white border border-[#E2E8F0] rounded-xl p-5 space-y-3">
+                      <h3 className="font-display text-sm font-bold text-[#0F172A] flex items-center gap-2">
+                        <Headphones className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                        <span>Verified Support PIN</span>
+                      </h3>
+                      <p className="text-xs text-slate-600 leading-relaxed">
+                        Your permanent 6-digit Support PIN is attached automatically to verify account ownership and never expires unless you regenerate it.
+                      </p>
+                      {activeSupportPin && (
+                        <div className="rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] p-3.5 flex items-center justify-between">
+                          <span className="font-mono-num text-lg font-bold tracking-[0.22em] text-[#0E6B63]">
+                            {activeSupportPin.pin}
+                          </span>
+                          <span className="text-xs font-semibold text-[#0E6B63]">
+                            Active · Permanent
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="bg-white border border-[#E2E8F0] rounded-xl p-5 space-y-2.5 text-xs text-slate-600">
+                      <h3 className="font-display text-sm font-bold text-[#0F172A]">
+                        Response SLA Targets
+                      </h3>
+                      <div className="flex justify-between py-1.5 border-b border-[#E2E8F0]">
+                        <span>Technical Support</span>
+                        <span className="font-mono-num font-semibold text-[#0F172A]">
+                          &lt; 15 mins
+                        </span>
+                      </div>
+                      <div className="flex justify-between py-1.5 border-b border-[#E2E8F0]">
+                        <span>Migration Site</span>
+                        <span className="font-mono-num font-semibold text-[#0F172A]">
+                          &lt; 30 mins
+                        </span>
+                      </div>
+                      <div className="flex justify-between py-1.5">
+                        <span>Billing &amp; Account</span>
+                        <span className="font-mono-num font-semibold text-[#0F172A]">
+                          &lt; 60 mins
+                        </span>
+                      </div>
+                    </div>
+                  </aside>
+                </div>
+              </div>
+            )}
+
+            {/* ============================ DEDICATED SINGLE TICKET VIEW PAGE (/dashboard/tickets/:id — NO POPUP) ============================ */}
+            {section === 'tickets' && ticketSubView === 'detail' && (
+              <div className="space-y-5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <button
+                    type="button"
+                    onClick={() => navigateWithinDashboard('tickets', 'list', null)}
+                    className="inline-flex items-center gap-1.5 text-xs sm:text-sm font-semibold text-slate-600 hover:text-[#0E6B63] cursor-pointer"
+                  >
+                    <ArrowLeft className="w-4 h-4" aria-hidden="true" />
+                    <span>Back to Support Tickets</span>
+                  </button>
+
+                  {viewedTicket && (
+                    <div className="flex items-center gap-2.5">
+                      {viewedTicket.status !== 'resolved' ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            resolveSupportTicket(viewedTicket.id);
+                            showToast(`Ticket ${viewedTicket.id} marked as Resolved`);
+                          }}
+                          className="min-h-[38px] inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border border-[#16A34A]/40 bg-[#16A34A]/5 hover:bg-[#16A34A]/10 text-[#16A34A] text-xs font-semibold cursor-pointer"
+                        >
+                          <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
+                          <span>Mark as Resolved</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            reopenSupportTicket(viewedTicket.id);
+                            showToast(`Ticket ${viewedTicket.id} reopened`);
+                          }}
+                          className="min-h-[38px] inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border border-[#E2E8F0] bg-white hover:border-[#0E6B63] text-[#0F172A] text-xs font-semibold cursor-pointer"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>Reopen Ticket</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {!viewedTicket ? (
+                  <div className="bg-white border border-[#E2E8F0] rounded-xl p-10 text-center">
+                    <p className="font-display text-base font-bold text-[#0F172A]">
+                      Ticket not found
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => navigateWithinDashboard('tickets', 'list', null)}
+                      className="mt-3 text-xs font-semibold text-[#0E6B63] hover:underline cursor-pointer"
+                    >
+                      Return to ticket directory
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                    {/* Left: Conversation Thread & Live Reply Box */}
+                    <div className="lg:col-span-8 bg-white border border-[#E2E8F0] rounded-xl overflow-hidden">
+                      <div className="p-6 border-b border-[#E2E8F0]">
+                        <div className="flex flex-wrap items-center gap-2.5 text-xs">
+                          <span className="font-mono font-bold text-[#0E6B63]">
+                            {viewedTicket.id}
+                          </span>
+                          <span className="text-slate-300">·</span>
+                          <span className="font-medium text-slate-600">
+                            {viewedTicket.department}
+                          </span>
+                          <StatusIndicator
+                            tone={formatTicketStatusTone(viewedTicket.status)}
+                            label={formatTicketStatusLabel(viewedTicket.status)}
+                          />
+                        </div>
+                        <h2
+                          className="mt-2 font-display text-xl font-bold tracking-tight text-[#0F172A]"
+                          style={{ textWrap: 'balance' }}
+                        >
+                          {viewedTicket.subject}
+                        </h2>
+                      </div>
+
+                      <div className="p-6 space-y-4 bg-[#F8FAFC]">
+                        {viewedTicket.messages.map((msg) => (
+                          <div
+                            key={msg.id}
+                            className={`rounded-xl border p-5 ${
+                              msg.authorRole === 'support'
+                                ? 'bg-white border-[#0E6B63]/30'
+                                : 'bg-white border-[#E2E8F0]'
+                            }`}
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                              <span className="font-display font-bold text-[#0F172A]">
+                                {msg.authorName}
+                                {msg.authorRole === 'support' && (
+                                  <span className="ml-2 font-sans font-semibold text-[#0E6B63]">
+                                    Support Staff
+                                  </span>
+                                )}
+                              </span>
+                              <span className="font-mono-num text-[11px] text-slate-400">
+                                {msg.timestampUtc}
+                              </span>
+                            </div>
+                            <p className="mt-2.5 text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">
+                              {msg.body}
+                            </p>
+
+                            {msg.attachments && msg.attachments.length > 0 && (
+                              <div className="mt-4 pt-3.5 border-t border-[#E2E8F0] space-y-2.5">
+                                <p className="text-[11px] font-semibold text-slate-500 flex items-center gap-1.5">
+                                  <Paperclip className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+                                  <span>
+                                    {msg.attachments.length}{' '}
+                                    {msg.attachments.length === 1 ? 'Attachment' : 'Attachments'}
+                                  </span>
+                                </p>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                                  {msg.attachments.map((att) => {
+                                    const isImg = att.mimeType.startsWith('image/');
+                                    const isExpanded = expandedAttachmentId === att.id;
+                                    return (
+                                      <div
+                                        key={att.id}
+                                        className={`rounded-xl border border-[#E2E8F0] bg-[#F8FAFC] p-3 space-y-2.5 ${
+                                          isExpanded ? 'sm:col-span-2' : ''
+                                        }`}
+                                      >
+                                        <div className="flex items-center justify-between gap-2">
+                                          <div className="flex items-center gap-2.5 min-w-0">
+                                            <span className="w-8 h-8 rounded-lg bg-white border border-[#E2E8F0] flex items-center justify-center text-[#0E6B63] shrink-0">
+                                              {isImg ? (
+                                                <ImageIcon className="w-4 h-4" aria-hidden="true" />
+                                              ) : (
+                                                <FileText className="w-4 h-4" aria-hidden="true" />
+                                              )}
+                                            </span>
+                                            <div className="min-w-0">
+                                              <p className="text-xs font-semibold text-[#0F172A] truncate">
+                                                {att.name}
+                                              </p>
+                                              <p className="font-mono-num text-[11px] text-slate-400">
+                                                {formatAttachmentSize(att.sizeBytes)}
+                                              </p>
+                                            </div>
+                                          </div>
+                                          <div className="flex items-center gap-1.5 shrink-0">
+                                            {isImg && (
+                                              <button
+                                                type="button"
+                                                onClick={() =>
+                                                  setExpandedAttachmentId((prev) =>
+                                                    prev === att.id ? null : att.id
+                                                  )
+                                                }
+                                                className="px-2 py-1 rounded-md border border-[#E2E8F0] bg-white hover:border-[#0E6B63] text-[11px] font-semibold text-[#0F172A] inline-flex items-center gap-1 cursor-pointer"
+                                              >
+                                                {isExpanded ? (
+                                                  <>
+                                                    <Minimize2 className="w-3 h-3" aria-hidden="true" />
+                                                    <span>Shrink</span>
+                                                  </>
+                                                ) : (
+                                                  <>
+                                                    <Maximize2 className="w-3 h-3" aria-hidden="true" />
+                                                    <span>Preview</span>
+                                                  </>
+                                                )}
+                                              </button>
+                                            )}
+                                            <a
+                                              href={att.dataUrl}
+                                              download={att.name}
+                                              className="px-2.5 py-1 rounded-md border border-[#E2E8F0] bg-white hover:border-[#0E6B63] text-[11px] font-semibold text-[#0E6B63] inline-flex items-center gap-1"
+                                            >
+                                              <Download className="w-3 h-3" aria-hidden="true" />
+                                              <span>Save</span>
+                                            </a>
+                                          </div>
+                                        </div>
+
+                                        {isImg && (
+                                          <img
+                                            src={att.dataUrl}
+                                            alt={att.name}
+                                            className={`w-full rounded-lg border border-[#E2E8F0] bg-white object-contain ${
+                                              isExpanded ? 'max-h-[460px]' : 'max-h-36 object-cover'
+                                            }`}
+                                          />
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+
+                        {viewedTicket.status === 'open' && (
+                          <p className="text-xs text-slate-500 font-medium px-1">
+                            Ticket is currently <strong className="text-[#0E6B63]">Open</strong> in our engineering queue — real-time staff updates appear here automatically.
+                          </p>
+                        )}
+                      </div>
+
+                      {viewedTicket.status !== 'resolved' ? (
+                        <form
+                          onSubmit={handleReplySubmit}
+                          className="p-6 border-t border-[#E2E8F0] bg-white space-y-3"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <label
+                              htmlFor="ticket-detail-reply"
+                              className="block text-xs font-semibold text-[#0F172A]"
+                            >
+                              Add Reply
+                            </label>
+                            <label
+                              htmlFor="reply-ticket-files"
+                              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] bg-[#F8FAFC] text-xs font-semibold text-[#0F172A] cursor-pointer"
+                            >
+                              <Paperclip className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+                              <span>Attach Image / File ({replyAttachments.length}/4)</span>
+                              <input
+                                id="reply-ticket-files"
+                                type="file"
+                                multiple
+                                accept="image/*,.pdf,.txt,.log,.csv,.json,.zip,.conf,.md"
+                                onChange={(e) => {
+                                  handleAttachFiles(e.target.files, 'reply');
+                                  e.target.value = '';
+                                }}
+                                className="sr-only"
+                              />
+                            </label>
+                          </div>
+
+                          <textarea
+                            id="ticket-detail-reply"
+                            rows={4}
+                            value={ticketReplyText}
+                            onChange={(e) => setTicketReplyText(e.target.value)}
+                            placeholder="Write your reply or attach screenshots / log files for our support team..."
+                            className="w-full px-3.5 py-2.5 text-sm border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                          />
+
+                          {replyAttachmentError && (
+                            <p role="alert" className="text-xs font-semibold text-[#DC2626]">
+                              {replyAttachmentError}
+                            </p>
+                          )}
+
+                          {replyAttachments.length > 0 && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              {replyAttachments.map((att) => (
+                                <div
+                                  key={att.id}
+                                  className="flex items-center justify-between gap-2 p-2 rounded-lg border border-[#E2E8F0] bg-[#F8FAFC]"
+                                >
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    {att.mimeType.startsWith('image/') ? (
+                                      <img
+                                        src={att.dataUrl}
+                                        alt={att.name}
+                                        className="w-8 h-8 rounded object-cover border border-[#E2E8F0] shrink-0"
+                                      />
+                                    ) : (
+                                      <FileText className="w-4 h-4 text-[#0E6B63] shrink-0" aria-hidden="true" />
+                                    )}
+                                    <div className="min-w-0">
+                                      <p className="text-xs font-semibold text-[#0F172A] truncate">
+                                        {att.name}
+                                      </p>
+                                      <p className="font-mono-num text-[10px] text-slate-400">
+                                        {formatAttachmentSize(att.sizeBytes)}
+                                      </p>
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    aria-label={`Remove ${att.name}`}
+                                    onClick={() =>
+                                      setReplyAttachments((prev) =>
+                                        prev.filter((item) => item.id !== att.id)
+                                      )
+                                    }
+                                    className="p-1 text-slate-400 hover:text-[#DC2626] cursor-pointer"
+                                  >
+                                    <X className="w-3.5 h-3.5" aria-hidden="true" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-xs text-slate-500">
+                              Posting a reply updates ticket status to Open for priority staff response.
+                            </span>
+                            <button
+                              type="submit"
+                              disabled={!ticketReplyText.trim() && replyAttachments.length === 0}
+                              className="min-h-[40px] inline-flex items-center gap-2 px-5 py-2 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] disabled:opacity-50 text-white text-xs font-semibold shrink-0 cursor-pointer"
+                            >
+                              <Send className="w-3.5 h-3.5" aria-hidden="true" />
+                              <span>Send Reply</span>
+                            </button>
+                          </div>
+                        </form>
+                      ) : (
+                        <div className="p-5 border-t border-[#E2E8F0] bg-white flex flex-wrap items-center justify-between gap-3 text-xs text-slate-600">
+                          <span>
+                            This ticket is marked <strong>Resolved</strong>. Need further assistance on this request?
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => reopenSupportTicket(viewedTicket.id)}
+                            className="font-semibold text-[#0E6B63] hover:underline cursor-pointer"
+                          >
+                            Reopen Ticket
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Right: Ticket Details Sidebar (Upmind-style metadata rail) */}
+                    <aside className="lg:col-span-4 bg-white border border-[#E2E8F0] rounded-xl p-5 space-y-4">
+                      <h3 className="font-display text-sm font-bold text-[#0F172A]">
+                        Ticket Metadata
+                      </h3>
+                      <div className="divide-y divide-[#E2E8F0] text-xs">
+                        <div className="py-2.5 flex items-center justify-between gap-3">
+                          <span className="text-slate-500">Ticket Number</span>
+                          <span className="font-mono font-bold text-[#0F172A]">
+                            {viewedTicket.id}
+                          </span>
+                        </div>
+                        <div className="py-2.5 flex items-center justify-between gap-3">
+                          <span className="text-slate-500">Status</span>
+                          <StatusIndicator
+                            tone={formatTicketStatusTone(viewedTicket.status)}
+                            label={formatTicketStatusLabel(viewedTicket.status)}
+                          />
+                        </div>
+                        <div className="py-2.5 flex items-center justify-between gap-3">
+                          <span className="text-slate-500">Department</span>
+                          <span className="font-semibold text-[#0F172A]">
+                            {viewedTicket.department}
+                          </span>
+                        </div>
+                        <div className="py-2.5 flex items-center justify-between gap-3">
+                          <span className="text-slate-500">Priority</span>
+                          <span className="font-semibold text-[#0F172A]">
+                            {viewedTicket.priority}
+                          </span>
+                        </div>
+                        <div className="py-2.5 flex items-center justify-between gap-3">
+                          <span className="text-slate-500">Linked Service</span>
+                          <span className="font-mono font-semibold text-[#0E6B63] truncate">
+                            {viewedTicket.relatedService || 'General Account'}
+                          </span>
+                        </div>
+                        <div className="py-2.5 flex items-center justify-between gap-3">
+                          <span className="text-slate-500">Support PIN</span>
+                          <span className="font-mono-num font-bold text-[#0F172A]">
+                            {viewedTicket.supportPinUsed || activeSupportPin?.pin || '—'}
+                          </span>
+                        </div>
+                        <div className="py-2.5 flex items-center justify-between gap-3">
+                          <span className="text-slate-500">Attachments</span>
+                          <span className="font-mono-num font-semibold text-[#0F172A]">
+                            {viewedTicket.messages.reduce(
+                              (sum, m) => sum + (m.attachments?.length ?? 0),
+                              0
+                            )}
+                          </span>
+                        </div>
+                        <div className="py-2.5 flex items-center justify-between gap-3">
+                          <span className="text-slate-500">Created</span>
+                          <span className="font-mono-num text-slate-600">
+                            {viewedTicket.createdAtUtc}
+                          </span>
+                        </div>
+                        <div className="py-2.5 flex items-center justify-between gap-3">
+                          <span className="text-slate-500">Last Updated</span>
+                          <span className="font-mono-num text-slate-600">
+                            {viewedTicket.updatedAtUtc}
+                          </span>
+                        </div>
+                      </div>
+                    </aside>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ============================ ACCOUNT, SUPPORT PIN & REAL 2FA SECURITY ============================ */}
+            {section === 'account' && (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                {/* Left: Account Profile + Real Two-Factor Authentication Setup */}
+                <div className="lg:col-span-7 space-y-6">
+                  <form
+                    onSubmit={handleSaveProfile}
+                    className="bg-white border border-[#E2E8F0] rounded-xl p-6 space-y-4"
+                  >
+                    <div>
+                      <h2 className="font-display text-lg font-bold tracking-tight text-[#0F172A]">
+                        Account &amp; Billing Profile
+                      </h2>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Details appear on VAT/tax invoices and domain WHOIS registration records.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-[#0F172A] mb-1.5">
+                          Full Name
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={profileName}
+                          onChange={(e) => setProfileName(e.target.value)}
+                          className="w-full min-h-[42px] px-3.5 py-2 text-sm border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-[#0F172A] mb-1.5">
+                          Username
+                        </label>
+                        <div className="relative">
+                          <UserCheck
+                            className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                            aria-hidden="true"
+                          />
+                          <input
+                            type="text"
+                            disabled
+                            value={currentUser.username}
+                            className="w-full min-h-[42px] pl-9 pr-3.5 py-2 text-sm font-mono bg-[#F8FAFC] text-slate-600 border border-[#E2E8F0] rounded-xl"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-[#0F172A] mb-1.5">
+                          Email Address
+                        </label>
+                        <input
+                          type="email"
+                          disabled
+                          value={currentUser.email}
+                          className="w-full min-h-[42px] px-3.5 py-2 text-sm font-mono bg-[#F8FAFC] text-slate-600 border border-[#E2E8F0] rounded-xl"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-[#0F172A] mb-1.5">
+                          Company / Organization
+                        </label>
+                        <input
+                          type="text"
+                          value={profileCompany}
+                          onChange={(e) => setProfileCompany(e.target.value)}
+                          className="w-full min-h-[42px] px-3.5 py-2 text-sm border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-[#0F172A] mb-1.5">
+                          Phone Number
+                        </label>
+                        <input
+                          type="tel"
+                          value={profilePhone}
+                          onChange={(e) => setProfilePhone(e.target.value)}
+                          placeholder="+44 20 7946 0000"
+                          className="w-full min-h-[42px] px-3.5 py-2 text-sm font-mono-num border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-[#0F172A] mb-1.5">
+                          Country / Jurisdiction
+                        </label>
+                        <input
+                          type="text"
+                          value={profileCountry}
+                          onChange={(e) => setProfileCountry(e.target.value)}
+                          className="w-full min-h-[42px] px-3.5 py-2 text-sm border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                        />
+                      </div>
+                    </div>
+
+                    {profileError && (
+                      <p className="text-xs font-semibold text-[#DC2626]">{profileError}</p>
+                    )}
+
+                    <div className="pt-2">
+                      <button
+                        type="submit"
+                        className="min-h-[42px] px-5 py-2.5 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs sm:text-sm font-semibold cursor-pointer"
+                      >
+                        Save Profile Changes
+                      </button>
+                    </div>
+                  </form>
+
+                  {/* Self-Service Account Password Change Card */}
+                  <form
+                    onSubmit={handleChangeAccountPassword}
+                    className="bg-white border border-[#E2E8F0] rounded-xl p-6 space-y-4"
+                  >
+                    <div>
+                      <h3 className="font-display text-lg font-bold tracking-tight text-[#0F172A] flex items-center gap-2">
+                        <Lock className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                        <span>Change Account Password</span>
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Update your cpcloudhost.com client portal login password directly from your verified session.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-[#0F172A] mb-1.5">
+                          Current Password
+                        </label>
+                        <div className="relative">
+                          <input
+                            type={showCurrentPwd ? 'text' : 'password'}
+                            value={currentPwdInput}
+                            onChange={(e) => {
+                              setCurrentPwdInput(e.target.value);
+                              setPwdChangeError('');
+                              setPwdChangeSuccess('');
+                            }}
+                            placeholder="Enter current password"
+                            className="w-full min-h-[42px] pl-3.5 pr-9 py-2 text-sm border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowCurrentPwd((p) => !p)}
+                            aria-label="Toggle current password visibility"
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-[#0F172A] cursor-pointer"
+                          >
+                            {showCurrentPwd ? (
+                              <EyeOff className="w-4 h-4" aria-hidden="true" />
+                            ) : (
+                              <Eye className="w-4 h-4" aria-hidden="true" />
+                            )}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-[#0F172A] mb-1.5">
+                          New Password (8+ chars)
+                        </label>
+                        <div className="relative">
+                          <input
+                            type={showNewPwd ? 'text' : 'password'}
+                            value={newPwdInput}
+                            onChange={(e) => {
+                              setNewPwdInput(e.target.value);
+                              setPwdChangeError('');
+                              setPwdChangeSuccess('');
+                            }}
+                            placeholder="Enter new password"
+                            className="w-full min-h-[42px] pl-3.5 pr-9 py-2 text-sm border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowNewPwd((p) => !p)}
+                            aria-label="Toggle new password visibility"
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-[#0F172A] cursor-pointer"
+                          >
+                            {showNewPwd ? (
+                              <EyeOff className="w-4 h-4" aria-hidden="true" />
+                            ) : (
+                              <Eye className="w-4 h-4" aria-hidden="true" />
+                            )}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-[#0F172A] mb-1.5">
+                          Confirm New Password
+                        </label>
+                        <input
+                          type={showNewPwd ? 'text' : 'password'}
+                          value={confirmPwdInput}
+                          onChange={(e) => {
+                            setConfirmPwdInput(e.target.value);
+                            setPwdChangeError('');
+                            setPwdChangeSuccess('');
+                          }}
+                          placeholder="Confirm new password"
+                          className="w-full min-h-[42px] px-3.5 py-2 text-sm border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                        />
+                      </div>
+                    </div>
+
+                    {pwdChangeError && (
+                      <p role="alert" className="text-xs font-semibold text-[#DC2626] bg-red-50 border border-red-200 rounded-xl px-3.5 py-2">
+                        {pwdChangeError}
+                      </p>
+                    )}
+
+                    {pwdChangeSuccess && (
+                      <p className="text-xs font-semibold text-[#16A34A] bg-emerald-50 border border-emerald-200 rounded-xl px-3.5 py-2">
+                        {pwdChangeSuccess}
+                      </p>
+                    )}
+
+                    <div className="pt-1">
+                      <button
+                        type="submit"
+                        className="min-h-[42px] px-5 py-2.5 rounded-xl bg-[#0F172A] hover:bg-[#0E6B63] text-white text-xs sm:text-sm font-semibold transition-colors cursor-pointer"
+                      >
+                        Update Password
+                      </button>
+                    </div>
+                  </form>
+
+                  {/* Real RFC-6238 Two-Factor Authentication Card */}
+                  <section className="bg-white border border-[#E2E8F0] rounded-xl p-6 space-y-5">
+                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2.5">
+                          <h3 className="font-display text-lg font-bold tracking-tight text-[#0F172A] flex items-center gap-2">
+                            <Shield className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                            <span>Two-Factor Authentication (TOTP)</span>
+                          </h3>
+                          <StatusIndicator
+                            tone={is2faEnabled ? 'emerald' : 'amber'}
+                            label={is2faEnabled ? 'Active' : 'Disabled'}
+                          />
+                        </div>
+                        <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                          Require a time-based 6-digit code from Google Authenticator, Authy, or 1Password every time you sign in on /auth/login.
+                        </p>
+                      </div>
+
+                      {!is2faEnabled && !setup2faActive && (
+                        <button
+                          type="button"
+                          onClick={handleStartTwoFactorSetup}
+                          className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+                        >
+                          <QrCode className="w-4 h-4" aria-hidden="true" />
+                          <span>Set Up 2FA</span>
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Step-by-Step Real QR + Secret Enrollment */}
+                    {setup2faActive && (
+                      <form
+                        onSubmit={handleConfirmTwoFactorSetup}
+                        className="border border-[#E2E8F0] rounded-xl bg-[#F8FAFC] p-5 space-y-5"
+                      >
+                        <div className="flex flex-col sm:flex-row gap-5 items-start">
+                          <div className="bg-white border border-[#E2E8F0] rounded-xl p-3 shrink-0 mx-auto sm:mx-0">
+                            {setupQrDataUrl ? (
+                              <img
+                                src={setupQrDataUrl}
+                                alt="Authenticator 2FA QR Code"
+                                className="w-40 h-40 block"
+                              />
+                            ) : (
+                              <div className="w-40 h-40 flex items-center justify-center text-xs text-slate-400">
+                                Generating QR...
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex-1 min-w-0 space-y-3">
+                            <div>
+                              <p className="font-display text-sm font-bold text-[#0F172A]">
+                                1. Scan QR code in your Authenticator app
+                              </p>
+                              <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
+                                Open Google Authenticator, Authy, or Apple Passwords and scan the QR code, or copy the Base32 secret key manually:
+                              </p>
+                            </div>
+
+                            <div className="flex items-center gap-2 bg-white border border-[#E2E8F0] rounded-lg px-3 py-2">
+                              <span className="font-mono text-xs font-semibold text-[#0F172A] truncate flex-1">
+                                {setupSecret}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleCopy('2fa-secret', setupSecret, '2FA Setup Secret')
+                                }
+                                className="text-xs font-semibold text-[#0E6B63] hover:underline shrink-0 cursor-pointer"
+                              >
+                                Copy Key
+                              </button>
+                            </div>
+
+                            <div className="flex items-center justify-between text-xs text-slate-500 bg-white border border-[#E2E8F0] rounded-lg px-3 py-2">
+                              <span>
+                                Current TOTP Preview ({totpSecondsLeft}s):{' '}
+                                <strong className="font-mono-num text-[#0E6B63]">
+                                  {setupLivePreviewCode}
+                                </strong>
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setVerifyCodeInput(setupLivePreviewCode)}
+                                className="font-semibold text-[#0E6B63] hover:underline cursor-pointer"
+                              >
+                                Fill Current Code
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2 pt-2 border-t border-[#E2E8F0]">
+                          <label
+                            htmlFor="verify-totp-input"
+                            className="block text-xs font-semibold text-[#0F172A]"
+                          >
+                            2. Enter the 6-digit verification code to activate 2FA
+                          </label>
+                          <div className="flex flex-col sm:flex-row gap-2.5">
+                            <input
+                              id="verify-totp-input"
+                              type="text"
+                              inputMode="numeric"
+                              maxLength={6}
+                              required
+                              value={verifyCodeInput}
+                              onChange={(e) => {
+                                setVerifyCodeInput(e.target.value.replace(/\D/g, ''));
+                                if (twoFactorError) setTwoFactorError('');
+                              }}
+                              placeholder="6-digit code (e.g. 482910)"
+                              className="flex-1 min-h-[42px] px-3.5 py-2 text-sm font-mono font-semibold tracking-widest bg-white border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                            />
+                            <button
+                              type="submit"
+                              disabled={twoFactorBusy || verifyCodeInput.length !== 6}
+                              className="min-h-[42px] px-5 py-2 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] disabled:opacity-50 text-white text-xs font-semibold whitespace-nowrap cursor-pointer"
+                            >
+                              Verify &amp; Enable 2FA
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSetup2faActive(false);
+                                setSetupSecret('');
+                                setTwoFactorError('');
+                              }}
+                              className="min-h-[42px] px-4 py-2 rounded-xl border border-[#E2E8F0] bg-white text-xs font-semibold text-slate-600 cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                          {twoFactorError && (
+                            <p role="alert" className="text-xs font-semibold text-[#DC2626]">
+                              {twoFactorError}
+                            </p>
+                          )}
+                        </div>
+                      </form>
+                    )}
+
+                    {/* Enrolled 2FA Management: Recovery Codes + Verified Disable */}
+                    {is2faEnabled && (
+                      <div className="space-y-4 pt-2 border-t border-[#E2E8F0]">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-xs text-slate-600">
+                            <span className="font-semibold text-[#0F172A]">
+                              Single-Use Recovery Codes:
+                            </span>{' '}
+                            <span className="font-mono-num">
+                              {backupCodes.length} remaining
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setRevealedBackupCodes((prev) => !prev)}
+                              className="min-h-[34px] px-3 py-1.5 rounded-lg border border-[#E2E8F0] text-xs font-semibold text-[#0F172A] hover:border-[#0E6B63] cursor-pointer"
+                            >
+                              {revealedBackupCodes ? 'Hide Codes' : 'View Backup Codes'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadBackupCodes(backupCodes)}
+                              className="min-h-[34px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#E2E8F0] text-xs font-semibold text-[#0F172A] hover:border-[#0E6B63] cursor-pointer"
+                            >
+                              <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                              <span>Download .txt</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                regenerateTwoFactorBackupCodes();
+                                setRevealedBackupCodes(true);
+                                showToast('8 fresh backup recovery codes generated');
+                              }}
+                              className="min-h-[34px] px-3 py-1.5 rounded-lg border border-[#E2E8F0] text-xs font-semibold text-[#0E6B63] hover:border-[#0E6B63] cursor-pointer"
+                            >
+                              Regenerate
+                            </button>
+                          </div>
+                        </div>
+
+                        {revealedBackupCodes && backupCodes.length > 0 && (
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-[#F8FAFC] border border-[#E2E8F0] rounded-xl p-3.5">
+                            {backupCodes.map((code) => (
+                              <div
+                                key={code}
+                                className="font-mono text-xs font-semibold text-[#0F172A] bg-white border border-[#E2E8F0] rounded-lg px-2.5 py-1.5 text-center"
+                              >
+                                {code}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {!disable2faPromptOpen ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDisable2faPromptOpen(true);
+                              setTwoFactorError('');
+                              setDisable2faConfirmInput('');
+                            }}
+                            className="text-xs font-semibold text-[#DC2626] hover:underline cursor-pointer"
+                          >
+                            Disable Two-Factor Authentication
+                          </button>
+                        ) : (
+                          <form
+                            onSubmit={handleDisableTwoFactor}
+                            className="border border-red-200 bg-red-50/40 rounded-xl p-4 space-y-3"
+                          >
+                            <p className="text-xs font-semibold text-[#0F172A]">
+                              Enter your 6-digit authenticator code or account password to disable 2FA:
+                            </p>
+                            <div className="flex flex-col sm:flex-row gap-2">
+                              <input
+                                type="password"
+                                required
+                                value={disable2faConfirmInput}
+                                onChange={(e) => {
+                                  setDisable2faConfirmInput(e.target.value);
+                                  if (twoFactorError) setTwoFactorError('');
+                                }}
+                                placeholder="6-digit code or password"
+                                className="flex-1 min-h-[38px] px-3 py-1.5 text-xs bg-white border border-[#CBD5E1] rounded-lg"
+                              />
+                              <button
+                                type="submit"
+                                disabled={twoFactorBusy}
+                                className="min-h-[38px] px-4 py-1.5 rounded-lg bg-[#DC2626] hover:bg-red-700 text-white text-xs font-semibold cursor-pointer"
+                              >
+                                Confirm Disable
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setDisable2faPromptOpen(false)}
+                                className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[#E2E8F0] bg-white text-xs font-semibold text-slate-600 cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                            {twoFactorError && (
+                              <p role="alert" className="text-xs font-semibold text-[#DC2626]">
+                                {twoFactorError}
+                              </p>
+                            )}
+                          </form>
+                        )}
+                      </div>
+                    )}
+                  </section>
+                </div>
+
+                {/* Right: Support PIN Card + Client API Token */}
+                <div className="lg:col-span-5 space-y-6">
+                  {/* Dedicated Permanent Support PIN Panel */}
+                  <section className="bg-white border border-[#E2E8F0] rounded-xl p-6 space-y-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="font-display text-base font-bold text-[#0F172A] flex items-center gap-2">
+                          <Headphones className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                          <span>Support Verification PIN</span>
+                        </h3>
+                        <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                          Your permanent 6-digit PIN verifies ownership with cpcloudhost.com support engineers. It never expires automatically and updates only when you manually regenerate it.
+                        </p>
+                      </div>
+                    </div>
+
+                    {activeSupportPin && (
+                      <div className="rounded-xl border border-[#E2E8F0] bg-[#F8FAFC] p-4 space-y-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-mono-num text-2xl font-bold tracking-[0.22em] text-[#0F172A]">
+                            {activeSupportPin.pin}
+                          </span>
+                          <span className="px-2.5 py-1 rounded-md bg-[#0E6B63]/10 text-[11px] font-semibold text-[#0E6B63]">
+                            No Time Expiry
+                          </span>
+                        </div>
+                        <p className="font-mono-num text-[11px] text-slate-500">
+                          Active since {activeSupportPin.createdAtUtc}
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleCopy('acct-pin', activeSupportPin.pin, 'Support PIN')
+                            }
+                            className="flex-1 min-h-[38px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-[#E2E8F0] bg-white hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] cursor-pointer"
+                          >
+                            <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                            <span>Copy PIN</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              rotateSupportPin();
+                              showToast('New permanent Support PIN generated');
+                            }}
+                            className="flex-1 min-h-[38px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                            <span>Regenerate PIN</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </section>
+
+                  {/* Client API Token Panel */}
+                  <div className="bg-white border border-[#E2E8F0] rounded-xl p-6 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-display text-base font-bold text-[#0F172A] flex items-center gap-2">
+                        <KeyRound className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                        <span>Client API Token</span>
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const fresh = generateClientApiToken();
+                          setApiToken(fresh);
+                          setRevealApiToken(true);
+                          try {
+                            window.localStorage.setItem('cpcloud_client_api_token_v1', fresh);
+                          } catch {
+                            // ignore
+                          }
+                          showToast('New Client API token generated');
+                        }}
+                        className="text-xs font-semibold text-[#0E6B63] hover:text-[#0A534D] cursor-pointer"
+                      >
+                        Rotate Token
+                      </button>
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      Use this bearer token for DNS automation, Terraform, and CI webhooks.
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type={revealApiToken ? 'text' : 'password'}
+                        readOnly
+                        value={apiToken}
+                        className="flex-1 min-h-[40px] px-3 py-2 text-xs font-mono bg-[#F8FAFC] border border-[#E2E8F0] rounded-lg text-[#0F172A]"
+                      />
+                      <button
+                        type="button"
+                        aria-label={revealApiToken ? 'Hide token' : 'Reveal token'}
+                        onClick={() => setRevealApiToken((prev) => !prev)}
+                        className="min-h-[40px] px-3 border border-[#E2E8F0] rounded-lg text-slate-600 hover:text-[#0F172A] cursor-pointer"
+                      >
+                        {revealApiToken ? (
+                          <EyeOff className="w-4 h-4" aria-hidden="true" />
+                        ) : (
+                          <Eye className="w-4 h-4" aria-hidden="true" />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCopy('api', apiToken, 'API token')}
+                        className="min-h-[40px] px-3 border border-[#E2E8F0] rounded-lg text-slate-600 hover:text-[#0E6B63] cursor-pointer"
+                      >
+                        {copiedKey === 'api' ? (
+                          <Check className="w-4 h-4 text-[#16A34A]" aria-hidden="true" />
+                        ) : (
+                          <Copy className="w-4 h-4" aria-hidden="true" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Full-Width Login & Security Activity Logs */}
+                <section className="lg:col-span-12 bg-white border border-[#E2E8F0] rounded-xl overflow-hidden">
+                  <div className="p-6 border-b border-[#E2E8F0] flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                    <div>
+                      <h3 className="font-display text-lg font-bold tracking-tight text-[#0F172A] flex items-center gap-2">
+                        <Activity className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                        <span>Login &amp; Security Activity Logs</span>
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Complete audit trail of sign-ins, failed password attempts, 2FA challenges, and Support PIN changes for{' '}
+                        <span className="font-mono text-[#0F172A]">{currentUser.email}</span>.
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      {myLoginLogs.length > 0 && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={handleExportLoginLogsCsv}
+                            className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                            <span>Export CSV</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              clearMyLoginLogs();
+                              showToast('Login activity logs cleared');
+                            }}
+                            className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#E2E8F0] hover:border-red-300 hover:text-[#DC2626] text-xs font-semibold text-slate-600 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                            <span>Clear Logs</span>
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="px-6 py-3.5 bg-[#F8FAFC] border-b border-[#E2E8F0] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="relative flex-1 max-w-sm">
+                      <Search
+                        className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                        aria-hidden="true"
+                      />
+                      <input
+                        type="text"
+                        value={loginLogSearch}
+                        onChange={(e) => setLoginLogSearch(e.target.value)}
+                        placeholder="Search event, IP address, browser, or location..."
+                        className="w-full min-h-[38px] pl-9 pr-3 py-1.5 text-xs bg-white border border-[#E2E8F0] rounded-lg focus:outline-none focus:border-[#0E6B63]"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-1 p-1 bg-slate-200/70 rounded-lg overflow-x-auto">
+                      {[
+                        { id: 'all', label: 'All Events' },
+                        { id: 'success', label: 'Verified' },
+                        { id: 'alerts', label: 'Warnings & Blocked' },
+                        { id: 'security', label: '2FA & PIN' },
+                      ].map((tab) => (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          onClick={() =>
+                            setLoginLogFilter(
+                              tab.id as 'all' | 'success' | 'alerts' | 'security'
+                            )
+                          }
+                          className={`px-3 py-1.5 text-xs font-semibold rounded-md whitespace-nowrap transition-colors cursor-pointer ${
+                            loginLogFilter === tab.id
+                              ? 'bg-white text-[#0F172A] shadow-sm'
+                              : 'text-slate-600 hover:text-[#0F172A]'
+                          }`}
+                        >
+                          {tab.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {filteredLoginLogs.length === 0 ? (
+                    <div className="p-10 text-center text-xs text-slate-500">
+                      No login or security activity matches the selected filter.
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="border-b border-[#E2E8F0] bg-[#F8FAFC] text-xs font-semibold text-slate-500">
+                            <th className="py-3 px-4">Timestamp (UTC)</th>
+                            <th className="py-3 px-4">Event</th>
+                            <th className="py-3 px-4">Outcome</th>
+                            <th className="py-3 px-4">Auth Method</th>
+                            <th className="py-3 px-4">Device / Browser</th>
+                            <th className="py-3 px-4">IP Address &amp; Location</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#E2E8F0] text-xs">
+                          {filteredLoginLogs.map((log) => (
+                            <tr key={log.id} className="hover:bg-[#F8FAFC] transition-colors">
+                              <td className="py-3.5 px-4 font-mono-num text-slate-600 whitespace-nowrap">
+                                {log.timestampUtc}
+                              </td>
+                              <td className="py-3.5 px-4 font-display font-semibold text-[#0F172A] whitespace-nowrap">
+                                {log.eventType}
+                              </td>
+                              <td className="py-3.5 px-4 whitespace-nowrap">
+                                <StatusIndicator
+                                  tone={formatLoginLogStatusTone(log.status)}
+                                  label={formatLoginLogStatusLabel(log.status)}
+                                />
+                              </td>
+                              <td className="py-3.5 px-4 text-slate-600 whitespace-nowrap">
+                                {log.authMethod}
+                              </td>
+                              <td className="py-3.5 px-4 text-slate-700 whitespace-nowrap">
+                                <span className="inline-flex items-center gap-1.5">
+                                  <Monitor className="w-3.5 h-3.5 text-slate-400 shrink-0" aria-hidden="true" />
+                                  <span>{log.deviceSummary}</span>
+                                </span>
+                              </td>
+                              <td className="py-3.5 px-4 whitespace-nowrap">
+                                <div className="font-mono-num font-semibold text-[#0F172A]">
+                                  {log.ipAddress}
+                                </div>
+                                <div className="text-[11px] text-slate-400 inline-flex items-center gap-1">
+                                  <MapPin className="w-3 h-3 shrink-0" aria-hidden="true" />
+                                  <span>{log.locationLabel}</span>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </section>
+              </div>
+            )}
+          </div>
+        </main>
+      </div>
+
+      {/* ============================ SERVICE INSPECTOR MODAL ============================ */}
+      {managedService && (
+        <div className="fixed inset-0 z-50 bg-slate-900/45 flex items-center justify-center p-4">
+          <div className="w-full max-w-xl bg-white border border-[#E2E8F0] rounded-2xl shadow-xl overflow-hidden">
+            <div className="px-6 py-4 border-b border-[#E2E8F0] flex items-center justify-between">
+              <div>
+                <p className="font-mono text-xs text-slate-500">{managedService.id}</p>
+                <h3 className="font-display text-lg font-bold text-[#0F172A]">
+                  {managedService.planName}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setManagedServiceId(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-[#0F172A] cursor-pointer"
+              >
+                <X className="w-5 h-5" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5">
+              <div className="grid grid-cols-2 gap-4 text-xs">
+                <div>
+                  <span className="text-slate-500">Primary Host / Domain</span>
+                  <p className="font-mono font-semibold text-[#0F172A] mt-0.5">
+                    {managedService.domainOrHost}
+                  </p>
+                </div>
+                <div>
+                  <span className="text-slate-500">Status</span>
+                  <div className="mt-0.5">
+                    <StatusIndicator
+                      tone={formatOrderTone(managedService.status)}
+                      label={
+                        managedService.status.charAt(0).toUpperCase() +
+                        managedService.status.slice(1)
+                      }
+                    />
+                  </div>
+                </div>
+                <div>
+                  <span className="text-slate-500">Node IPv4</span>
+                  <p className="font-mono font-semibold text-[#0F172A] mt-0.5">
+                    {managedService.serverIp ?? '185.199.110.42'}
+                  </p>
+                </div>
+                <div>
+                  <span className="text-slate-500">Datacenter</span>
+                  <p className="font-semibold text-[#0F172A] mt-0.5">
+                    {managedService.datacenter}
+                  </p>
+                </div>
+              </div>
+
+              {isServiceLockedByBilling(managedService) ? (
+                <div className="border border-red-200 rounded-xl bg-red-50/70 p-4 space-y-3 text-xs">
+                  <div className="flex items-start gap-2.5">
+                    <Lock className="w-5 h-5 text-[#DC2626] shrink-0 mt-0.5" aria-hidden="true" />
+                    <div>
+                      <p className="font-bold text-[#0F172A]">
+                        Control Panel Access Locked — Invoice Settlement Required
+                      </p>
+                      <p className="text-slate-600 mt-1 leading-relaxed">
+                        Direct control panel URL, SSH/FTP credentials, and container actions are temporarily locked because the invoice for this billing due date is unpaid or overdue. Settle your open invoice to automatically unlock instant access.
+                      </p>
+                    </div>
+                  </div>
+                  {(() => {
+                    const dueInv = myInvoices.find(
+                      (inv) => inv.orderId === managedService.id && inv.status !== 'paid'
+                    );
+                    return dueInv ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setManagedServiceId(null);
+                          setSelectedInvoiceOrderId(dueInv.id);
+                        }}
+                        className="min-h-[38px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#DC2626] hover:bg-red-700 text-white text-xs font-semibold cursor-pointer"
+                      >
+                        <CreditCard className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Pay Invoice {dueInv.id} ({formatPrice(dueInv.amountUsd)}) to Unlock</span>
+                      </button>
+                    ) : null;
+                  })()}
+                </div>
+              ) : (
+                <div className="border border-[#E2E8F0] rounded-xl bg-[#F8FAFC] p-4 space-y-2.5 text-xs">
+                  <p className="font-semibold text-[#0F172A] flex items-center gap-1.5">
+                    <Terminal className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                    <span>Direct Provisioning &amp; Control Access</span>
+                  </p>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-slate-500">
+                      {managedService.productType === 'Unmanaged VPS' ||
+                      managedService.productType === 'n8n Hosting'
+                        ? 'SSH Command'
+                        : 'Control Panel Endpoint'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleCopy(
+                          'endpoint',
+                          managedService.productType === 'Unmanaged VPS' ||
+                            managedService.productType === 'n8n Hosting'
+                            ? `ssh root@${managedService.serverIp ?? managedService.domainOrHost}`
+                            : `https://${managedService.domainOrHost}:2083`,
+                          'Connection endpoint'
+                        )
+                      }
+                      className="font-mono text-[#0E6B63] hover:underline inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      <span>
+                        {managedService.productType === 'Unmanaged VPS' ||
+                        managedService.productType === 'n8n Hosting'
+                          ? `ssh root@${managedService.serverIp ?? managedService.domainOrHost}`
+                          : `https://${managedService.domainOrHost}:2083`}
+                      </span>
+                      <Copy className="w-3 h-3" aria-hidden="true" />
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-slate-500">Portal Username</span>
+                    <span className="font-mono font-semibold text-[#0F172A]">
+                      {currentUser.username}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-[#E2E8F0]">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextRenew = !(managedService.autoRenew !== false);
+                    updateClientOrderSettings(managedService.id, { autoRenew: nextRenew });
+                    showToast(
+                      `Auto-renewal ${nextRenew ? 'enabled' : 'disabled'} for ${managedService.domainOrHost}`
+                    );
+                  }}
+                  className="min-h-[38px] px-3.5 py-2 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] cursor-pointer"
+                >
+                  Auto-Renew: {managedService.autoRenew !== false ? 'ON' : 'OFF'}
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const host = managedService.domainOrHost;
+                      setManagedServiceId(null);
+                      handleOpenCreateTicketPage(host);
+                    }}
+                    className="min-h-[38px] px-3.5 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+                  >
+                    Open Support Ticket
+                  </button>
+
+                  {(() => {
+                    const svcInv = myInvoices.find((inv) => inv.orderId === managedService.id);
+                    return svcInv ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          downloadInvoicePdf(
+                            svcInv,
+                            invoiceTemplateConfig,
+                            paymentMethods,
+                            {
+                              code: currency.code,
+                              formattedTotal: formatPrice(svcInv.amountUsd),
+                            }
+                          );
+                          showToast(`Downloaded ${svcInv.id}.pdf`);
+                        }}
+                        className="min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-[#0E6B63]/35 bg-[#F2FAF8] text-[#0E6B63] hover:bg-[#0E6B63] hover:text-white text-xs font-semibold transition-colors cursor-pointer"
+                      >
+                        <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Download Invoice PDF</span>
+                      </button>
+                    ) : null;
+                  })()}
+                  {managedService.status !== 'cancelled' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        updateClientOrderSettings(managedService.id, {
+                          status: 'cancelled',
+                          autoRenew: false,
+                        });
+                        setManagedServiceId(null);
+                        showToast(`Cancellation logged for ${managedService.domainOrHost}`);
+                      }}
+                      className="min-h-[38px] px-3.5 py-2 rounded-lg border border-red-200 text-[#DC2626] hover:bg-red-50 text-xs font-semibold cursor-pointer"
+                    >
+                      Cancel Service
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================ DOMAIN DNS MODAL ============================ */}
+      {managedDomain && (
+        <div className="fixed inset-0 z-50 bg-slate-900/45 flex items-center justify-center p-4">
+          <div className="w-full max-w-lg bg-white border border-[#E2E8F0] rounded-2xl shadow-xl overflow-hidden">
+            <div className="px-6 py-4 border-b border-[#E2E8F0] flex items-center justify-between">
+              <div>
+                <p className="font-mono text-xs text-slate-500">{managedDomain.id}</p>
+                <h3 className="font-display text-lg font-bold text-[#0F172A]">
+                  {managedDomain.domainOrHost}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setManagedDomainId(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-[#0F172A] cursor-pointer"
+              >
+                <X className="w-5 h-5" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-[#0F172A]">
+                    Nameservers (Anycast DNS)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNs1Input('ns1.cpcloudhost.com');
+                      setNs2Input('ns2.cpcloudhost.com');
+                    }}
+                    className="text-xs font-semibold text-[#0E6B63] hover:underline cursor-pointer"
+                  >
+                    Use Default Nameservers
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  value={ns1Input}
+                  onChange={(e) => setNs1Input(e.target.value)}
+                  className="w-full min-h-[40px] px-3 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
+                  placeholder="ns1.cpcloudhost.com"
+                />
+                <input
+                  type="text"
+                  value={ns2Input}
+                  onChange={(e) => setNs2Input(e.target.value)}
+                  className="w-full min-h-[40px] px-3 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
+                  placeholder="ns2.cpcloudhost.com"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextAuto = !(managedDomain.autoRenew !== false);
+                    updateClientOrderSettings(managedDomain.id, { autoRenew: nextAuto });
+                    showToast(
+                      `Auto-Renew ${nextAuto ? 'enabled' : 'disabled'} for ${managedDomain.domainOrHost}`
+                    );
+                  }}
+                  className="min-h-[40px] px-3 py-2 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] font-semibold text-[#0F172A] cursor-pointer"
+                >
+                  Auto-Renew: {managedDomain.autoRenew !== false ? 'ON' : 'OFF'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextLock = !(managedDomain.registrarLock !== false);
+                    updateClientOrderSettings(managedDomain.id, { registrarLock: nextLock });
+                    showToast(
+                      `Registrar Lock ${nextLock ? 'enabled' : 'disabled'} for ${managedDomain.domainOrHost}`
+                    );
+                  }}
+                  className="min-h-[40px] px-3 py-2 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] font-semibold text-[#0F172A] cursor-pointer"
+                >
+                  Transfer Lock: {managedDomain.registrarLock !== false ? 'ON' : 'OFF'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextPrivacy = !(managedDomain.whoisPrivacy !== false);
+                    updateClientOrderSettings(managedDomain.id, { whoisPrivacy: nextPrivacy });
+                    showToast(
+                      `WHOIS Privacy ${nextPrivacy ? 'enabled' : 'disabled'} for ${managedDomain.domainOrHost}`
+                    );
+                  }}
+                  className="min-h-[40px] px-3 py-2 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] font-semibold text-[#0F172A] cursor-pointer"
+                >
+                  WHOIS Privacy: {managedDomain.whoisPrivacy !== false ? 'ON' : 'OFF'}
+                </button>
+              </div>
+
+              <div className="border border-[#E2E8F0] rounded-xl p-3.5 bg-[#F8FAFC] flex items-center justify-between text-xs">
+                <div>
+                  <span className="text-slate-500 block">EPP / Transfer Auth Code</span>
+                  <span className="font-mono font-semibold text-[#0F172A]">
+                    {showEppCode ? `EPP-${managedDomain.id.slice(-4)}-92XQ` : '••••••••••••'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowEppCode((prev) => !prev)}
+                    className="text-xs font-semibold text-slate-600 hover:text-[#0F172A] cursor-pointer"
+                  >
+                    {showEppCode ? 'Hide' : 'Reveal'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleCopy(
+                        'epp',
+                        `EPP-${managedDomain.id.slice(-4)}-92XQ`,
+                        'EPP Auth Code'
+                      )
+                    }
+                    className="text-xs font-semibold text-[#0E6B63] hover:underline cursor-pointer"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-[#E2E8F0]">
+                <button
+                  type="button"
+                  onClick={() => setManagedDomainId(null)}
+                  className="min-h-[40px] px-4 py-2 rounded-lg border border-[#E2E8F0] text-xs font-semibold text-slate-600 cursor-pointer"
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    updateClientOrderSettings(managedDomain.id, {
+                      nameservers: [
+                        ns1Input.trim() || 'ns1.cpcloudhost.com',
+                        ns2Input.trim() || 'ns2.cpcloudhost.com',
+                      ],
+                    });
+                    setManagedDomainId(null);
+                    showToast(`Nameservers updated for ${managedDomain.domainOrHost}`);
+                  }}
+                  className="min-h-[40px] px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+                >
+                  Save Nameservers
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================ INVOICE / PAY MODAL ============================ */}
+      {selectedInvoice && (
+        <div className="fixed inset-0 z-50 bg-slate-900/45 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="w-full max-w-2xl bg-white border border-[#E2E8F0] rounded-2xl shadow-xl overflow-hidden my-6">
+            <div className="px-6 py-4 border-b border-[#E2E8F0] flex items-center justify-between">
+              <div>
+                <p className="font-mono text-xs text-slate-500">
+                  {selectedInvoice.id}
+                  {selectedInvoice.orderId ? ` · ${selectedInvoice.orderId}` : ''}
+                </p>
+                <h3 className="font-display text-lg font-bold text-[#0F172A]">
+                  Invoice Summary &amp; Settlement
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedInvoiceOrderId(null);
+                  setPaymentTxError('');
+                }}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-[#0F172A] cursor-pointer"
+              >
+                <X className="w-5 h-5" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5 text-sm">
+              <div className="flex flex-wrap items-start justify-between gap-4 text-xs border-b border-[#E2E8F0] pb-4">
+                <div>
+                  <p className="font-bold text-[#0F172A]">Billed To</p>
+                  <p className="text-slate-600 mt-0.5">{selectedInvoice.clientName}</p>
+                  <p className="font-mono text-slate-500">{selectedInvoice.clientEmail}</p>
+                </div>
+                <div className="text-right space-y-1">
+                  <StatusIndicator
+                    tone={
+                      selectedInvoice.status === 'paid'
+                        ? 'emerald'
+                        : selectedInvoice.status === 'overdue'
+                          ? 'red'
+                          : 'amber'
+                    }
+                    label={selectedInvoice.status.toUpperCase()}
+                  />
+                  <p className="font-mono-num text-slate-500">
+                    Start: {selectedInvoice.issuedDate} · Due: {selectedInvoice.dueDate}
+                  </p>
+                  {selectedInvoice.transactionRef && (
+                    <p className="font-mono text-[#0E6B63]">
+                      TID: {selectedInvoice.transactionRef}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Line Items Table */}
+              <div className="border border-[#E2E8F0] rounded-xl overflow-hidden">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-[#F8FAFC] border-b border-[#E2E8F0] text-[11px] font-semibold text-slate-500">
+                      <th className="py-2.5 px-3">Product / Service</th>
+                      <th className="py-2.5 px-3">Domain / Host</th>
+                      <th className="py-2.5 px-3 text-right">Qty × Unit</th>
+                      <th className="py-2.5 px-3 text-right">Line Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#E2E8F0]">
+                    {selectedInvoice.items.map((item) => (
+                      <tr key={item.id}>
+                        <td className="py-2.5 px-3">
+                          <span className="font-semibold text-[#0F172A] block">
+                            {item.description}
+                          </span>
+                          <span className="text-[11px] text-slate-500">
+                            {item.productType} · {item.billingCycle}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 font-mono text-[#0E6B63]">
+                          {item.domainOrHost}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono-num text-slate-600">
+                          {item.quantity} × {formatPrice(item.unitPriceUsd)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono-num font-bold text-[#0F172A]">
+                          {formatPrice(item.lineTotalUsd)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="bg-[#F8FAFC] border-t border-[#E2E8F0] px-4 py-3 space-y-1 text-xs">
+                  <div className="flex justify-between text-slate-600">
+                    <span>Subtotal</span>
+                    <span className="font-mono-num">
+                      {formatPrice(selectedInvoice.subtotalUsd)}
+                    </span>
+                  </div>
+                  {selectedInvoice.discountUsd > 0 && (
+                    <div className="flex justify-between text-[#16A34A]">
+                      <span>Discount</span>
+                      <span className="font-mono-num">
+                        -{formatPrice(selectedInvoice.discountUsd)}
+                      </span>
+                    </div>
+                  )}
+                  {selectedInvoice.taxRatePercent > 0 && (
+                    <div className="flex justify-between text-slate-600">
+                      <span>Tax ({selectedInvoice.taxRatePercent}%)</span>
+                      <span className="font-mono-num">
+                        {formatPrice(
+                          ((selectedInvoice.subtotalUsd - selectedInvoice.discountUsd) *
+                            selectedInvoice.taxRatePercent) /
+                            100
+                        )}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex justify-between pt-1.5 border-t border-[#E2E8F0] font-bold text-sm text-[#0F172A]">
+                    <span>
+                      {selectedInvoice.status === 'paid' ? 'Total Paid' : 'Total Due'}
+                    </span>
+                    <span className="font-mono-num text-[#0E6B63]">
+                      {formatPrice(selectedInvoice.amountUsd)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {(selectedInvoice.status === 'unpaid' ||
+                selectedInvoice.status === 'overdue' ||
+                selectedInvoice.status === 'pending') && (
+                <div className="space-y-3 pt-2 border-t border-[#E2E8F0]">
+                  <div>
+                    <label className="block text-xs font-semibold text-[#0F172A] mb-1.5">
+                      Select Active Payment Method
+                    </label>
+                    <select
+                      value={selectedPayMethod}
+                      onChange={(e) => {
+                        setSelectedPayMethod(e.target.value);
+                        setPaymentTxError('');
+                      }}
+                      className="w-full min-h-[40px] px-3 py-2 text-xs border border-[#CBD5E1] rounded-lg bg-white"
+                    >
+                      {enabledPaymentMethods.map((method) => (
+                        <option key={method.id} value={method.name}>
+                          {method.name} ({method.currencyHint})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {activePaymentGateway && (
+                    <div className="bg-[#F8FAFC] border border-[#E2E8F0] rounded-xl p-4 space-y-2 text-xs">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-display font-bold text-[#0F172A]">
+                          {activePaymentGateway.name}
+                        </span>
+                        <span className="text-[11px] font-semibold text-[#0E6B63]">
+                          {activePaymentGateway.bankOrProviderName}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                        <div>
+                          <span className="text-slate-500 text-[11px] block">
+                            Account Title
+                          </span>
+                          <span className="font-semibold text-[#0F172A]">
+                            {activePaymentGateway.accountTitle}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-slate-500 text-[11px] block">
+                            Account / Wallet Number
+                          </span>
+                          <span className="font-mono font-bold text-[#0E6B63]">
+                            {activePaymentGateway.accountNumber}
+                          </span>
+                        </div>
+                      </div>
+
+                      {activePaymentGateway.ibanOrRouting && (
+                        <p className="font-mono text-[11px] text-slate-600">
+                          IBAN / Ref: {activePaymentGateway.ibanOrRouting}
+                        </p>
+                      )}
+
+                      <p className="text-slate-600 leading-relaxed pt-1 border-t border-slate-200/70">
+                        {activePaymentGateway.instructions}
+                      </p>
+
+                      {activePaymentGateway.requiresTransactionId && (
+                        <div className="pt-2">
+                          <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
+                            Transaction ID / Reference (TID) <span className="text-[#DC2626]">*</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={paymentTxRef}
+                            onChange={(e) => {
+                              setPaymentTxRef(e.target.value);
+                              if (paymentTxError) setPaymentTxError('');
+                            }}
+                            placeholder="Enter Easypaisa / JazzCash TID or Bank Reference #"
+                            className="w-full px-3 py-2 text-xs font-mono bg-white border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
+                          />
+                          {paymentTxError && (
+                            <p className="text-[11px] font-semibold text-[#DC2626] mt-1">
+                              {paymentTxError}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#E2E8F0]">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      downloadInvoicePdf(
+                        selectedInvoice,
+                        invoiceTemplateConfig,
+                        paymentMethods,
+                        {
+                          code: currency.code,
+                          formattedTotal: formatPrice(selectedInvoice.amountUsd),
+                        }
+                      );
+                      showToast(`Downloaded ${selectedInvoice.id}.pdf`);
+                    }}
+                    className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-[#0E6B63]/40 bg-[#F2FAF8] hover:bg-[#0E6B63] hover:text-white text-xs font-semibold text-[#0E6B63] transition-colors cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Download PDF Invoice</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => window.print()}
+                    className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] cursor-pointer"
+                  >
+                    <Printer className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Print Receipt</span>
+                  </button>
+                </div>
+
+                {selectedInvoice.status === 'unpaid' ||
+                selectedInvoice.status === 'overdue' ||
+                selectedInvoice.status === 'pending' ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (
+                        activePaymentGateway?.requiresTransactionId &&
+                        !paymentTxRef.trim()
+                      ) {
+                        setPaymentTxError(
+                          `Enter your ${activePaymentGateway.name} Transaction ID (TID) before submitting.`
+                        );
+                        return;
+                      }
+                      const result = payClientOrderInvoice(
+                        selectedInvoice.id,
+                        selectedPayMethod,
+                        { transactionRef: paymentTxRef }
+                      );
+                      setSelectedInvoiceOrderId(null);
+                      setPaymentTxRef('');
+                      if (result && result.status === 'pending') {
+                        showToast(
+                          `TID submitted for ${selectedInvoice.id} — Pending Billing Desk verification`
+                        );
+                      } else {
+                        showToast(
+                          `Payment settled for ${selectedInvoice.id} — Service activated`
+                        );
+                      }
+                    }}
+                    className="min-h-[40px] px-5 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+                  >
+                    {activePaymentGateway && !activePaymentGateway.autoActivate
+                      ? `Submit ${activePaymentGateway.name} TID`
+                      : `Pay ${formatPrice(selectedInvoice.amountUsd)}`}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedInvoiceOrderId(null)}
+                    className="min-h-[40px] px-4 py-2 rounded-lg bg-[#0E6B63] text-white text-xs font-semibold cursor-pointer"
+                  >
+                    Done
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================ QUICK SERVICE ORDER MODAL ============================ */}
+      {showQuickOrderModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/45 flex items-center justify-center p-4">
+          <form
+            onSubmit={handlePlaceQuickOrder}
+            className="w-full max-w-lg bg-white border border-[#E2E8F0] rounded-2xl shadow-xl overflow-hidden"
+          >
+            <div className="px-6 py-4 border-b border-[#E2E8F0] flex items-center justify-between">
+              <h3 className="font-display text-lg font-bold text-[#0F172A]">
+                Deploy New Service
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowQuickOrderModal(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-[#0F172A] cursor-pointer"
+              >
+                <X className="w-5 h-5" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-[#0F172A] mb-1.5">
+                  Select Plan
+                </label>
+                <select
+                  value={quickCatalogId}
+                  onChange={(e) => setQuickCatalogId(e.target.value)}
+                  className="w-full min-h-[42px] px-3 py-2 text-xs sm:text-sm border border-[#CBD5E1] rounded-xl bg-white"
+                >
+                  {QUICK_ORDER_CATALOG.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.planName} ({item.productType}) —{' '}
+                      {formatPrice(
+                        quickCycle === 'Yearly' ? item.yearlyUsd : item.monthlyUsd
+                      )}
+                      /{quickCycle === 'Yearly' ? 'yr' : 'mo'}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1.5 text-xs text-slate-500">
+                  {QUICK_ORDER_CATALOG.find((c) => c.id === quickCatalogId)?.specs}
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#0F172A] mb-1.5">
+                  Domain or Node Hostname
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={quickDomainInput}
+                  onChange={(e) => {
+                    setQuickDomainInput(e.target.value);
+                    if (quickOrderError) setQuickOrderError('');
+                  }}
+                  placeholder="yourbrand.com"
+                  className="w-full min-h-[42px] px-3.5 py-2 text-sm font-mono border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-[#0F172A] mb-1.5">
+                    Billing Cycle
+                  </label>
+                  <select
+                    value={quickCycle}
+                    onChange={(e) =>
+                      setQuickCycle(e.target.value as 'Monthly' | 'Yearly')
+                    }
+                    className="w-full min-h-[42px] px-3 py-2 text-xs border border-[#CBD5E1] rounded-xl bg-white"
+                  >
+                    <option value="Yearly">Yearly (Save up to 20%)</option>
+                    <option value="Monthly">Monthly</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-[#0F172A] mb-1.5">
+                    Datacenter Region
+                  </label>
+                  <select
+                    value={quickDatacenter}
+                    onChange={(e) => setQuickDatacenter(e.target.value)}
+                    className="w-full min-h-[42px] px-3 py-2 text-xs border border-[#CBD5E1] rounded-xl bg-white"
+                  >
+                    {DATACENTER_OPTIONS.map((dc) => (
+                      <option key={dc} value={dc}>
+                        {dc}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {quickOrderError && (
+                <p className="text-xs font-semibold text-[#DC2626]">
+                  {quickOrderError}
+                </p>
+              )}
+
+              <div className="flex items-center justify-between pt-2 border-t border-[#E2E8F0]">
+                <a
+                  href="/"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setShowQuickOrderModal(false);
+                    onNavigateHome();
+                  }}
+                  className="text-xs font-semibold text-[#0E6B63] hover:underline"
+                >
+                  Browse Full Catalog
+                </a>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowQuickOrderModal(false)}
+                    className="min-h-[40px] px-4 py-2 rounded-lg border border-[#E2E8F0] text-xs font-semibold text-slate-600 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="min-h-[40px] px-5 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+                  >
+                    Create Order
+                  </button>
+                </div>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+};

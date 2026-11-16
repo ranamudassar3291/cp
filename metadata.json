@@ -1,0 +1,6 @@
+{
+  "name": "cpcloudhost.com",
+  "description": "High-speed NVMe cloud hosting, managed WordPress, VPS, and multi-cloud infrastructure by cpcloudhost.com.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
