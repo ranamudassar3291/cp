@@ -1,9 +1,13 @@
 import React, { useMemo, useState } from 'react';
 import {
   CheckCircle2,
+  Clock,
+  Copy,
   Globe,
+  MailCheck,
   Plus,
   Search,
+  Send,
   Sparkles,
   Tag,
   Trash2,
@@ -63,6 +67,8 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
     provisioningModules,
     addOrder,
     adminUpdateOrderDetails,
+    approveDomainRegistrationAndSendVerify,
+    adminApplyNameserverChange,
     saveTldExtension,
     createTldExtension,
     deleteTldExtension,
@@ -156,6 +162,17 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
       );
     });
   }, [tldExtensions, tldSearch]);
+
+  const pendingNameserverOrders = useMemo(
+    () =>
+      domainOrders.filter(
+        (o) =>
+          o.nameserverUpdateStatus === 'pending_update' &&
+          Array.isArray(o.pendingNameservers) &&
+          o.pendingNameservers.length === 2
+      ),
+    [domainOrders]
+  );
 
   const domainMetrics = useMemo(() => {
     return {
@@ -634,6 +651,79 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
             </form>
           )}
 
+          {/* Pending Nameserver Update Requests Queue */}
+          {pendingNameserverOrders.length > 0 && (
+            <div className="bg-white border border-amber-300 rounded-xl p-5 space-y-3.5">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <Clock className="w-4 h-4 text-[#D97706]" aria-hidden="true" />
+                  <div>
+                    <h2 className="font-display text-sm font-bold text-[#0F172A]">
+                      Client Nameserver Update Queue ({pendingNameserverOrders.length})
+                    </h2>
+                    <p className="text-xs text-slate-500">
+                      Clients see a 1–3 hour propagation notice. Click Update &amp; Notify Client to push live DNS delegation and send confirmation email.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="divide-y divide-[#E2E8F0]">
+                {pendingNameserverOrders.map((ord) => (
+                  <div
+                    key={`nsq-${ord.id}`}
+                    className="py-3 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs"
+                  >
+                    <div className="space-y-1 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono font-bold text-[#0F172A]">
+                          {ord.domainOrHost}
+                        </span>
+                        <span className="font-mono text-[11px] text-slate-500">
+                          {ord.id}
+                        </span>
+                        <span className="text-slate-600">
+                          · {ord.clientName} ({ord.clientEmail})
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] font-mono">
+                        <span className="text-slate-500">
+                          Current: {(ord.nameservers || ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']).join(', ')}
+                        </span>
+                        <span className="font-semibold text-[#0E6B63]">
+                          Requested: {ord.pendingNameservers?.[0]}, {ord.pendingNameservers?.[1]}
+                        </span>
+                        {ord.nameserverRequestedAt && (
+                          <span className="text-slate-400">
+                            Submitted: {ord.nameserverRequestedAt}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const res = adminApplyNameserverChange(ord.id);
+                        if (!res.ok) {
+                          onShowToast(res.error || 'Failed to apply nameserver change');
+                          return;
+                        }
+                        onShowToast(
+                          `Updated nameservers for ${ord.domainOrHost} & emailed confirmation to ${ord.clientEmail}`
+                        );
+                      }}
+                      className="min-h-[36px] inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <Send className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Update &amp; Notify Client</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Filter Toolbar */}
           <div className="bg-white border border-[#E2E8F0] rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
             <div className="relative flex-1 min-w-[220px]">
@@ -691,74 +781,176 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
                       </td>
                     </tr>
                   ) : (
-                    filteredDomainOrders.map((ord) => (
-                      <tr key={ord.id} className="hover:bg-[#F8FAFC]">
-                        <td className="py-3 px-4">
-                          <span className="font-mono font-bold text-[#0F172A] block">
-                            {ord.domainOrHost}
-                          </span>
-                          <span className="font-mono text-[11px] text-slate-500">
-                            {ord.id}
-                          </span>
-                        </td>
-                        <td className="py-3 px-4">
-                          <span className="font-semibold text-[#0F172A] block">
-                            {ord.clientName}
-                          </span>
-                          <span className="font-mono text-[11px] text-slate-500">
-                            {ord.clientEmail}
-                          </span>
-                        </td>
-                        <td className="py-3 px-4 text-slate-700 whitespace-nowrap">
-                          <span className="block font-medium">{ord.productType}</span>
-                          <span className="text-[11px] text-slate-500">{ord.planName}</span>
-                        </td>
-                        <td className="py-3 px-4 font-mono text-[11px] text-slate-600 whitespace-nowrap">
-                          <div>Reg: {ord.createdAt.slice(0, 10)}</div>
-                          <div className="text-[#0E6B63] font-semibold">
-                            Due: {(ord.nextDueDate || '—').slice(0, 10)}
-                          </div>
-                        </td>
-                        <td className="py-3 px-4 text-right font-mono tabular-nums font-semibold text-[#0F172A] whitespace-nowrap">
-                          {formatPrice(ord.amountUsd)}
-                        </td>
-                        <td className="py-3 px-4 whitespace-nowrap">
-                          <select
-                            aria-label={`Change status for ${ord.domainOrHost}`}
-                            value={ord.status}
-                            onChange={(e) => {
-                              const nextSt = e.target.value as OrderStatus;
-                              adminUpdateOrderDetails(ord.id, { status: nextSt });
-                              onShowToast(
-                                `${ord.domainOrHost} status updated to ${nextSt.toUpperCase()}`
-                              );
-                            }}
-                            className={`px-2 py-1 rounded text-[11px] font-semibold border border-transparent focus:border-[#0E6B63] cursor-pointer ${domainStatusStyle(
-                              ord.status
-                            )}`}
-                          >
-                            {DOMAIN_STATUS_OPTIONS.map((st) => (
-                              <option
-                                key={st}
-                                value={st}
-                                className="bg-white text-[#0F172A]"
+                    filteredDomainOrders.map((ord) => {
+                      const verifyLink =
+                        typeof window !== 'undefined' && ord.domainVerificationToken
+                          ? `${window.location.origin}/verify-domain?orderId=${encodeURIComponent(ord.id)}&token=${encodeURIComponent(ord.domainVerificationToken)}`
+                          : '';
+                      const isPendingRegApproval =
+                        ord.status === 'pending' &&
+                        ord.productType === 'Domain Registration';
+                      const isPendingClientVerify =
+                        ord.domainVerificationStatus === 'pending_contact_verification';
+
+                      return (
+                        <tr key={ord.id} className="hover:bg-[#F8FAFC]">
+                          <td className="py-3 px-4">
+                            <span className="font-mono font-bold text-[#0F172A] block">
+                              {ord.domainOrHost}
+                            </span>
+                            <span className="font-mono text-[11px] text-slate-500 block">
+                              {ord.id}
+                            </span>
+                            {isPendingRegApproval ? (
+                              <span className="text-[11px] font-semibold text-[#D97706] block mt-0.5">
+                                Pending Admin Review
+                              </span>
+                            ) : isPendingClientVerify ? (
+                              <span className="text-[11px] font-semibold text-[#0E6B63] inline-flex items-center gap-1.5 mt-0.5">
+                                <span>WHOIS Verify Sent</span>
+                                {verifyLink && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      navigator.clipboard?.writeText(verifyLink).catch(() => {});
+                                      onShowToast(`Copied verification link for ${ord.domainOrHost}`);
+                                    }}
+                                    className="inline-flex items-center gap-0.5 text-slate-500 hover:text-[#0E6B63] underline cursor-pointer"
+                                    title="Copy client WHOIS verification link"
+                                  >
+                                    <Copy className="w-3 h-3" />
+                                    <span>Copy Link</span>
+                                  </button>
+                                )}
+                              </span>
+                            ) : ord.domainVerificationStatus === 'verified' ? (
+                              <span className="text-[11px] font-semibold text-[#16A34A] inline-flex items-center gap-1 mt-0.5">
+                                <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
+                                <span>WHOIS Verified</span>
+                              </span>
+                            ) : null}
+                            {ord.nameserverUpdateStatus === 'pending_update' &&
+                              ord.pendingNameservers && (
+                                <span className="block font-mono text-[11px] text-[#D97706] mt-0.5">
+                                  NS Request: {ord.pendingNameservers[0]}, {ord.pendingNameservers[1]}
+                                </span>
+                              )}
+                          </td>
+                          <td className="py-3 px-4">
+                            <span className="font-semibold text-[#0F172A] block">
+                              {ord.clientName}
+                            </span>
+                            <span className="font-mono text-[11px] text-slate-500">
+                              {ord.clientEmail}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-slate-700 whitespace-nowrap">
+                            <span className="block font-medium">{ord.productType}</span>
+                            <span className="text-[11px] text-slate-500">{ord.planName}</span>
+                          </td>
+                          <td className="py-3 px-4 font-mono text-[11px] text-slate-600 whitespace-nowrap">
+                            <div>Reg: {ord.createdAt.slice(0, 10)}</div>
+                            <div className="text-[#0E6B63] font-semibold">
+                              Due: {(ord.nextDueDate || '—').slice(0, 10)}
+                            </div>
+                          </td>
+                          <td className="py-3 px-4 text-right font-mono tabular-nums font-semibold text-[#0F172A] whitespace-nowrap">
+                            {formatPrice(ord.amountUsd)}
+                          </td>
+                          <td className="py-3 px-4 whitespace-nowrap">
+                            <select
+                              aria-label={`Change status for ${ord.domainOrHost}`}
+                              value={ord.status}
+                              onChange={(e) => {
+                                const nextSt = e.target.value as OrderStatus;
+                                if (
+                                  nextSt === 'active' &&
+                                  ord.status === 'pending' &&
+                                  ord.productType === 'Domain Registration'
+                                ) {
+                                  const res = approveDomainRegistrationAndSendVerify(ord.id);
+                                  if (res.ok) {
+                                    onShowToast(
+                                      `Approved ${ord.domainOrHost} & emailed WHOIS verification link`
+                                    );
+                                    return;
+                                  }
+                                }
+                                adminUpdateOrderDetails(ord.id, { status: nextSt });
+                                onShowToast(
+                                  `${ord.domainOrHost} status updated to ${nextSt.toUpperCase()}`
+                                );
+                              }}
+                              className={`px-2 py-1 rounded text-[11px] font-semibold border border-transparent focus:border-[#0E6B63] cursor-pointer ${domainStatusStyle(
+                                ord.status
+                              )}`}
+                            >
+                              {DOMAIN_STATUS_OPTIONS.map((st) => (
+                                <option
+                                  key={st}
+                                  value={st}
+                                  className="bg-white text-[#0F172A]"
+                                >
+                                  {st.toUpperCase()}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="py-3 px-4 text-right whitespace-nowrap">
+                            <div className="inline-flex items-center justify-end gap-1.5">
+                              {(isPendingRegApproval || isPendingClientVerify) && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const res = approveDomainRegistrationAndSendVerify(ord.id);
+                                    if (!res.ok) {
+                                      onShowToast(res.error || 'Could not dispatch verification');
+                                      return;
+                                    }
+                                    onShowToast(
+                                      isPendingRegApproval
+                                        ? `Approved ${ord.domainOrHost} & sent WHOIS verification link to ${ord.clientEmail}`
+                                        : `Resent WHOIS verification link to ${ord.clientEmail}`
+                                    );
+                                  }}
+                                  className="px-3 py-1.5 text-[11px] font-semibold text-white bg-[#0E6B63] hover:bg-[#0A534D] rounded-lg whitespace-nowrap shrink-0 inline-flex items-center gap-1 cursor-pointer"
+                                >
+                                  <MailCheck className="w-3 h-3" aria-hidden="true" />
+                                  <span>
+                                    {isPendingRegApproval
+                                      ? 'Approve & Send Verify'
+                                      : 'Resend Verify'}
+                                  </span>
+                                </button>
+                              )}
+                              {ord.nameserverUpdateStatus === 'pending_update' && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const res = adminApplyNameserverChange(ord.id);
+                                    if (res.ok) {
+                                      onShowToast(
+                                        `Applied nameservers & notified ${ord.clientEmail}`
+                                      );
+                                    }
+                                  }}
+                                  className="px-3 py-1.5 text-[11px] font-semibold text-[#D97706] border border-amber-300 bg-amber-50 hover:bg-amber-100 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
+                                >
+                                  Update NS &amp; Notify
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => openEditDomainModal(ord)}
+                                className="px-3 py-1.5 text-[11px] font-semibold text-[#0E6B63] border border-[#0E6B63]/30 hover:bg-[#0E6B63]/10 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
                               >
-                                {st.toUpperCase()}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-                        <td className="py-3 px-4 text-right whitespace-nowrap">
-                          <button
-                            type="button"
-                            onClick={() => openEditDomainModal(ord)}
-                            className="px-3 py-1.5 text-[11px] font-semibold text-[#0E6B63] border border-[#0E6B63]/30 hover:bg-[#0E6B63]/10 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
-                          >
-                            Edit Dates &amp; DNS
-                          </button>
-                        </td>
-                      </tr>
-                    ))
+                                Edit Dates &amp; DNS
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>

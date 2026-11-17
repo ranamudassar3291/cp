@@ -298,6 +298,7 @@ export const LiveSupportChatWidget: React.FC<LiveSupportChatWidgetProps> = ({
                   senderName: clientSenderName,
                   body: textToSend || 'Sent file attachment(s) for review.',
                   timestampUtc: new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC',
+                  timestampMs: Date.now(),
                   attachments: outgoingAtts.length > 0 ? outgoingAtts : undefined,
                 },
               ],

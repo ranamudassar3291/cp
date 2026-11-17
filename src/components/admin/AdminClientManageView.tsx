@@ -67,6 +67,7 @@ const HOSTING_PRODUCT_TYPES: PlatformOrder['productType'][] = [
   'Shared Cloud',
   'Managed WordPress',
   'Windows Hosting',
+  'Reseller Hosting',
   'Unmanaged VPS',
   'n8n Hosting',
 ];

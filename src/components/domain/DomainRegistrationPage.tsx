@@ -50,12 +50,14 @@ export const DomainRegistrationPage: React.FC<DomainRegistrationPageProps> = ({
 }) => {
   const { formatPrice, countryName } = useCurrency();
   const {
+    currentUser,
     addOrder,
     cmsPages,
     tldExtensions,
     domainContactAddresses,
     setOrderCheckoutDraft,
     setLastSearchedDomain,
+    setPendingPostAuthPath,
   } = usePlatform();
   const pageCms = cmsPages.find((p) => p.id === 'domain-registration');
   const [queryInput, setQueryInput] = useState(initialQuery);
@@ -243,6 +245,12 @@ export const DomainRegistrationPage: React.FC<DomainRegistrationPageProps> = ({
 
   const handleConfirmRegistration = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!currentUser) {
+      setRegisterFormError(
+        'Please Sign In or Create Account below to add your WHOIS Contact & Address.'
+      );
+      return;
+    }
     const cleaned = (registrantEmail.trim() || selectedWhoisContact?.email || '').trim();
     if (!cleaned || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleaned)) {
       setRegisterFormError(
@@ -715,19 +723,50 @@ export const DomainRegistrationPage: React.FC<DomainRegistrationPageProps> = ({
                           </label>
                         </div>
 
-                        <DomainContactAddressSelector
-                          compact
-                          selectedContactId={selectedWhoisContact?.id || null}
-                          onSelectContact={(addr) => {
-                            setSelectedWhoisContact(addr);
-                            if (!registrantEmail.trim()) {
-                              setRegistrantEmail(addr.email);
-                            }
-                            setRegisterFormError('');
-                          }}
-                          title="WHOIS Contact & Address"
-                          subtitle="Add your address once with country & state dropdowns — reused automatically for future domains."
-                        />
+                        {currentUser ? (
+                          <DomainContactAddressSelector
+                            compact
+                            selectedContactId={selectedWhoisContact?.id || null}
+                            onSelectContact={(addr) => {
+                              setSelectedWhoisContact(addr);
+                              if (!registrantEmail.trim()) {
+                                setRegistrantEmail(addr.email);
+                              }
+                              setRegisterFormError('');
+                            }}
+                            title="WHOIS Contact & Address"
+                            subtitle={`Saved to ${currentUser.email} — reused automatically for future domains.`}
+                          />
+                        ) : (
+                          <div className="border border-slate-200 rounded-xl bg-slate-50 p-4 flex flex-wrap items-center justify-between gap-3">
+                            <p className="text-xs text-slate-700">
+                              <strong className="text-[#0F172A] block">Sign In or Create Account to Add WHOIS Address</strong>
+                              Registrant addresses save securely to your account after authentication.
+                            </p>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPendingPostAuthPath('/domain-registration');
+                                  onNavigatePath?.('/auth/login');
+                                }}
+                                className="px-3.5 py-2 rounded-lg bg-[#0E6B63] text-white text-xs font-semibold cursor-pointer"
+                              >
+                                Sign In
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPendingPostAuthPath('/domain-registration');
+                                  onNavigatePath?.('/auth/register');
+                                }}
+                                className="px-3.5 py-2 rounded-lg border border-[#0E6B63] bg-white text-[#0E6B63] text-xs font-semibold cursor-pointer"
+                              >
+                                Create Account
+                              </button>
+                            </div>
+                          </div>
+                        )}
 
                         <div className="flex items-center justify-between gap-3 pt-1">
                           {registerFormError ? (
@@ -736,7 +775,7 @@ export const DomainRegistrationPage: React.FC<DomainRegistrationPageProps> = ({
                             </span>
                           ) : (
                             <span className="text-xs text-slate-500">
-                              Instant activation upon confirmation
+                              Team reviews order &rarr; approval &amp; WHOIS verify email sent
                             </span>
                           )}
                           <button

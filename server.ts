@@ -660,6 +660,46 @@ async function startServer() {
     }
   });
 
+  // Helper for safe WHM JSON parsing
+  const parseWhmJsonBody = <T,>(bodyText: string, actionName: string): T => {
+    try {
+      return JSON.parse(bodyText) as T;
+    } catch {
+      const preview = bodyText.replace(/\s+/g, ' ').trim().slice(0, 160);
+      throw new Error(
+        `WHM ${actionName} returned non-JSON response${preview ? `: ${preview}` : '.'}`
+      );
+    }
+  };
+
+  const normalizeCpanelUsername = (raw: string): string => {
+    let clean = raw.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!clean || !/^[a-z]/.test(clean)) {
+      clean = `cp${clean}`;
+    }
+    if (clean.length < 3) {
+      clean = `${clean}usr`.slice(0, 8);
+    }
+    return clean.slice(0, 16);
+  };
+
+  const generateCpanelPassword = (): string => {
+    const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+    const lower = 'abcdefghijkmnpqrstuvwxyz';
+    const digits = '23456789';
+    const syms = '@#%!';
+    const all = upper + lower + digits + syms;
+    let out =
+      upper[Math.floor(Math.random() * upper.length)] +
+      lower[Math.floor(Math.random() * lower.length)] +
+      digits[Math.floor(Math.random() * digits.length)] +
+      syms[Math.floor(Math.random() * syms.length)];
+    for (let i = 0; i < 10; i++) {
+      out += all[Math.floor(Math.random() * all.length)];
+    }
+    return out;
+  };
+
   // Real WHM createacct provisioning endpoint
   app.post('/api/modules/whm/provision', async (req, res) => {
     const {
@@ -671,6 +711,8 @@ async function startServer() {
       ignoreSslErrors,
       domain,
       acctUsername,
+      cpanelUsername,
+      password,
       plan,
       contactEmail,
     } = (req.body || {}) as {
@@ -682,11 +724,14 @@ async function startServer() {
       ignoreSslErrors?: boolean;
       domain?: string;
       acctUsername?: string;
+      cpanelUsername?: string;
+      password?: string;
       plan?: string;
       contactEmail?: string;
     };
 
-    if (!hostname || !username || !apiToken || !domain || !acctUsername || !plan) {
+    const rawAcct = (acctUsername || cpanelUsername || '').trim();
+    if (!hostname || !username || !apiToken || !domain || !rawAcct || !plan) {
       res.status(400).json({
         ok: false,
         error: 'Missing required WHM module or account provisioning parameters.',
@@ -694,12 +739,16 @@ async function startServer() {
       return;
     }
 
+    const cleanAcctUser = normalizeCpanelUsername(rawAcct);
+    const cleanPassword = (password || '').trim() || generateCpanelPassword();
+
     try {
       const qs = new URLSearchParams({
         'api.version': '1',
-        username: acctUsername.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 16),
+        username: cleanAcctUser,
         domain: domain.trim().toLowerCase(),
         plan: plan.trim(),
+        password: cleanPassword,
         contactemail: (contactEmail || '').trim(),
       });
       const resp = await requestWhmJson({
@@ -712,10 +761,10 @@ async function startServer() {
         ignoreSslErrors: Boolean(ignoreSslErrors),
         timeoutMs: 25000,
       });
-      const parsed = JSON.parse(resp.bodyText) as {
+      const parsed = parseWhmJsonBody<{
         metadata?: { result?: number; reason?: string };
         data?: { ip?: string; nameserver?: string; nameserver2?: string };
-      };
+      }>(resp.bodyText, 'createacct');
       if (parsed.metadata?.result !== 1) {
         res.status(400).json({
           ok: false,
@@ -727,6 +776,9 @@ async function startServer() {
         ok: true,
         reason: parsed.metadata?.reason || 'Account created on WHM server.',
         ip: parsed.data?.ip,
+        acctUsername: cleanAcctUser,
+        nameserver: parsed.data?.nameserver,
+        nameserver2: parsed.data?.nameserver2,
       });
     } catch (err) {
       const errorObj = err as { message?: string };
@@ -739,7 +791,7 @@ async function startServer() {
 
   // Real WHM change cPanel account password
   app.post('/api/modules/whm/passwd', async (req, res) => {
-    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, newPassword } =
+    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, cpanelUsername, newPassword } =
       (req.body || {}) as {
         hostname?: string;
         port?: number | string;
@@ -748,16 +800,18 @@ async function startServer() {
         apiToken?: string;
         ignoreSslErrors?: boolean;
         acctUsername?: string;
+        cpanelUsername?: string;
         newPassword?: string;
       };
-    if (!hostname || !username || !apiToken || !acctUsername || !newPassword) {
+    const targetAcct = (acctUsername || cpanelUsername || '').trim();
+    if (!hostname || !username || !apiToken || !targetAcct || !newPassword) {
       res.status(400).json({ ok: false, error: 'Missing required WHM parameters for password reset.' });
       return;
     }
     try {
       const qs = new URLSearchParams({
         'api.version': '1',
-        user: acctUsername.trim(),
+        user: targetAcct,
         password: newPassword,
       });
       const resp = await requestWhmJson({
@@ -769,9 +823,9 @@ async function startServer() {
         apiToken,
         ignoreSslErrors: Boolean(ignoreSslErrors),
       });
-      const parsed = JSON.parse(resp.bodyText) as {
+      const parsed = parseWhmJsonBody<{
         metadata?: { result?: number; reason?: string };
-      };
+      }>(resp.bodyText, 'passwd');
       if (parsed.metadata?.result !== 1) {
         res.status(400).json({
           ok: false,
@@ -788,7 +842,7 @@ async function startServer() {
 
   // Real WHM suspend cPanel account
   app.post('/api/modules/whm/suspend', async (req, res) => {
-    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, reason } =
+    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, cpanelUsername, reason } =
       (req.body || {}) as {
         hostname?: string;
         port?: number | string;
@@ -797,16 +851,18 @@ async function startServer() {
         apiToken?: string;
         ignoreSslErrors?: boolean;
         acctUsername?: string;
+        cpanelUsername?: string;
         reason?: string;
       };
-    if (!hostname || !username || !apiToken || !acctUsername) {
+    const targetAcct = (acctUsername || cpanelUsername || '').trim();
+    if (!hostname || !username || !apiToken || !targetAcct) {
       res.status(400).json({ ok: false, error: 'Missing required WHM parameters to suspend account.' });
       return;
     }
     try {
       const qs = new URLSearchParams({
         'api.version': '1',
-        user: acctUsername.trim(),
+        user: targetAcct,
         reason: (reason || 'Administrative suspension').trim(),
       });
       const resp = await requestWhmJson({
@@ -818,9 +874,9 @@ async function startServer() {
         apiToken,
         ignoreSslErrors: Boolean(ignoreSslErrors),
       });
-      const parsed = JSON.parse(resp.bodyText) as {
+      const parsed = parseWhmJsonBody<{
         metadata?: { result?: number; reason?: string };
-      };
+      }>(resp.bodyText, 'suspendacct');
       if (parsed.metadata?.result !== 1) {
         res.status(400).json({
           ok: false,
@@ -837,7 +893,7 @@ async function startServer() {
 
   // Real WHM unsuspend cPanel account
   app.post('/api/modules/whm/unsuspend', async (req, res) => {
-    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername } =
+    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, cpanelUsername } =
       (req.body || {}) as {
         hostname?: string;
         port?: number | string;
@@ -846,15 +902,17 @@ async function startServer() {
         apiToken?: string;
         ignoreSslErrors?: boolean;
         acctUsername?: string;
+        cpanelUsername?: string;
       };
-    if (!hostname || !username || !apiToken || !acctUsername) {
+    const targetAcct = (acctUsername || cpanelUsername || '').trim();
+    if (!hostname || !username || !apiToken || !targetAcct) {
       res.status(400).json({ ok: false, error: 'Missing required WHM parameters to unsuspend account.' });
       return;
     }
     try {
       const qs = new URLSearchParams({
         'api.version': '1',
-        user: acctUsername.trim(),
+        user: targetAcct,
       });
       const resp = await requestWhmJson({
         hostname,
@@ -865,9 +923,9 @@ async function startServer() {
         apiToken,
         ignoreSslErrors: Boolean(ignoreSslErrors),
       });
-      const parsed = JSON.parse(resp.bodyText) as {
+      const parsed = parseWhmJsonBody<{
         metadata?: { result?: number; reason?: string };
-      };
+      }>(resp.bodyText, 'unsuspendacct');
       if (parsed.metadata?.result !== 1) {
         res.status(400).json({
           ok: false,
@@ -884,7 +942,7 @@ async function startServer() {
 
   // Real WHM upgrade / downgrade package
   app.post('/api/modules/whm/changepackage', async (req, res) => {
-    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, pkg } =
+    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, cpanelUsername, pkg } =
       (req.body || {}) as {
         hostname?: string;
         port?: number | string;
@@ -893,16 +951,18 @@ async function startServer() {
         apiToken?: string;
         ignoreSslErrors?: boolean;
         acctUsername?: string;
+        cpanelUsername?: string;
         pkg?: string;
       };
-    if (!hostname || !username || !apiToken || !acctUsername || !pkg) {
+    const targetAcct = (acctUsername || cpanelUsername || '').trim();
+    if (!hostname || !username || !apiToken || !targetAcct || !pkg) {
       res.status(400).json({ ok: false, error: 'Missing required WHM parameters for changepkg.' });
       return;
     }
     try {
       const qs = new URLSearchParams({
         'api.version': '1',
-        user: acctUsername.trim(),
+        user: targetAcct,
         pkg: pkg.trim(),
       });
       const resp = await requestWhmJson({
@@ -914,9 +974,9 @@ async function startServer() {
         apiToken,
         ignoreSslErrors: Boolean(ignoreSslErrors),
       });
-      const parsed = JSON.parse(resp.bodyText) as {
+      const parsed = parseWhmJsonBody<{
         metadata?: { result?: number; reason?: string };
-      };
+      }>(resp.bodyText, 'changepackage');
       if (parsed.metadata?.result !== 1) {
         res.status(400).json({
           ok: false,
@@ -933,7 +993,7 @@ async function startServer() {
 
   // Real WHM create_user_session SSO Direct Control Panel Login
   app.post('/api/modules/whm/sso-login', async (req, res) => {
-    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, service } =
+    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, cpanelUsername, service } =
       (req.body || {}) as {
         hostname?: string;
         port?: number | string;
@@ -942,16 +1002,18 @@ async function startServer() {
         apiToken?: string;
         ignoreSslErrors?: boolean;
         acctUsername?: string;
+        cpanelUsername?: string;
         service?: string;
       };
-    if (!hostname || !username || !apiToken || !acctUsername) {
+    const targetAcct = (acctUsername || cpanelUsername || '').trim();
+    if (!hostname || !username || !apiToken || !targetAcct) {
       res.status(400).json({ ok: false, error: 'Missing required WHM parameters for SSO session.' });
       return;
     }
     try {
       const qs = new URLSearchParams({
         'api.version': '1',
-        user: acctUsername.trim(),
+        user: targetAcct,
         service: service?.trim() || 'cpaneld',
       });
       const resp = await requestWhmJson({
@@ -963,10 +1025,10 @@ async function startServer() {
         apiToken,
         ignoreSslErrors: Boolean(ignoreSslErrors),
       });
-      const parsed = JSON.parse(resp.bodyText) as {
+      const parsed = parseWhmJsonBody<{
         metadata?: { result?: number; reason?: string };
         data?: { url?: string; expires?: number };
-      };
+      }>(resp.bodyText, 'create_user_session');
       if (parsed.metadata?.result !== 1 || !parsed.data?.url) {
         res.status(400).json({
           ok: false,
@@ -1079,6 +1141,7 @@ async function startServer() {
       ctaLabel,
       ctaUrl,
       footerNote,
+      headerBadge,
     } = (req.body || {}) as {
       smtp?: {
         host?: string;
@@ -1101,6 +1164,7 @@ async function startServer() {
       ctaLabel?: string;
       ctaUrl?: string;
       footerNote?: string;
+      headerBadge?: string;
     };
 
     const cleanHost = (smtp?.host || '').trim();
@@ -1159,7 +1223,7 @@ async function startServer() {
           <div style="font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 580px; margin: 0 auto; border: 1px solid #E2E8F0; border-radius: 12px; overflow: hidden; background: #FFFFFF;">
             ${preheader ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0;">${escapeHtmlText(preheader)}</div>` : ''}
             <div style="background: ${primaryAccent}; padding: 20px 24px; color: #FFFFFF;">
-              <div style="font-size: 11px; font-weight: 700; letter-spacing: 0.05em; opacity: 0.9;">${escapeHtmlText(brand.toUpperCase())} · SUPPORT DESK</div>
+              <div style="font-size: 11px; font-weight: 700; letter-spacing: 0.05em; opacity: 0.9;">${escapeHtmlText(brand.toUpperCase())} · ${escapeHtmlText((headerBadge || 'NOTIFICATION').trim().toUpperCase())}</div>
               <h1 style="margin: 6px 0 0; font-size: 18px; font-weight: 700; line-height: 1.3;">${escapeHtmlText(heading || subject)}</h1>
             </div>
             <div style="padding: 24px; color: #0F172A; font-size: 14px; line-height: 1.65;">

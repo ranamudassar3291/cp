@@ -11,12 +11,15 @@ import {
 import vpsHeroImg from '../../assets/images/vps_hero_isometric_cluster_1794563676694.jpg';
 import n8nHeroImg from '../../assets/images/n8n_hero_automation_nodes_1794563675698.jpg';
 import {
+  COMPUTE_DATACENTERS,
   ComputePlan,
   N8N_FAQS,
   N8N_FEATURE_PILLARS,
   N8N_PLANS,
+  N8N_STACK_CATALOG,
   VPS_FAQS,
   VPS_FEATURE_PILLARS,
+  VPS_OS_CATALOG,
   VPS_PLANS,
 } from '../../data/vpsAndN8nData';
 import {
@@ -24,7 +27,7 @@ import {
   ComputePillarArtwork,
 } from './ComputeArtworkEmblems';
 import { useCurrency } from '../../context/CurrencyContext';
-import { usePlatform } from '../../context/PlatformContext';
+import { ServerCustomConfig, usePlatform } from '../../context/PlatformContext';
 import { CmsExtraSections } from '../cms/CmsExtraSections';
 
 interface ComputePlatformPageProps {
@@ -33,25 +36,11 @@ interface ComputePlatformPageProps {
   onNavigatePath?: (path: string) => void;
 }
 
-const REGIONS = [
-  'London, United Kingdom (Tier-III+)',
-  'Dallas, Texas, USA (Multi-AZ)',
-  'Frankfurt, Germany (EU Sovereign)',
-  'Singapore, Asia-Pacific',
-];
+const REGIONS = COMPUTE_DATACENTERS.map((dc) => `${dc.city} (${dc.clusterLabel})`);
 
-const VPS_OS_OPTIONS = [
-  'Ubuntu 24.04 LTS',
-  'Debian 12 Bookworm',
-  'AlmaLinux 9 Enterprise',
-  'Rocky Linux 9',
-];
+const VPS_OS_OPTIONS = VPS_OS_CATALOG.map((item) => `${item.name} — ${item.version}`);
 
-const N8N_STACK_OPTIONS = [
-  'n8n + Docker + PostgreSQL + Redis Queue',
-  'n8n + Docker + Caddy Auto-SSL',
-  'n8n + Custom Python & Puppeteer Image',
-];
+const N8N_STACK_OPTIONS = N8N_STACK_CATALOG.map((item) => item.name);
 
 export const ComputePlatformPage: React.FC<ComputePlatformPageProps> = ({
   mode,
@@ -59,7 +48,7 @@ export const ComputePlatformPage: React.FC<ComputePlatformPageProps> = ({
   onNavigatePath,
 }) => {
   const { formatPrice, countryName } = useCurrency();
-  const { addOrder, cmsPages, hostingPlans, lastSearchedDomain, setOrderCheckoutDraft } = usePlatform();
+  const { addOrder, cmsPages, hostingPlans, setOrderCheckoutDraft } = usePlatform();
   const isN8n = mode === 'n8n';
   const pageCms = cmsPages.find((p) => p.id === (isN8n ? 'n8n-hosting' : 'vps-hosting'));
   const plans = isN8n ? N8N_PLANS : VPS_PLANS;
@@ -87,6 +76,34 @@ export const ComputePlatformPage: React.FC<ComputePlatformPageProps> = ({
     }
   };
 
+  const buildDefaultServerConfig = (plan: ComputePlan): ServerCustomConfig => {
+    const defaultTpl = isN8n
+      ? N8N_STACK_CATALOG[0]
+      : VPS_OS_CATALOG.find((item) => item.id === 'ubuntu-cyberpanel') || VPS_OS_CATALOG[0];
+    const defaultDc = COMPUTE_DATACENTERS[0];
+    return {
+      serverType: isN8n ? 'n8n' : 'vps',
+      osCategory: defaultTpl.category,
+      osId: defaultTpl.id,
+      osName: defaultTpl.name,
+      osVersion: defaultTpl.version,
+      controlPanelOrStack: defaultTpl.controlPanelOrStack,
+      datacenterId: defaultDc.id,
+      datacenterLabel: defaultDc.city,
+      storageMode: 'NVMe High-IOPS',
+      hostname: `${isN8n ? 'flows' : 'node'}-${plan.tierKey}.cpcloudhost.internal`,
+      authMode: 'both',
+      rootPasswordConfigured: true,
+      backupAddon: 'none',
+      backupAddonLabel: 'Standard Snapshot Slots Only',
+      backupAddonMonthlyUsd: 0,
+      dedicatedIpAddon: false,
+      dedicatedIpMonthlyUsd: 0,
+      firewallShieldAddon: false,
+      firewallShieldMonthlyUsd: 0,
+    };
+  };
+
   const handleConfigurePlan = (plan: ComputePlan) => {
     setSelectedPlan(plan);
     setSelectedRuntime(isN8n ? N8N_STACK_OPTIONS[0] : VPS_OS_OPTIONS[0]);
@@ -98,22 +115,20 @@ export const ComputePlatformPage: React.FC<ComputePlatformPageProps> = ({
         hp.pageCategory === targetCategory &&
         (hp.id === `plan-${plan.id}` || hp.id === plan.id || hp.name.toLowerCase() === plan.name.toLowerCase())
     );
+    const defaultCfg = buildDefaultServerConfig(plan);
     setOrderCheckoutDraft({
       orderCategory: targetCategory,
       planId: matchedManaged?.id || `plan-${plan.id}`,
       planName: matchedManaged?.name || plan.name,
       productType: isN8n ? 'n8n Hosting' : 'Unmanaged VPS',
       billingCycle: '1 Month',
-      datacenterId: 'uk',
-      datacenterLabel: 'London, UK',
-      domainOption: lastSearchedDomain ? lastSearchedDomain.mode : 'later',
-      domainName: lastSearchedDomain?.domain || '',
-      domainTld: lastSearchedDomain?.tld,
-      domainYears: lastSearchedDomain?.minYears,
-      domainPriceUsd: lastSearchedDomain?.priceUsd,
-      eppAuthCode: lastSearchedDomain?.eppAuthCode,
+      datacenterId: defaultCfg.datacenterId,
+      datacenterLabel: defaultCfg.datacenterLabel,
+      domainOption: 'later',
+      domainName: defaultCfg.hostname,
+      serverConfig: defaultCfg,
       preselectedFromSite: true,
-      domainSearchedFromSite: Boolean(lastSearchedDomain),
+      domainSearchedFromSite: false,
       step: 1,
       sourceOrigin: 'public',
       updatedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
@@ -136,19 +151,40 @@ export const ComputePlatformPage: React.FC<ComputePlatformPageProps> = ({
     }
     setFormError('');
     if (selectedPlan) {
+      const defaultTpl = isN8n ? N8N_STACK_CATALOG[0] : VPS_OS_CATALOG[0];
+      const host =
+        hostnameInput.trim() ||
+        `${selectedPlan.id}.${isN8n ? 'n8n' : 'vps'}.cpcloudhost.internal`;
       addOrder({
         clientEmail: cleaned,
         country: countryName || 'International',
         productType: isN8n ? 'n8n Hosting' : 'Unmanaged VPS',
         planName: selectedPlan.name,
-        domainOrHost:
-          hostnameInput.trim() ||
-          `${selectedPlan.id}.${isN8n ? 'n8n' : 'vps'}.cpcloudhost.com`,
+        domainOrHost: host,
         billingCycle: 'Monthly',
         amountUsd: selectedPlan.monthlyPrice,
         datacenter: selectedRegion,
         paymentMethod: 'Compute Portal',
         status: 'pending',
+        serverConfig: {
+          serverType: isN8n ? 'n8n' : 'vps',
+          osCategory: defaultTpl.category,
+          osId: defaultTpl.id,
+          osName: selectedRuntime,
+          osVersion: defaultTpl.version,
+          controlPanelOrStack: selectedRuntime,
+          datacenterId: 'uk',
+          datacenterLabel: selectedRegion,
+          storageMode: 'NVMe High-IOPS',
+          hostname: host,
+          authMode: 'password',
+          rootPasswordConfigured: true,
+          backupAddon: addPanelOrBackup ? 'weekly-snapshots' : 'none',
+          backupAddonLabel: addPanelOrBackup
+            ? 'Automated Weekly Off-Site Snapshots'
+            : 'Standard Snapshot Slots Only',
+          backupAddonMonthlyUsd: addPanelOrBackup ? 2 : 0,
+        },
       });
     }
     setOrderSubmitted(true);

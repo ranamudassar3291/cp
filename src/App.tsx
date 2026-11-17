@@ -22,10 +22,12 @@ import { FreeTrialPage } from './components/trial/FreeTrialPage';
 import { ComputePlatformPage } from './components/vps/ComputePlatformPage';
 import { DomainRegistrationPage } from './components/domain/DomainRegistrationPage';
 import { DomainTransferPage } from './components/domain/DomainTransferPage';
+import { DomainVerifyPage } from './components/domain/DomainVerifyPage';
 import { KnowledgeBasePage } from './components/kb/KnowledgeBasePage';
 import { AboutUsPage } from './components/about/AboutUsPage';
 import { MigrationFreePage } from './components/migrations/MigrationFreePage';
 import { CpanelHostingPage } from './components/cpanel/CpanelHostingPage';
+import { ResellerHostingPage } from './components/reseller/ResellerHostingPage';
 import { LegalPolicyPage } from './components/legal/LegalPolicyPage';
 import { AdminPanel } from './components/admin/AdminPanel';
 import { AdminLoginPage } from './components/admin/AdminLoginPage';
@@ -48,11 +50,13 @@ type ActivePage =
   | 'shared-hosting'
   | 'wordpress-hosting'
   | 'windows-hosting'
+  | 'reseller-hosting'
   | 'free-trial'
   | 'vps-hosting'
   | 'n8n-hosting'
   | 'domain-registration'
   | 'domain-transfer'
+  | 'verify-domain'
   | 'knowledge-base'
   | 'about-us'
   | 'migration-free'
@@ -76,11 +80,13 @@ const PAGE_PATHS: Record<Exclude<ActivePage, 'custom-cms'>, string> = {
   'shared-hosting': '/shared-hosting',
   'wordpress-hosting': '/wordpress-hosting',
   'windows-hosting': '/windows-hosting',
+  'reseller-hosting': '/reseller-hosting',
   'free-trial': '/free-trial',
   'vps-hosting': '/vps-hosting',
   'n8n-hosting': '/n8n-hosting',
   'domain-registration': '/domain-registration',
   'domain-transfer': '/domain-transfer',
+  'verify-domain': '/verify-domain',
   'knowledge-base': '/knowledge-base',
   'about-us': '/about-us',
   'migration-free': '/migration-free',
@@ -101,10 +107,12 @@ const PAGE_PATHS: Record<Exclude<ActivePage, 'custom-cms'>, string> = {
 
 export type OrderCategory =
   | 'catalog'
+  | 'free-trial'
   | 'shared-hosting'
   | 'wordpress-hosting'
   | 'windows-hosting'
   | 'cpanel-hosting'
+  | 'reseller-hosting'
   | 'vps-hosting'
   | 'n8n-hosting'
   | 'domain-registration'
@@ -145,9 +153,11 @@ function parseRouteFromLocation(cmsPages: CmsPageRecord[] = []): {
   if (candidate === 'order' || candidate.startsWith('order/') || candidate.startsWith('order')) {
     let orderCategory: OrderCategory = 'catalog';
     if (candidate === 'order' || candidate === 'order/catalog') orderCategory = 'catalog';
+    else if (candidate.includes('free-trial') || candidate.includes('trial')) orderCategory = 'free-trial';
     else if (candidate.includes('wordpress')) orderCategory = 'wordpress-hosting';
     else if (candidate.includes('windows') || candidate.includes('wincore')) orderCategory = 'windows-hosting';
     else if (candidate.includes('cpanel')) orderCategory = 'cpanel-hosting';
+    else if (candidate.includes('reseller')) orderCategory = 'reseller-hosting';
     else if (candidate.includes('vps')) orderCategory = 'vps-hosting';
     else if (candidate.includes('n8n')) orderCategory = 'n8n-hosting';
     else if (candidate.includes('domain-registration') || candidate.includes('register')) orderCategory = 'domain-registration';
@@ -174,6 +184,9 @@ function parseRouteFromLocation(cmsPages: CmsPageRecord[] = []): {
   if (candidate === 'windows-hosting' || candidate.includes('windows')) {
     return { page: 'windows-hosting', kbSlug: null, customSlug: null };
   }
+  if (candidate === 'reseller-hosting' || candidate.includes('reseller')) {
+    return { page: 'reseller-hosting', kbSlug: null, customSlug: null };
+  }
   if (candidate === 'free-trial' || candidate.includes('free-trial')) {
     return { page: 'free-trial', kbSlug: null, customSlug: null };
   }
@@ -191,6 +204,9 @@ function parseRouteFromLocation(cmsPages: CmsPageRecord[] = []): {
   }
   if (candidate === 'domain-transfer' || candidate.includes('domain-transfer')) {
     return { page: 'domain-transfer', kbSlug: null, customSlug: null };
+  }
+  if (candidate === 'verify-domain' || candidate.startsWith('verify-domain/')) {
+    return { page: 'verify-domain', kbSlug: null, customSlug: null };
   }
   if (candidate === 'about-us' || candidate.includes('about-us')) {
     return { page: 'about-us', kbSlug: null, customSlug: null };
@@ -473,6 +489,13 @@ export default function App() {
           'Dedicated Windows IIS 10, ASP.NET Core, and MSSQL enterprise hosting with Free SSL and autoscaling cloud resources.',
         path: '/windows-hosting',
       },
+      'reseller-hosting': {
+        title:
+          'Reseller Hosting — White-Label cPanel & WHM Suites | cpcloudhost.com',
+        description:
+          'Build your own web hosting brand with white-label cPanel accounts, private nameservers, WHM partner console, and automated backups.',
+        path: '/reseller-hosting',
+      },
       'free-trial': {
         title:
           '30-Day Free Hosting Trial (Promo: STARTFREE) | cpcloudhost.com',
@@ -507,6 +530,13 @@ export default function App() {
         description:
           'Transfer single or bulk domains to cpcloudhost.com with +1 year renewal, zero DNS downtime, and live EPP readiness verification.',
         path: '/domain-transfer',
+      },
+      'verify-domain': {
+        title:
+          'Verify Domain Contact Details (ICANN Verification) | cpcloudhost.com',
+        description:
+          'Verify your WHOIS registrant contact information and unlock domain DNS and nameserver management on cpcloudhost.com.',
+        path: '/verify-domain',
       },
     };
 
@@ -597,13 +627,25 @@ export default function App() {
         return;
       }
 
-      const normalized = cleaned.replace(/\/+$/, '') || '/';
+      const [pathOnly, queryPart] = cleaned.split('?');
+      const normalized = pathOnly.replace(/\/+$/, '') || '/';
+      if (normalized === '/verify-domain') {
+        setActivePage('verify-domain');
+        if (typeof window !== 'undefined') {
+          const nextUrl = queryPart ? `${normalized}?${queryPart}` : `${normalized}${window.location.search}`;
+          window.history.pushState(null, '', nextUrl);
+        }
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
       if (normalized.startsWith('/order')) {
         let cat: OrderCategory = 'catalog';
         if (normalized === '/order' || normalized === '/order/catalog') cat = 'catalog';
+        else if (normalized.includes('free-trial') || normalized.includes('trial')) cat = 'free-trial';
         else if (normalized.includes('wordpress')) cat = 'wordpress-hosting';
         else if (normalized.includes('windows') || normalized.includes('wincore')) cat = 'windows-hosting';
         else if (normalized.includes('cpanel')) cat = 'cpanel-hosting';
+        else if (normalized.includes('reseller')) cat = 'reseller-hosting';
         else if (normalized.includes('vps')) cat = 'vps-hosting';
         else if (normalized.includes('n8n')) cat = 'n8n-hosting';
         else if (normalized.includes('domain-registration') || normalized.includes('register')) cat = 'domain-registration';
@@ -664,6 +706,10 @@ export default function App() {
     }
     if (item.pageTarget === 'windows-hosting') {
       navigatePage('windows-hosting', '#top');
+      return;
+    }
+    if (item.pageTarget === 'reseller-hosting') {
+      navigatePage('reseller-hosting', '#top');
       return;
     }
     if (item.pageTarget === 'free-trial') {
@@ -758,6 +804,11 @@ export default function App() {
             onNavigateHome={(selector) => navigatePage('home', selector)}
             onNavigatePath={navigateByPath}
           />
+        ) : activePage === 'reseller-hosting' ? (
+          <ResellerHostingPage
+            onNavigateHome={(selector) => navigatePage('home', selector)}
+            onNavigatePath={navigateByPath}
+          />
         ) : activePage === 'free-trial' ? (
           <FreeTrialPage
             onNavigateHome={(selector) => navigatePage('home', selector)}
@@ -796,6 +847,17 @@ export default function App() {
               navigatePage('domain-registration', '#top');
             }}
             onNavigatePath={navigateByPath}
+          />
+        ) : activePage === 'verify-domain' ? (
+          <DomainVerifyPage
+            onNavigateDomains={() => navigateByPath('/dashboard/domains')}
+            onNavigateHome={() => navigatePage('home', '#top')}
+            onNavigateLogin={() => {
+              if (typeof window !== 'undefined') {
+                setPendingPostAuthPath(`${window.location.pathname}${window.location.search}`);
+              }
+              navigatePage('auth-login', '#top');
+            }}
           />
         ) : activePage === 'knowledge-base' ? (
           <KnowledgeBasePage
@@ -897,12 +959,16 @@ export default function App() {
             orderCategory={orderCategory}
             onNavigateHome={() => navigatePage('home', '#top')}
             onBackToSharedHosting={() => {
-              if (orderCategory === 'wordpress-hosting') {
+              if (orderCategory === 'free-trial') {
+                navigatePage('free-trial', '#trial-plans');
+              } else if (orderCategory === 'wordpress-hosting') {
                 navigatePage('wordpress-hosting', '#wp-plans');
               } else if (orderCategory === 'windows-hosting') {
                 navigatePage('windows-hosting', '#win-plans');
               } else if (orderCategory === 'cpanel-hosting') {
                 navigatePage('cpanel-hosting', '#cpanel-pricing');
+              } else if (orderCategory === 'reseller-hosting') {
+                navigatePage('reseller-hosting', '#reseller-plans');
               } else if (orderCategory === 'vps-hosting') {
                 navigatePage('vps-hosting', '#top');
               } else if (orderCategory === 'n8n-hosting') {

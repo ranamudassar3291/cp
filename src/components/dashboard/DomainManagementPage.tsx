@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   Calendar,
   CheckCircle2,
+  Clock,
   Copy,
   Eye,
   EyeOff,
@@ -11,6 +12,7 @@ import {
   KeyRound,
   LifeBuoy,
   Lock,
+  MailCheck,
   Plus,
   Receipt,
   RefreshCw,
@@ -56,6 +58,7 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
   const {
     domainContactAddresses,
     updateClientOrderSettings,
+    requestDomainNameserverChange,
     updateDomainTransferLock,
     regenerateDomainEppCode,
     updateDomainDnsRecords,
@@ -184,8 +187,14 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
       setNsError('Enter valid hostnames for both Nameserver 1 and Nameserver 2.');
       return;
     }
-    updateClientOrderSettings(domain.id, { nameservers: [finalNs1, finalNs2] });
-    onShowToast(`Nameservers updated for ${domain.domainOrHost}`);
+    const res = requestDomainNameserverChange(domain.id, finalNs1, finalNs2);
+    if (!res.ok) {
+      setNsError(res.error || 'Could not queue nameserver update.');
+      return;
+    }
+    onShowToast(
+      `Nameserver change queued for ${domain.domainOrHost}. Estimated update time: 1 to 3 hours.`
+    );
   };
 
   const handleAddDnsRecord = (e: React.FormEvent) => {
@@ -314,6 +323,151 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
             >
               <LifeBuoy className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
               <span>Contact Billing Support</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (lifecycle.isPendingAdminApproval) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={onBackToDomains}
+            className="min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-[#E2E8F0] bg-white hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] transition-colors cursor-pointer"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Back to Domains</span>
+          </button>
+        </div>
+
+        <div className="bg-white border border-[#E2E8F0] rounded-xl p-6 sm:p-8 space-y-5">
+          <div className="flex items-start gap-4">
+            <div className="w-11 h-11 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center text-[#D97706] shrink-0">
+              <Clock className="w-5 h-5" aria-hidden="true" />
+            </div>
+            <div>
+              <p className="font-mono text-xs font-bold text-[#D97706] uppercase tracking-wide">
+                Pending Admin Review · {domain.id}
+              </p>
+              <h1 className="font-display text-xl sm:text-2xl font-bold text-[#0F172A] mt-1">
+                {domain.domainOrHost} is awaiting registrar approval
+              </h1>
+              <p className="text-sm text-slate-600 mt-1.5 max-w-2xl leading-relaxed">
+                {domain.productType === 'Domain Transfer'
+                  ? 'Our transfer desk is verifying your EPP code and registrar transfer request. Approve the registrant confirmation email to complete transfer right away, or it will finalize automatically within 7 days.'
+                  : 'Our registrar operations team is reviewing your domain registration and payment details. Once approved, we will email your WHOIS registrant verification link so you can activate and manage your domain.'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 pt-2">
+            {linkedInvoice && linkedInvoice.status !== 'paid' && (
+              <button
+                type="button"
+                onClick={() => onOpenInvoice(linkedInvoice.id)}
+                className="min-h-[40px] inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold transition-colors cursor-pointer"
+              >
+                <Receipt className="w-4 h-4" aria-hidden="true" />
+                <span>View Invoice #{linkedInvoice.id}</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onOpenSupportTicket(domain.domainOrHost)}
+              className="min-h-[40px] inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] transition-colors cursor-pointer"
+            >
+              <LifeBuoy className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+              <span>Contact Domain Desk</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (lifecycle.isPendingContactVerification) {
+    const verifyUrlPath = `/verify-domain?orderId=${encodeURIComponent(domain.id)}&token=${encodeURIComponent(domain.domainVerificationToken || '')}`;
+    const fullVerifyUrl =
+      typeof window !== 'undefined'
+        ? `${window.location.origin}${verifyUrlPath}`
+        : `https://cpcloudhost.com${verifyUrlPath}`;
+
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={onBackToDomains}
+            className="min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-[#E2E8F0] bg-white hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] transition-colors cursor-pointer"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Back to Domains</span>
+          </button>
+        </div>
+
+        <div className="bg-white border border-[#0E6B63]/40 rounded-xl p-6 sm:p-8 space-y-5">
+          <div className="flex items-start gap-4">
+            <div className="w-11 h-11 rounded-xl bg-[#F2FAF8] border border-[#0E6B63]/20 flex items-center justify-center text-[#0E6B63] shrink-0">
+              <MailCheck className="w-5 h-5" aria-hidden="true" />
+            </div>
+            <div>
+              <p className="font-mono text-xs font-bold text-[#0E6B63] uppercase tracking-wide">
+                WHOIS Contact Verification Required · {domain.id}
+              </p>
+              <h1 className="font-display text-xl sm:text-2xl font-bold text-[#0F172A] mt-1">
+                Verify registrant contact details for {domain.domainOrHost}
+              </h1>
+              <p className="text-sm text-slate-600 mt-1.5 max-w-2xl leading-relaxed">
+                Your domain order has been approved by our team. Per ICANN registrar compliance, confirm your WHOIS registrant email &amp; address once to unlock nameservers, DNS zone management, and EPP settings.
+              </p>
+            </div>
+          </div>
+
+          {pendingWhoisContact && (
+            <div className="p-4 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] text-xs text-slate-700 space-y-1">
+              <p className="font-bold text-[#0F172A]">
+                {pendingWhoisContact.firstName} {pendingWhoisContact.lastName}
+                {pendingWhoisContact.organization
+                  ? ` · ${pendingWhoisContact.organization}`
+                  : ''}
+              </p>
+              <p>
+                {pendingWhoisContact.addressLine1}, {pendingWhoisContact.city},{' '}
+                {pendingWhoisContact.stateProvince}, {pendingWhoisContact.countryName} ·{' '}
+                {pendingWhoisContact.postalCode}
+              </p>
+              <p className="font-mono text-slate-500">
+                {pendingWhoisContact.email} · {pendingWhoisContact.phone}
+              </p>
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-3 pt-1">
+            <button
+              type="button"
+              onClick={() => {
+                if (typeof window !== 'undefined') {
+                  window.history.pushState({}, '', verifyUrlPath);
+                  window.dispatchEvent(new PopStateEvent('popstate'));
+                }
+              }}
+              className="min-h-[42px] inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold transition-colors cursor-pointer"
+            >
+              <ShieldCheck className="w-4 h-4" aria-hidden="true" />
+              <span>Review &amp; Approve WHOIS Details</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => copyValue('verifyLink', fullVerifyUrl, 'Verification Link')}
+              className="min-h-[42px] inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] transition-colors cursor-pointer"
+            >
+              <Copy className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+              <span>{copiedKey === 'verifyLink' ? 'Link Copied' : 'Copy Verification Link'}</span>
             </button>
           </div>
         </div>
@@ -616,7 +770,22 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
                   </button>
                 </dd>
               </div>
+              <div className="py-3 flex items-center justify-between gap-4">
+                <dt className="text-slate-500">WHOIS Registrant Status</dt>
+                <dd className="font-semibold text-[#16A34A]">
+                  Verified{domain.domainContactVerifiedAt ? ` (${domain.domainContactVerifiedAt})` : ''}
+                </dd>
+              </div>
             </dl>
+
+            {domain.productType === 'Domain Transfer' && (
+              <div className="p-3.5 rounded-xl bg-[#F2FAF8] border border-[#0E6B63]/20 text-xs text-slate-700 leading-relaxed">
+                <span className="font-bold text-[#0F172A] block mb-0.5">
+                  Domain Transfer Timeline (EPP Authorization)
+                </span>
+                Approve the transfer confirmation email sent to your registrant address to complete the transfer immediately. If no approval email is confirmed, registry auto-release completes within <strong className="text-[#0F172A]">7 days</strong>.
+              </div>
+            )}
           </div>
 
           <div className="lg:col-span-5 space-y-5">
@@ -803,17 +972,55 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
               </div>
             )}
 
+            {domain.nameserverUpdateStatus === 'pending_update' && domain.pendingNameservers && (
+              <div className="p-4 rounded-xl bg-amber-50/70 border border-amber-200 flex items-start gap-3">
+                <Clock className="w-4 h-4 text-[#D97706] shrink-0 mt-0.5" aria-hidden="true" />
+                <div className="text-xs text-slate-700 space-y-1">
+                  <p className="font-bold text-[#0F172A]">
+                    Nameserver Update Queued · Estimated Propagation: 1 to 3 hours
+                  </p>
+                  <p>
+                    Requested NS:{' '}
+                    <span className="font-mono font-semibold text-[#0F172A]">
+                      {domain.pendingNameservers[0]}, {domain.pendingNameservers[1]}
+                    </span>
+                    {domain.nameserverRequestedAt ? (
+                      <span className="text-slate-500 font-mono">
+                        {' '}
+                        (Submitted {domain.nameserverRequestedAt})
+                      </span>
+                    ) : null}
+                  </p>
+                  <p className="text-slate-600">
+                    Our registrar operations desk has been notified and will confirm by email as soon as your delegation finishes propagating (typically 1–3 hours).
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {domain.nameserverUpdateStatus === 'updated' && domain.nameserverUpdatedAt && (
+              <div className="p-3.5 rounded-xl bg-[#F2FAF8] border border-[#0E6B63]/20 flex items-center gap-2.5 text-xs text-[#0E6B63]">
+                <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden="true" />
+                <span>
+                  Nameservers verified active (<span className="font-mono">{currentNs1}, {currentNs2}</span>) · Updated {domain.nameserverUpdatedAt}.
+                </span>
+              </div>
+            )}
+
             {nsError && (
               <p className="text-xs font-semibold text-[#DC2626]">{nsError}</p>
             )}
 
-            <div className="flex justify-end">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-[11px] text-slate-500">
+                Registry nameserver changes propagate globally within <strong className="text-[#0F172A]">1 to 3 hours</strong>.
+              </p>
               <button
                 type="button"
                 onClick={handleSaveNameservers}
-                className="min-h-[40px] px-5 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+                className="min-h-[40px] px-5 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer whitespace-nowrap"
               >
-                Save Nameservers
+                Request Nameserver Update (1–3h)
               </button>
             </div>
           </div>

@@ -27,7 +27,10 @@ const CATEGORIES: ('All' | EmailTemplateCategory)[] = [
   'Billing & Invoices',
   'Hosting Lifecycle',
   'Domain Lifecycle',
+  'Service Lifecycle',
   'Support & Tickets',
+  'Security & Auth',
+  'Admin Alerts',
 ];
 
 export const AdminEmailTemplatesView: React.FC<AdminEmailTemplatesViewProps> = ({

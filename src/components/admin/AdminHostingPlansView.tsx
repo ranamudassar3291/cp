@@ -28,6 +28,7 @@ const PLAN_CATEGORY_TABS: {
   { id: 'cpanel-hosting', label: 'cPanel Hosting', path: '/cpanel-hosting' },
   { id: 'wordpress-hosting', label: 'WordPress Hosting', path: '/wordpress-hosting' },
   { id: 'windows-hosting', label: 'Windows Hosting', path: '/windows-hosting' },
+  { id: 'reseller-hosting', label: 'Reseller Hosting', path: '/reseller-hosting' },
   { id: 'vps-hosting', label: 'VPS Hosting', path: '/vps-hosting' },
   { id: 'n8n-hosting', label: 'n8n Hosting', path: '/n8n-hosting' },
 ];
@@ -103,7 +104,7 @@ export const AdminHostingPlansView: React.FC<AdminHostingPlansViewProps> = ({
       setPlanServerPackageName(plan.serverPackageName);
     } else {
       const defaultMod =
-        activeCategory === 'cpanel-hosting'
+        activeCategory === 'cpanel-hosting' || activeCategory === 'reseller-hosting'
           ? provisioningModules.find((m) => m.moduleType === 'whm')
           : activeCategory === 'vps-hosting' || activeCategory === 'n8n-hosting'
           ? provisioningModules.find((m) => m.moduleType === 'proxmox')

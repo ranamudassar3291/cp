@@ -76,6 +76,9 @@ export interface DomainLifecycleSummary {
   icannProgressPercent: number;
   isDueDatePassed: boolean;
   isExpired: boolean;
+  isPendingAdminApproval: boolean;
+  isPendingContactVerification: boolean;
+  isContactVerified: boolean;
   isManageLocked: boolean;
   effectiveRegistrarLocked: boolean;
 }
@@ -120,8 +123,29 @@ export function evaluateDomainLifecycle(
     ord.status === 'expired' ||
     (isDueDatePassed && ord.status !== 'cancelled' && ord.status !== 'refunded');
 
+  const isPendingAdminApproval =
+    ord.status === 'pending' &&
+    (ord.domainVerificationStatus === 'pending_admin_approval' ||
+      ord.productType === 'Domain Registration' ||
+      ord.productType === 'Domain Transfer');
+
+  const isPendingContactVerification =
+    ord.productType === 'Domain Registration' &&
+    ord.status === 'active' &&
+    ord.domainVerificationStatus === 'pending_contact_verification';
+
+  // Legacy/seeded active domain records without domainVerificationStatus are treated as verified.
+  const isContactVerified =
+    ord.domainVerificationStatus === 'verified' ||
+    (ord.status === 'active' && !ord.domainVerificationStatus);
+
   const isManageLocked =
-    isExpired || ord.status === 'cancelled' || ord.status === 'refunded' || ord.status === 'suspended';
+    isExpired ||
+    ord.status === 'cancelled' ||
+    ord.status === 'refunded' ||
+    ord.status === 'suspended' ||
+    ord.status === 'pending' ||
+    isPendingContactVerification;
 
   const effectiveRegistrarLocked =
     icann60DayLockActive || ord.registrarLock !== false;
@@ -139,6 +163,9 @@ export function evaluateDomainLifecycle(
     icannProgressPercent,
     isDueDatePassed,
     isExpired,
+    isPendingAdminApproval,
+    isPendingContactVerification,
+    isContactVerified,
     isManageLocked,
     effectiveRegistrarLocked,
   };

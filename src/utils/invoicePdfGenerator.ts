@@ -553,8 +553,117 @@ export function downloadInvoicePdf(
     );
   }
 
+  // Server / Compute Configuration & Free Trial Details Box (if applicable)
+  y = Math.max(y + 10, blockStartY + 34);
+  if (invoice.serverConfig) {
+    if (y > pageHeight - 75) {
+      doc.addPage();
+      y = 20;
+    }
+    const cfg = invoice.serverConfig;
+    const addonsSummary =
+      [
+        cfg.backupAddon && cfg.backupAddon !== 'none'
+          ? cfg.backupAddonLabel || cfg.backupAddon
+          : null,
+        cfg.dedicatedIpAddon ? 'Extra Dedicated IPv4' : null,
+        cfg.firewallShieldAddon ? 'Managed Firewall Shield' : null,
+      ]
+        .filter(Boolean)
+        .join(' · ') || 'Standard Snapshot Slots';
+    const authLabel =
+      cfg.authMode === 'both'
+        ? 'Root Password + SSH Key'
+        : cfg.authMode === 'ssh'
+          ? 'SSH Public Key Only'
+          : 'Root Password';
+
+    const cfgHeight = cfg.customEnvNote ? 31 : 26;
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(borderColor[0], borderColor[1], borderColor[2]);
+    doc.roundedRect(margin, y, contentWidth, cfgHeight, 2, 2, 'FD');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.2);
+    doc.setTextColor(accent[0], accent[1], accent[2]);
+    doc.text(
+      cfg.serverType === 'n8n'
+        ? 'N8N AUTOMATION NODE CONFIGURATION'
+        : 'KVM VPS PROVISIONING CONFIGURATION',
+      margin + 4.5,
+      y + 5.8
+    );
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.8);
+    doc.setTextColor(darkInk[0], darkInk[1], darkInk[2]);
+    doc.text(
+      `OS / Stack: ${cfg.osName} (${cfg.osVersion})`,
+      margin + 4.5,
+      y + 11.2
+    );
+    doc.text(
+      `Hostname: ${cfg.hostname}`,
+      margin + contentWidth / 2,
+      y + 11.2
+    );
+    doc.text(
+      `Panel / Runtime: ${cfg.controlPanelOrStack.slice(0, 44)}`,
+      margin + 4.5,
+      y + 16.2
+    );
+    doc.text(
+      `Storage & Location: ${cfg.storageMode || 'NVMe High-IOPS'} · ${cfg.datacenterLabel}`,
+      margin + contentWidth / 2,
+      y + 16.2
+    );
+    doc.text(
+      `Root Auth: ${authLabel}${cfg.sshKeyLabel ? ` (${cfg.sshKeyLabel})` : ''}`,
+      margin + 4.5,
+      y + 21.2
+    );
+    doc.text(
+      `Add-ons: ${addonsSummary.slice(0, 46)}`,
+      margin + contentWidth / 2,
+      y + 21.2
+    );
+    if (cfg.customEnvNote) {
+      doc.setTextColor(mutedInk[0], mutedInk[1], mutedInk[2]);
+      doc.text(
+        `Deployment Note: ${cfg.customEnvNote.slice(0, 88)}`,
+        margin + 4.5,
+        y + 26.2
+      );
+    }
+    y += cfgHeight + 6;
+  } else if (invoice.isFreeTrial) {
+    if (y > pageHeight - 60) {
+      doc.addPage();
+      y = 20;
+    }
+    doc.setFillColor(242, 250, 248);
+    doc.setDrawColor(accent[0], accent[1], accent[2]);
+    doc.roundedRect(margin, y, contentWidth, 14, 2, 2, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.2);
+    doc.setTextColor(accent[0], accent[1], accent[2]);
+    doc.text(
+      `${invoice.trialDays || 30}-DAY FREE TRIAL EVALUATION  ·  PROMO: ${invoice.promoCode || 'STARTFREE'}`,
+      margin + 4.5,
+      y + 5.6
+    );
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.6);
+    doc.setTextColor(darkInk[0], darkInk[1], darkInk[2]);
+    doc.text(
+      `$0.00 due during your ${invoice.trialDays || 30}-day evaluation window. Standard renewal applies automatically unless cancelled before Day ${(invoice.trialDays || 30) + 1}.`,
+      margin + 4.5,
+      y + 10.6
+    );
+    y += 19;
+  }
+
   // Payment Channels & Instructions Section
-  y = Math.max(y + 12, blockStartY + 38);
   if (y < pageHeight - 48) {
     const activeManualChannels = paymentMethods
       .filter(

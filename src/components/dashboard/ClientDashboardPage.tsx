@@ -104,10 +104,14 @@ interface ClientDashboardPageProps {
   onOrderSharedHosting?: () => void;
   onNavigateOrderCategory?: (
     category:
+      | 'free-trial'
       | 'shared-hosting'
       | 'wordpress-hosting'
       | 'windows-hosting'
       | 'cpanel-hosting'
+      | 'reseller-hosting'
+      | 'vps-hosting'
+      | 'n8n-hosting'
       | 'domain-registration'
       | 'domain-transfer'
   ) => void;
@@ -2217,6 +2221,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                             const linkedInv = myInvoices.find((inv) => inv.orderId === dom.id);
                             const displayStatus = lc.isExpired ? 'expired' : dom.status;
                             const isManageDisabled = lc.isExpired || lc.isManageLocked;
+                            const verifyPath = `/verify-domain?orderId=${encodeURIComponent(dom.id)}&token=${encodeURIComponent(dom.domainVerificationToken || '')}`;
 
                             return (
                               <div
@@ -2229,10 +2234,18 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                       {dom.domainOrHost}
                                     </p>
                                     <StatusIndicator
-                                      tone={formatOrderTone(displayStatus)}
+                                      tone={
+                                        lc.isPendingContactVerification
+                                          ? 'amber'
+                                          : formatOrderTone(displayStatus)
+                                      }
                                       label={
-                                        displayStatus.charAt(0).toUpperCase() +
-                                        displayStatus.slice(1)
+                                        lc.isPendingAdminApproval
+                                          ? 'Pending Review'
+                                          : lc.isPendingContactVerification
+                                            ? 'Verify WHOIS'
+                                            : displayStatus.charAt(0).toUpperCase() +
+                                              displayStatus.slice(1)
                                       }
                                     />
                                     <span className="text-[11px] font-medium text-slate-500">
@@ -2246,6 +2259,11 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                   <p className="mt-1 text-xs text-slate-500 font-mono-num truncate">
                                     Registered: {lc.registeredDateIso} · Due: {lc.dueDateIso}
                                   </p>
+                                  {dom.nameserverUpdateStatus === 'pending_update' && dom.pendingNameservers && (
+                                    <p className="mt-1 text-[11px] font-mono text-[#D97706] truncate">
+                                      NS queued (1–3h): {dom.pendingNameservers[0]}, {dom.pendingNameservers[1]}
+                                    </p>
+                                  )}
                                 </div>
 
                                 <div className="flex items-center justify-between sm:justify-end gap-2 shrink-0">
@@ -2259,11 +2277,26 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                       <span>Renew Now</span>
                                     </button>
                                   )}
+                                  {lc.isPendingContactVerification && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (typeof window !== 'undefined') {
+                                          window.history.pushState({}, '', verifyPath);
+                                          window.dispatchEvent(new PopStateEvent('popstate'));
+                                        }
+                                      }}
+                                      className="min-h-[34px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer whitespace-nowrap"
+                                    >
+                                      <ShieldCheck className="w-3.5 h-3.5" aria-hidden="true" />
+                                      <span>Verify WHOIS</span>
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
                                     disabled={isManageDisabled}
                                     onClick={() => handleOpenDomainManagePage(dom.id)}
-                                    className={`min-h-[34px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
+                                    className={`min-h-[34px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap ${
                                       isManageDisabled
                                         ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
                                         : 'border-[#E2E8F0] bg-white hover:border-[#0E6B63] hover:text-[#0E6B63] text-[#0F172A] cursor-pointer'
@@ -2272,7 +2305,9 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                     {isManageDisabled ? (
                                       <>
                                         <Lock className="w-3 h-3" aria-hidden="true" />
-                                        <span>Manage Locked</span>
+                                        <span>
+                                          {lc.isPendingAdminApproval ? 'Pending Review' : 'Manage Locked'}
+                                        </span>
                                       </>
                                     ) : (
                                       <span>Manage</span>
@@ -2830,6 +2865,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                             );
                             const displayStatus = lc.isExpired ? 'expired' : dom.status;
                             const isManageDisabled = lc.isExpired || lc.isManageLocked;
+                            const verifyPath = `/verify-domain?orderId=${encodeURIComponent(dom.id)}&token=${encodeURIComponent(dom.domainVerificationToken || '')}`;
 
                             return (
                               <tr
@@ -2855,6 +2891,11 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                         {dom.planName} ·{' '}
                                         <span className="font-mono">{dom.id}</span>
                                       </p>
+                                      {dom.nameserverUpdateStatus === 'pending_update' && dom.pendingNameservers && (
+                                        <p className="text-[11px] font-mono text-[#D97706] truncate">
+                                          NS queued (1–3h): {dom.pendingNameservers[0]}, {dom.pendingNameservers[1]}
+                                        </p>
+                                      )}
                                     </div>
                                   </div>
                                 </td>
@@ -2950,10 +2991,18 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
 
                                 <td className="py-3.5 px-4">
                                   <StatusIndicator
-                                    tone={formatOrderTone(displayStatus)}
+                                    tone={
+                                      lc.isPendingContactVerification
+                                        ? 'amber'
+                                        : formatOrderTone(displayStatus)
+                                    }
                                     label={
-                                      displayStatus.charAt(0).toUpperCase() +
-                                      displayStatus.slice(1)
+                                      lc.isPendingAdminApproval
+                                        ? 'Pending Review'
+                                        : lc.isPendingContactVerification
+                                          ? 'Verify WHOIS'
+                                          : displayStatus.charAt(0).toUpperCase() +
+                                            displayStatus.slice(1)
                                     }
                                   />
                                 </td>
@@ -2971,16 +3020,36 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                       </button>
                                     )}
 
+                                    {lc.isPendingContactVerification && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (typeof window !== 'undefined') {
+                                            window.history.pushState({}, '', verifyPath);
+                                            window.dispatchEvent(new PopStateEvent('popstate'));
+                                          }
+                                        }}
+                                        className="min-h-[34px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer whitespace-nowrap"
+                                      >
+                                        <ShieldCheck className="w-3.5 h-3.5" aria-hidden="true" />
+                                        <span>Verify WHOIS</span>
+                                      </button>
+                                    )}
+
                                     <button
                                       type="button"
                                       disabled={isManageDisabled}
                                       onClick={() => handleOpenDomainManagePage(dom.id)}
                                       title={
-                                        isManageDisabled
-                                          ? 'Domain management is locked because this domain expired or requires renewal'
-                                          : `Open domain console for ${dom.domainOrHost}`
+                                        lc.isPendingAdminApproval
+                                          ? 'Our team is reviewing your domain registration order'
+                                          : lc.isPendingContactVerification
+                                            ? 'Verify WHOIS contact details to unlock domain management'
+                                            : isManageDisabled
+                                              ? 'Domain management is locked because this domain expired or requires renewal'
+                                              : `Open domain console for ${dom.domainOrHost}`
                                       }
-                                      className={`min-h-[34px] inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
+                                      className={`min-h-[34px] inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap ${
                                         isManageDisabled
                                           ? 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'
                                           : 'border-[#E2E8F0] bg-white hover:border-[#0E6B63] hover:text-[#0E6B63] text-[#0F172A] cursor-pointer'
@@ -2989,7 +3058,9 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                       {isManageDisabled ? (
                                         <>
                                           <Lock className="w-3.5 h-3.5" aria-hidden="true" />
-                                          <span>Manage Locked</span>
+                                          <span>
+                                            {lc.isPendingAdminApproval ? 'Pending Review' : 'Manage Locked'}
+                                          </span>
                                         </>
                                       ) : (
                                         <span>Manage</span>

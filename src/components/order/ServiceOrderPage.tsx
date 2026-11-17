@@ -7,24 +7,33 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Clock,
   Copy,
   Cpu,
   CreditCard,
   Download,
+  Eye,
+  EyeOff,
   Globe,
   HardDrive,
+  Key,
   Layers,
   Loader2,
   Lock,
+  MailCheck,
   MapPin,
   Percent,
   Receipt,
+  RefreshCw,
   Search,
   Server,
   ShieldCheck,
   ShoppingCart,
   Smartphone,
+  Sparkles,
   Tag,
+  Terminal,
+  UserPlus,
   Wallet,
   Workflow,
   X,
@@ -36,11 +45,19 @@ import {
   PaymentGatewayKind,
   PlatformOrder,
   PromoCodeRecord,
+  ServerCustomConfig,
   TldExtensionRecord,
   usePlatform,
 } from '../../context/PlatformContext';
 import { useCurrency } from '../../context/CurrencyContext';
 import { SHARED_DATACENTERS } from '../../data/sharedHostingData';
+import {
+  COMPUTE_BACKUP_ADDONS,
+  COMPUTE_DATACENTERS,
+  ComputeOsTemplate,
+  N8N_STACK_CATALOG,
+  VPS_OS_CATALOG,
+} from '../../data/vpsAndN8nData';
 import {
   getPricingForTld,
   inspectDomainLive,
@@ -52,10 +69,12 @@ import { DomainContactAddressSelector } from '../domain/DomainContactAddressSele
 
 export type OrderCategory =
   | 'catalog'
+  | 'free-trial'
   | 'shared-hosting'
   | 'wordpress-hosting'
   | 'windows-hosting'
   | 'cpanel-hosting'
+  | 'reseller-hosting'
   | 'vps-hosting'
   | 'n8n-hosting'
   | 'domain-registration'
@@ -97,15 +116,33 @@ const BILLING_PERIODS: {
 ];
 
 const CATEGORY_LABELS: Record<ConcreteOrderCategory, string> = {
+  'free-trial': '30-Day Free Hosting Trial',
   'shared-hosting': 'Linux Shared Cloud Hosting',
   'wordpress-hosting': 'WordPress Web Hosting',
   'windows-hosting': 'Windows IIS Web Hosting',
   'cpanel-hosting': 'cPanel NVMe Web Hosting',
+  'reseller-hosting': 'White-Label Reseller Hosting',
   'vps-hosting': 'Unmanaged KVM VPS Hosting',
   'n8n-hosting': 'n8n Automation Hosting',
   'domain-registration': 'Domain Registration',
   'domain-transfer': 'Domain Transfer',
 };
+
+function getBillingCycleMonthsMultiplier(cycle: BillingPeriodOption): number {
+  if (cycle === '1 Year') return 12;
+  if (cycle === '2 Years') return 24;
+  if (cycle === '4 Years') return 48;
+  return 1;
+}
+
+function generateStrongServerPassword(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*';
+  let result = '';
+  for (let i = 0; i < 16; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
 
 function computePlanCyclePrice(
   plan: ManagedHostingPlanRecord,
@@ -163,14 +200,19 @@ function renderGatewayIcon(kind: PaymentGatewayKind) {
 
 function CatalogProductEmblem({ category }: { category: ConcreteOrderCategory }) {
   const regionTag =
-    category === 'wordpress-hosting' || category === 'windows-hosting'
+    category === 'windows-hosting'
       ? 'UK'
       : category === 'cpanel-hosting'
       ? 'USA'
+      : category === 'free-trial'
+      ? 'TRIAL'
       : 'GLOBAL';
 
   return (
     <div className="relative w-20 h-20 mx-auto rounded-2xl bg-[#F8FAFC] border border-[#E2E8F0] flex items-center justify-center">
+      {category === 'free-trial' && (
+        <Sparkles className="w-9 h-9 text-[#0E6B63]" strokeWidth={1.6} aria-hidden="true" />
+      )}
       {category === 'shared-hosting' && (
         <Server className="w-9 h-9 text-slate-400" strokeWidth={1.6} aria-hidden="true" />
       )}
@@ -182,6 +224,9 @@ function CatalogProductEmblem({ category }: { category: ConcreteOrderCategory })
       )}
       {category === 'cpanel-hosting' && (
         <ShieldCheck className="w-9 h-9 text-slate-400" strokeWidth={1.6} aria-hidden="true" />
+      )}
+      {category === 'reseller-hosting' && (
+        <Building2 className="w-9 h-9 text-slate-400" strokeWidth={1.6} aria-hidden="true" />
       )}
       {category === 'vps-hosting' && (
         <Cpu className="w-9 h-9 text-slate-400" strokeWidth={1.6} aria-hidden="true" />
@@ -272,14 +317,21 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
     }
   }, [orderCategory]);
 
-  const isWpOrWin =
-    activeCategory === 'wordpress-hosting' || activeCategory === 'windows-hosting';
+  const isWinOnly = activeCategory === 'windows-hosting';
   const isCpanel = activeCategory === 'cpanel-hosting';
+  const isFreeTrialMode = activeCategory === 'free-trial';
   const isCompute = activeCategory === 'vps-hosting' || activeCategory === 'n8n-hosting';
+  const isN8nCompute = activeCategory === 'n8n-hosting';
   const isDomainOnly =
     activeCategory === 'domain-registration' || activeCategory === 'domain-transfer';
 
   const categoryPlans = useMemo(() => {
+    if (activeCategory === 'free-trial') {
+      const trialIds = ['plan-shared-ignite', 'plan-wp-core', 'plan-win-core'];
+      return trialIds
+        .map((id) => hostingPlans.find((p) => p.id === id && p.enabled))
+        .filter((p): p is ManagedHostingPlanRecord => Boolean(p));
+    }
     const targetCat = isDomainOnly ? 'shared-hosting' : activeCategory;
     const filtered = hostingPlans.filter((p) => p.pageCategory === targetCat && p.enabled);
     if (filtered.length > 0) return filtered;
@@ -334,23 +386,84 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
     }
   }, [orderCheckoutDraft?.planId]);
 
-  const [billingCycle, setBillingCycle] = useState<BillingPeriodOption>(
-    orderCheckoutDraft?.billingCycle || '1 Year'
-  );
+  const [billingCycle, setBillingCycle] = useState<BillingPeriodOption>(() => {
+    if (orderCategory === 'free-trial') return '1 Month';
+    return orderCheckoutDraft?.billingCycle || (orderCategory === 'vps-hosting' || orderCategory === 'n8n-hosting' ? '1 Month' : '1 Year');
+  });
 
-  const [datacenterId, setDatacenterId] = useState<'uk' | 'us' | 'sg'>(() => {
-    if (isWpOrWin) return 'uk';
+  const [datacenterId, setDatacenterId] = useState<'uk' | 'us' | 'sg' | 'eu'>(() => {
+    if (isWinOnly) return 'uk';
     if (isCpanel) return 'us';
     return orderCheckoutDraft?.datacenterId || 'uk';
   });
 
   useEffect(() => {
-    if (isWpOrWin && datacenterId !== 'uk') {
+    if (isWinOnly && datacenterId !== 'uk') {
       setDatacenterId('uk');
     } else if (isCpanel && datacenterId !== 'us') {
       setDatacenterId('us');
+    } else if (!isCompute && datacenterId === 'eu') {
+      setDatacenterId('uk');
     }
-  }, [isWpOrWin, isCpanel, datacenterId]);
+  }, [isWinOnly, isCpanel, isCompute, datacenterId]);
+
+  // Hostinger-style VPS & n8n Server Configurator state
+  const [computeOsTab, setComputeOsTab] = useState<'all' | 'plain-os' | 'os-panel' | 'app-docker'>('all');
+  const [selectedOsId, setSelectedOsId] = useState<string>(() => {
+    if (orderCheckoutDraft?.serverConfig?.osId) {
+      return orderCheckoutDraft.serverConfig.osId;
+    }
+    return orderCategory === 'n8n-hosting' ? N8N_STACK_CATALOG[0].id : 'ubuntu-cyberpanel';
+  });
+  const [computeStorageMode, setComputeStorageMode] = useState<'NVMe High-IOPS' | 'SSD High-Capacity'>(
+    orderCheckoutDraft?.serverConfig?.storageMode || 'NVMe High-IOPS'
+  );
+  const [computeHostname, setComputeHostname] = useState<string>(
+    orderCheckoutDraft?.serverConfig?.hostname ||
+      (orderCategory === 'n8n-hosting'
+        ? 'flows01.cpcloudhost.internal'
+        : 'node01.cpcloudhost.internal')
+  );
+  const [computeAuthMode, setComputeAuthMode] = useState<'password' | 'ssh' | 'both'>(
+    orderCheckoutDraft?.serverConfig?.authMode || 'both'
+  );
+  const [computeRootPassword, setComputeRootPassword] = useState<string>(() =>
+    generateStrongServerPassword()
+  );
+  const [showRootPassword, setShowRootPassword] = useState(false);
+  const [computeSshKeyLabel, setComputeSshKeyLabel] = useState<string>(
+    orderCheckoutDraft?.serverConfig?.sshKeyLabel || ''
+  );
+  const [computeSshPublicKey, setComputeSshPublicKey] = useState<string>(
+    orderCheckoutDraft?.serverConfig?.sshPublicKey || ''
+  );
+  const [computeBackupAddon, setComputeBackupAddon] = useState<
+    'none' | 'weekly-snapshots' | 'daily-backups'
+  >(orderCheckoutDraft?.serverConfig?.backupAddon || 'none');
+  const [computeDedicatedIpAddon, setComputeDedicatedIpAddon] = useState<boolean>(
+    Boolean(orderCheckoutDraft?.serverConfig?.dedicatedIpAddon)
+  );
+  const [computeFirewallAddon, setComputeFirewallAddon] = useState<boolean>(
+    Boolean(orderCheckoutDraft?.serverConfig?.firewallShieldAddon)
+  );
+  const [computeCustomEnvNote, setComputeCustomEnvNote] = useState<string>(
+    orderCheckoutDraft?.serverConfig?.customEnvNote || ''
+  );
+
+  // Ensure selected OS / stack belongs to active compute catalog when category switches
+  useEffect(() => {
+    if (!isCompute) return;
+    const catalog = isN8nCompute ? N8N_STACK_CATALOG : VPS_OS_CATALOG;
+    const exists = catalog.some((item) => item.id === selectedOsId);
+    if (!exists) {
+      setSelectedOsId(isN8nCompute ? N8N_STACK_CATALOG[0].id : 'ubuntu-cyberpanel');
+    }
+    if (isN8nCompute && computeHostname.startsWith('node01.')) {
+      setComputeHostname('flows01.cpcloudhost.internal');
+    } else if (!isN8nCompute && computeHostname.startsWith('flows01.')) {
+      setComputeHostname('node01.cpcloudhost.internal');
+    }
+  }, [isCompute, isN8nCompute, selectedOsId, computeHostname]);
 
   // Domain configuration state — auto-inherit draft OR lastSearchedDomain so user never searches twice!
   const [domainOption, setDomainOption] = useState<'register' | 'transfer' | 'existing' | 'later'>(
@@ -571,7 +684,9 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
   const [step2Error, setStep2Error] = useState('');
 
   // Promo code state
-  const [promoInput, setPromoInput] = useState(orderCheckoutDraft?.promoCode || '');
+  const [promoInput, setPromoInput] = useState(
+    orderCheckoutDraft?.promoCode || (orderCategory === 'free-trial' ? 'STARTFREE' : '')
+  );
   const [appliedPromo, setAppliedPromo] = useState<PromoCodeRecord | null>(null);
   const [promoDiscountUsd, setPromoDiscountUsd] = useState(0);
   const [promoError, setPromoError] = useState('');
@@ -597,6 +712,10 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
     domainName: string;
     totalPaidUsd: number;
     billingCycle: string;
+    isFreeTrial?: boolean;
+    hasDomainRegistration?: boolean;
+    hasDomainTransfer?: boolean;
+    serverConfig?: ServerCustomConfig;
   } | null>(null);
 
   useEffect(() => {
@@ -604,7 +723,7 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
       applyPageSeoMetadata({
         title: 'Storefront & Service Catalog | cpcloudhost.com',
         description:
-          'Browse cloud hosting, managed WordPress, cPanel, Windows IIS, KVM VPS, n8n nodes, and domain services in your local currency.',
+          'Browse cloud hosting, 30-day free trial, managed WordPress, cPanel, Windows IIS, KVM VPS, n8n nodes, and domain services in your local currency.',
         canonicalPath: '/order',
         ogType: 'website',
         jsonLd: null,
@@ -613,19 +732,21 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
     }
 
     const titles: Record<ConcreteOrderCategory, string> = {
+      'free-trial': 'Start 30-Day Free Hosting Trial ($0.00 Today) | cpcloudhost.com',
       'shared-hosting': 'Order Shared Cloud Hosting | cpcloudhost.com',
-      'wordpress-hosting': 'Order Managed WordPress Hosting (UK Datacenter) | cpcloudhost.com',
+      'wordpress-hosting': 'Order Managed WordPress Hosting (UK, US & Singapore) | cpcloudhost.com',
       'windows-hosting': 'Order Windows IIS Web Hosting (UK Datacenter) | cpcloudhost.com',
       'cpanel-hosting': 'Order cPanel NVMe Web Hosting (USA Datacenter) | cpcloudhost.com',
-      'vps-hosting': 'Order Unmanaged KVM VPS | cpcloudhost.com',
-      'n8n-hosting': 'Order Dedicated n8n Automation Node | cpcloudhost.com',
+      'reseller-hosting': 'Order White-Label Reseller Hosting | cpcloudhost.com',
+      'vps-hosting': 'Configure & Order Unmanaged KVM VPS | cpcloudhost.com',
+      'n8n-hosting': 'Configure & Order n8n Automation Node | cpcloudhost.com',
       'domain-registration': 'Register Domain Name | cpcloudhost.com',
       'domain-transfer': 'Transfer Domain & 1-Year Extension | cpcloudhost.com',
     };
     applyPageSeoMetadata({
       title: titles[activeCategory] || 'Order Web Services | cpcloudhost.com',
       description:
-        'Enterprise cloud checkout portal with live domain search, Anycast nameservers, local currency billing, and automated invoicing.',
+        'Enterprise cloud checkout portal with KVM OS & n8n stack provisioning, live domain search, local currency billing, and automated invoicing.',
       canonicalPath: `/order/${activeCategory}`,
       ogType: 'website',
       jsonLd: null,
@@ -647,7 +768,12 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
   );
 
   const activeDatacenter = useMemo(() => {
-    if (isWpOrWin) {
+    if (isCompute) {
+      return (
+        COMPUTE_DATACENTERS.find((dc) => dc.id === datacenterId) ?? COMPUTE_DATACENTERS[0]
+      );
+    }
+    if (isWinOnly) {
       return SHARED_DATACENTERS.find((dc) => dc.id === 'uk') ?? SHARED_DATACENTERS[0];
     }
     if (isCpanel) {
@@ -656,7 +782,19 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
     return (
       SHARED_DATACENTERS.find((dc) => dc.id === datacenterId) ?? SHARED_DATACENTERS[0]
     );
-  }, [datacenterId, isWpOrWin, isCpanel]);
+  }, [datacenterId, isCompute, isWinOnly, isCpanel]);
+
+  const activeComputeTemplate: ComputeOsTemplate = useMemo(() => {
+    const catalog = isN8nCompute ? N8N_STACK_CATALOG : VPS_OS_CATALOG;
+    return catalog.find((item) => item.id === selectedOsId) ?? catalog[0];
+  }, [isN8nCompute, selectedOsId]);
+
+  const activeBackupOption = useMemo(
+    () =>
+      COMPUTE_BACKUP_ADDONS.find((b) => b.id === computeBackupAddon) ??
+      COMPUTE_BACKUP_ADDONS[0],
+    [computeBackupAddon]
+  );
 
   const hostingPricing = useMemo(
     () =>
@@ -667,6 +805,25 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
         : { priceUsd: 0, effectiveMonthlyUsd: 0, savingsUsd: 0 },
     [activePlan, billingCycle, isDomainOnly]
   );
+
+  const computeCycleMonths = useMemo(
+    () => getBillingCycleMonthsMultiplier(billingCycle),
+    [billingCycle]
+  );
+
+  const computeAddonsMonthlyUsd = isCompute
+    ? Number(
+        (
+          activeBackupOption.monthlyPriceUsd +
+          (computeDedicatedIpAddon ? 3.0 : 0) +
+          (computeFirewallAddon ? 4.0 : 0)
+        ).toFixed(2)
+      )
+    : 0;
+
+  const computeAddonsTotalUsd = isCompute
+    ? Number((computeAddonsMonthlyUsd * computeCycleMonths).toFixed(2))
+    : 0;
 
   // Transfer pricing lookup based on domain extension
   const detectedTransferTld = useMemo(() => {
@@ -685,7 +842,9 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
     : getPricingForTld('.com').transferPrice;
 
   const domainPriceUsd =
-    domainOption === 'register' && selectedNewDomain
+    isCompute
+      ? 0
+      : domainOption === 'register' && selectedNewDomain
       ? selectedNewDomain.priceUsd
       : domainOption === 'transfer' && transferDomainInput.trim()
       ? transferPriceUsd
@@ -693,7 +852,40 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
 
   const grossSubtotalUsd = isDomainOnly
     ? Number(domainPriceUsd.toFixed(2))
+    : isCompute
+    ? Number((hostingPricing.priceUsd + computeAddonsTotalUsd).toFixed(2))
     : Number((hostingPricing.priceUsd + domainPriceUsd).toFixed(2));
+
+  // Auto-apply & keep STARTFREE synced when checking out in Free Trial mode
+  useEffect(() => {
+    if (isFreeTrialMode) {
+      if (billingCycle !== '1 Month') {
+        setBillingCycle('1 Month');
+      }
+      const res = validatePromoCode({
+        code: 'STARTFREE',
+        hostingPlanId: activePlan?.id || 'plan-shared-ignite',
+        hostingPlanName: activePlan?.name || 'Cloud Ignite',
+        hostingCycle: '1 Month',
+        hostingSubtotalUsd: hostingPricing.priceUsd,
+        domainSubtotalUsd: domainPriceUsd,
+      });
+      if (res.ok && res.promo) {
+        setPromoInput('STARTFREE');
+        setAppliedPromo(res.promo);
+        setPromoDiscountUsd(res.discountUsd);
+        setPromoError('');
+      }
+    }
+  }, [
+    isFreeTrialMode,
+    activePlan?.id,
+    activePlan?.name,
+    hostingPricing.priceUsd,
+    domainPriceUsd,
+    billingCycle,
+    validatePromoCode,
+  ]);
 
   const netTotalUsd = Math.max(
     0,
@@ -710,12 +902,18 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
 
   const resolveProductType = (cat: ConcreteOrderCategory): PlatformOrder['productType'] => {
     switch (cat) {
+      case 'free-trial':
+        if (activePlan?.id === 'plan-wp-core') return 'Managed WordPress';
+        if (activePlan?.id === 'plan-win-core') return 'Windows Hosting';
+        return 'Shared Cloud';
       case 'wordpress-hosting':
         return 'Managed WordPress';
       case 'windows-hosting':
         return 'Windows Hosting';
       case 'cpanel-hosting':
         return 'cPanel Hosting';
+      case 'reseller-hosting':
+        return 'Reseller Hosting';
       case 'vps-hosting':
         return 'Unmanaged VPS';
       case 'n8n-hosting':
@@ -729,7 +927,42 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
     }
   };
 
+  const buildCurrentServerConfig = (): ServerCustomConfig | undefined => {
+    if (!isCompute) return undefined;
+    const cleanHost =
+      computeHostname.trim().toLowerCase() ||
+      (isN8nCompute ? 'flows01.cpcloudhost.internal' : 'node01.cpcloudhost.internal');
+    return {
+      serverType: isN8nCompute ? 'n8n' : 'vps',
+      osCategory: activeComputeTemplate.category,
+      osId: activeComputeTemplate.id,
+      osName: activeComputeTemplate.name,
+      osVersion: activeComputeTemplate.version,
+      controlPanelOrStack: activeComputeTemplate.controlPanelOrStack,
+      datacenterId: activeDatacenter.id as ServerCustomConfig['datacenterId'],
+      datacenterLabel: activeDatacenter.city,
+      storageMode: computeStorageMode,
+      hostname: cleanHost,
+      authMode: computeAuthMode,
+      sshKeyLabel: computeSshKeyLabel.trim() || undefined,
+      sshPublicKey:
+        computeSshPublicKey.trim().length > 0
+          ? computeSshPublicKey.trim().slice(0, 68) + (computeSshPublicKey.trim().length > 68 ? '...' : '')
+          : undefined,
+      rootPasswordConfigured: computeAuthMode !== 'ssh',
+      backupAddon: activeBackupOption.id,
+      backupAddonLabel: activeBackupOption.name,
+      backupAddonMonthlyUsd: activeBackupOption.monthlyPriceUsd,
+      dedicatedIpAddon: computeDedicatedIpAddon,
+      dedicatedIpMonthlyUsd: computeDedicatedIpAddon ? 3.0 : 0,
+      firewallShieldAddon: computeFirewallAddon,
+      firewallShieldMonthlyUsd: computeFirewallAddon ? 4.0 : 0,
+      customEnvNote: computeCustomEnvNote.trim() || undefined,
+    };
+  };
+
   const persistDraft = (nextStep: 1 | 2 | 3 | 4) => {
+    const serverCfg = buildCurrentServerConfig();
     const draft: OrderCheckoutDraft = {
       orderCategory: activeCategory,
       planId: activePlan?.id || 'domain-reg',
@@ -742,24 +975,30 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
       billingCycle,
       datacenterId: activeDatacenter.id,
       datacenterLabel: activeDatacenter.city,
-      domainOption,
-      domainName:
-        domainOption === 'register'
-          ? selectedNewDomain?.domain || ''
-          : domainOption === 'transfer'
-          ? transferDomainInput.trim().toLowerCase()
-          : domainOption === 'existing'
-          ? existingDomainInput.trim().toLowerCase()
-          : 'Configure Later',
+      domainOption: isCompute ? 'later' : domainOption,
+      domainName: isCompute
+        ? serverCfg?.hostname || computeHostname
+        : domainOption === 'register'
+        ? selectedNewDomain?.domain || ''
+        : domainOption === 'transfer'
+        ? transferDomainInput.trim().toLowerCase()
+        : domainOption === 'existing'
+        ? existingDomainInput.trim().toLowerCase()
+        : 'Configure Later',
       domainTld:
-        domainOption === 'register'
+        isCompute
+          ? undefined
+          : domainOption === 'register'
           ? selectedNewDomain?.tld
           : domainOption === 'transfer'
           ? detectedTransferTld?.tld
           : undefined,
-      domainYears: domainOption === 'register' ? selectedNewDomain?.minYears : 1,
+      domainYears: !isCompute && domainOption === 'register' ? selectedNewDomain?.minYears : 1,
       domainPriceUsd,
       promoCode: appliedPromo?.code || undefined,
+      isFreeTrial: isFreeTrialMode || undefined,
+      trialDays: isFreeTrialMode ? 30 : undefined,
+      serverConfig: serverCfg,
       nameserversType,
       nameservers:
         nameserversType === 'default'
@@ -767,10 +1006,11 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
           : [customNs1.trim() || 'ns1.cpcloudhost.com', customNs2.trim() || 'ns2.cpcloudhost.com'],
       whoisPrivacy: whoisPrivacyEnabled,
       whoisContactId: selectedWhoisContact?.id,
-      eppAuthCode: domainOption === 'transfer' ? eppAuthCode : undefined,
-      domainUnlockedConfirmed: domainOption === 'transfer' ? domainUnlockedChecked : undefined,
+      eppAuthCode: !isCompute && domainOption === 'transfer' ? eppAuthCode : undefined,
+      domainUnlockedConfirmed:
+        !isCompute && domainOption === 'transfer' ? domainUnlockedChecked : undefined,
       preselectedFromSite: true,
-      domainSearchedFromSite: Boolean(selectedNewDomain || lastSearchedDomain),
+      domainSearchedFromSite: !isCompute && Boolean(selectedNewDomain || lastSearchedDomain),
       step: nextStep,
       updatedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
     };
@@ -780,17 +1020,30 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
   // Catalog data computation (Upmind-style left category tree + counts)
   const catalogHostingCategories = useMemo(() => {
     const defs: { id: ConcreteOrderCategory; label: string; regionNote: string }[] = [
+      { id: 'free-trial', label: '30-Day Free Hosting Trial', regionNote: 'UK · US · Singapore ($0 Today)' },
       { id: 'shared-hosting', label: 'Linux Shared Cloud', regionNote: 'UK · US · Singapore' },
-      { id: 'wordpress-hosting', label: 'WordPress Web Hosting', regionNote: 'London UK Edge' },
+      { id: 'wordpress-hosting', label: 'WordPress Web Hosting', regionNote: 'UK · US · Singapore' },
       { id: 'windows-hosting', label: 'Windows Web Hosting', regionNote: 'London UK IIS 10' },
       { id: 'cpanel-hosting', label: 'cPanel NVMe Hosting', regionNote: 'Dallas USA NVMe' },
-      { id: 'vps-hosting', label: 'KVM VPS Hosting', regionNote: 'UK · US · Singapore' },
-      { id: 'n8n-hosting', label: 'n8n Automation Hosting', regionNote: 'UK · US · Singapore' },
+      { id: 'reseller-hosting', label: 'WHM Reseller Hosting', regionNote: 'UK · US · Singapore' },
+      { id: 'vps-hosting', label: 'KVM VPS Hosting', regionNote: 'UK · US · EU · Singapore' },
+      { id: 'n8n-hosting', label: 'n8n Automation Hosting', regionNote: 'UK · US · EU · Singapore' },
     ];
-    return defs.map((def) => ({
-      ...def,
-      plans: hostingPlans.filter((p) => p.pageCategory === def.id && p.enabled),
-    }));
+    return defs.map((def) => {
+      if (def.id === 'free-trial') {
+        const trialIds = ['plan-shared-ignite', 'plan-wp-core', 'plan-win-core'];
+        return {
+          ...def,
+          plans: trialIds
+            .map((id) => hostingPlans.find((p) => p.id === id && p.enabled))
+            .filter((p): p is ManagedHostingPlanRecord => Boolean(p)),
+        };
+      }
+      return {
+        ...def,
+        plans: hostingPlans.filter((p) => p.pageCategory === def.id && p.enabled),
+      };
+    });
   }, [hostingPlans]);
 
   const catalogDomainCategories = useMemo(
@@ -835,13 +1088,25 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
   ) => {
     setActiveCategory(cat);
     setSelectedPlanId(plan.id);
-    setBillingCycle(cat === 'vps-hosting' || cat === 'n8n-hosting' ? '1 Month' : '1 Year');
-    if (cat === 'wordpress-hosting' || cat === 'windows-hosting') {
+    if (cat === 'free-trial') {
+      setBillingCycle('1 Month');
+      setPromoInput('STARTFREE');
+    } else if (cat === 'vps-hosting' || cat === 'n8n-hosting') {
+      setBillingCycle('1 Month');
+      setSelectedOsId(cat === 'n8n-hosting' ? N8N_STACK_CATALOG[0].id : 'ubuntu-cyberpanel');
+      setComputeHostname(
+        cat === 'n8n-hosting' ? 'flows01.cpcloudhost.internal' : 'node01.cpcloudhost.internal'
+      );
+    } else {
+      setBillingCycle('1 Year');
+    }
+
+    if (cat === 'windows-hosting') {
       setDatacenterId('uk');
     } else if (cat === 'cpanel-hosting') {
       setDatacenterId('us');
     }
-    if (lastSearchedDomain) {
+    if (cat !== 'vps-hosting' && cat !== 'n8n-hosting' && lastSearchedDomain) {
       setDomainOption(lastSearchedDomain.mode);
       if (lastSearchedDomain.mode === 'register' && lastSearchedDomain.available) {
         setSelectedNewDomain({
@@ -858,7 +1123,11 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
         setTransferDomainInput(lastSearchedDomain.domain);
       }
     } else {
-      setDomainOption(cat === 'vps-hosting' || cat === 'n8n-hosting' ? 'later' : 'register');
+      setDomainOption(
+        cat === 'vps-hosting' || cat === 'n8n-hosting' || cat === 'free-trial'
+          ? 'later'
+          : 'register'
+      );
     }
     setCompletedOrders(null);
     setStep(1);
@@ -970,6 +1239,43 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
 
   const handleContinueFromStep2 = () => {
     setStep2Error('');
+    if (isCompute) {
+      const cleanHost = computeHostname
+        .trim()
+        .toLowerCase()
+        .replace(/^https?:\/\//, '')
+        .split('/')[0];
+      if (!cleanHost || !/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(cleanHost)) {
+        setStep2Error(
+          isN8nCompute
+            ? 'Enter a valid webhook subdomain / FQDN (e.g. flows.yourdomain.com or flows01.cpcloudhost.internal).'
+            : 'Enter a valid server FQDN hostname (e.g. node01.yourdomain.com or node01.cpcloudhost.internal).'
+        );
+        return;
+      }
+      setComputeHostname(cleanHost);
+
+      if (
+        (computeAuthMode === 'password' || computeAuthMode === 'both') &&
+        computeRootPassword.trim().length < 8
+      ) {
+        setStep2Error(
+          'Root password must be at least 8 characters (use the generator button for an instant high-entropy password).'
+        );
+        return;
+      }
+      if (computeAuthMode === 'ssh' && computeSshPublicKey.trim().length < 24) {
+        setStep2Error(
+          'Please paste your SSH public key (ssh-ed25519 or ssh-rsa) or select Password + SSH authentication.'
+        );
+        return;
+      }
+
+      persistDraft(3);
+      setStep(3);
+      return;
+    }
+
     if (domainOption === 'register' && !selectedNewDomain) {
       setStep2Error('Please search and select an available domain name above.');
       return;
@@ -1003,14 +1309,19 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
       setExistingDomainInput(clean);
     }
 
-    if (
-      (domainOption === 'register' || domainOption === 'transfer') &&
-      !selectedWhoisContact
-    ) {
-      setStep2Error(
-        'Please select or add a WHOIS Registrant Contact & Address below before continuing.'
-      );
-      return;
+    if (domainOption === 'register' || domainOption === 'transfer') {
+      if (!currentUser) {
+        setStep2Error(
+          'Please Sign In or Create Account below to add and save your WHOIS Registrant Contact & Address.'
+        );
+        return;
+      }
+      if (!selectedWhoisContact) {
+        setStep2Error(
+          'Please select or add a WHOIS Registrant Contact & Address below before continuing.'
+        );
+        return;
+      }
     }
 
     persistDraft(3);
@@ -1046,6 +1357,16 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
     setPromoDiscountUsd(res.discountUsd);
   };
 
+  const handleRequireAuthAtStep2 = (authMode: 'login' | 'register') => {
+    persistDraft(2);
+    setPendingPostAuthPath(`/order/${activeCategory}`);
+    if (authMode === 'register') {
+      onRequireRegister();
+    } else {
+      onRequireLogin();
+    }
+  };
+
   const handleContinueToPaymentOrAuth = (authMode?: 'login' | 'register') => {
     persistDraft(4);
     if (!currentUser) {
@@ -1077,14 +1398,17 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
     }
     setPaymentError('');
 
-    const resolvedDomainHost =
-      domainOption === 'register' && selectedNewDomain
-        ? selectedNewDomain.domain
-        : domainOption === 'transfer'
-        ? transferDomainInput.trim().toLowerCase()
-        : domainOption === 'existing'
-        ? existingDomainInput.trim().toLowerCase()
-        : `pending-${Date.now().toString(36)}.cpcloudhost.com`;
+    const serverCfg = buildCurrentServerConfig();
+
+    const resolvedDomainHost = isCompute
+      ? serverCfg?.hostname || computeHostname.trim().toLowerCase()
+      : domainOption === 'register' && selectedNewDomain
+      ? selectedNewDomain.domain
+      : domainOption === 'transfer'
+      ? transferDomainInput.trim().toLowerCase()
+      : domainOption === 'existing'
+      ? existingDomainInput.trim().toLowerCase()
+      : `trial-${Date.now().toString(36)}.cpcloudhost.com`;
 
     const hostingDiscount = appliedPromo?.scope === 'hosting' ? promoDiscountUsd : 0;
     const domainDiscount = appliedPromo?.scope === 'domain' ? promoDiscountUsd : 0;
@@ -1137,11 +1461,39 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
       });
       primaryOrderId = order.id;
       primaryInvoiceId = invoice?.id || order.id.replace('ORD-', 'INV-');
+    } else if (isCompute && serverCfg) {
+      const netComputeAmount = Math.max(
+        0,
+        Number((hostingPricing.priceUsd + computeAddonsTotalUsd - hostingDiscount).toFixed(2))
+      );
+      const { order: computeOrder, invoice: computeInvoice } = addOrder({
+        clientEmail: currentUser.email,
+        clientName: currentUser.name,
+        country: currentUser.country,
+        productType: resolvedProductType,
+        planName: activePlan.name,
+        domainOrHost: serverCfg.hostname,
+        billingCycle,
+        amountUsd: netComputeAmount,
+        paymentMethod: selectedGateway.name,
+        datacenter: activeDatacenter.city,
+        status: 'pending',
+        invoicePaid: false,
+        serverModuleId: activePlan.serverModuleId,
+        serverPackageName: activePlan.serverPackageName,
+        promoCode: appliedPromo?.scope === 'hosting' ? appliedPromo.code : undefined,
+        discountUsd: hostingDiscount || undefined,
+        serverConfig: serverCfg,
+        notes: `${isN8nCompute ? 'n8n Stack' : 'KVM OS'}: ${serverCfg.osName} (${serverCfg.controlPanelOrStack}) · Storage: ${serverCfg.storageMode} · Auth: ${serverCfg.authMode.toUpperCase()}`,
+      });
+      primaryOrderId = computeOrder.id;
+      primaryInvoiceId = computeInvoice?.id || computeOrder.id.replace('ORD-', 'INV-');
     } else {
       const netHostingAmount = Math.max(
         0,
         Number((hostingPricing.priceUsd - hostingDiscount).toFixed(2))
       );
+      const isTrialSettled = isFreeTrialMode && netHostingAmount === 0;
       const { order: hostingOrder, invoice: hostingInvoice } = addOrder({
         clientEmail: currentUser.email,
         clientName: currentUser.name,
@@ -1151,21 +1503,25 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
         domainOrHost: resolvedDomainHost,
         billingCycle,
         amountUsd: netHostingAmount,
-        paymentMethod: selectedGateway.name,
+        paymentMethod: isTrialSettled ? 'Free Trial Verification ($0.00)' : selectedGateway.name,
         datacenter: activeDatacenter.city,
         status: 'pending',
-        invoicePaid: false,
+        invoicePaid: isTrialSettled,
         serverModuleId: activePlan.serverModuleId,
         serverPackageName: activePlan.serverPackageName,
         promoCode: appliedPromo?.scope === 'hosting' ? appliedPromo.code : undefined,
         discountUsd: hostingDiscount || undefined,
+        isFreeTrial: isFreeTrialMode || undefined,
+        trialDays: isFreeTrialMode ? 30 : undefined,
         nameservers:
           nameserversType === 'default'
             ? ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']
             : [customNs1.trim() || 'ns1.cpcloudhost.com', customNs2.trim() || 'ns2.cpcloudhost.com'],
-        notes: `Order placed via ${selectedGateway.name}${
-          domainOption === 'later' ? ' · Staging container assigned' : ''
-        }`,
+        notes: isFreeTrialMode
+          ? `30-Day Free Trial activated (${appliedPromo?.code || 'STARTFREE'}). Renewal applies on Day 31.`
+          : `Order placed via ${selectedGateway.name}${
+              domainOption === 'later' ? ' · Staging container assigned' : ''
+            }`,
       });
       primaryOrderId = hostingOrder.id;
       primaryInvoiceId = hostingInvoice?.id || hostingOrder.id.replace('ORD-', 'INV-');
@@ -1259,11 +1615,21 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
         ? activeCategory === 'domain-transfer'
           ? 'Domain Transfer'
           : 'Domain Registration'
+        : isFreeTrialMode
+        ? `${activePlan.name} (30-Day Free Trial)`
         : activePlan.name,
       datacenter: activeDatacenter.city,
       domainName: resolvedDomainHost,
       totalPaidUsd: netTotalUsd,
       billingCycle: isDomainOnly ? '1 Year' : billingCycle,
+      isFreeTrial: isFreeTrialMode,
+      hasDomainRegistration:
+        (isDomainOnly && activeCategory !== 'domain-transfer') ||
+        (!isCompute && !isDomainOnly && domainOption === 'register' && Boolean(selectedNewDomain)),
+      hasDomainTransfer:
+        (isDomainOnly && activeCategory === 'domain-transfer') ||
+        (!isCompute && !isDomainOnly && domainOption === 'transfer'),
+      serverConfig: serverCfg,
     });
   };
 
@@ -1413,9 +1779,12 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                           Thank you, {currentUser?.name || 'Client'}
                         </h1>
                         <p className="text-xs sm:text-sm text-slate-600 mt-1 leading-relaxed">
-                          Your order for <strong className="text-[#0F172A]">{completedOrders.productName}</strong> is logged for{' '}
-                          <strong className="text-[#0F172A]">{completedOrders.datacenter}</strong>.
-                          Submit your payment reference below or open your dedicated invoice page anytime.
+                          Your {completedOrders.isFreeTrial ? '30-day free trial for ' : 'order for '}
+                          <strong className="text-[#0F172A]">{completedOrders.productName}</strong> is logged for{' '}
+                          <strong className="text-[#0F172A]">{completedOrders.datacenter}</strong>.{' '}
+                          {completedOrders.totalPaidUsd === 0 && completedOrders.isFreeTrial
+                            ? 'Your $0.00 trial evaluation invoice is verified and queued for provisioning.'
+                            : 'Submit your payment reference below or open your dedicated invoice page anytime.'}
                         </p>
                       </div>
                     </div>
@@ -1452,7 +1821,9 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                       </div>
                     )}
                     <div className="flex items-center justify-between gap-3">
-                      <span className="text-slate-500">Domain / Host Reference</span>
+                      <span className="text-slate-500">
+                        {completedOrders.serverConfig ? 'Server Hostname / FQDN' : 'Domain / Host Reference'}
+                      </span>
                       <span className="font-mono font-semibold text-[#0F172A] truncate">
                         {completedOrders.domainName}
                       </span>
@@ -1463,16 +1834,115 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                         {completedOrders.datacenter}
                       </span>
                     </div>
+                    {completedOrders.serverConfig && (
+                      <>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-slate-500">OS / Stack Image</span>
+                          <span className="font-semibold text-[#0F172A]">
+                            {completedOrders.serverConfig.osName} ({completedOrders.serverConfig.osVersion})
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-slate-500">Panel / Runtime</span>
+                          <span className="font-semibold text-[#0F172A]">
+                            {completedOrders.serverConfig.controlPanelOrStack}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-slate-500">Storage &amp; Root Auth</span>
+                          <span className="font-semibold text-[#0F172A]">
+                            {completedOrders.serverConfig.storageMode} ·{' '}
+                            {completedOrders.serverConfig.authMode.toUpperCase()}
+                          </span>
+                        </div>
+                        {(completedOrders.serverConfig.backupAddon !== 'none' ||
+                          completedOrders.serverConfig.dedicatedIpAddon ||
+                          completedOrders.serverConfig.firewallShieldAddon) && (
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-slate-500">Provisioned Add-ons</span>
+                            <span className="font-semibold text-[#0E6B63] text-right">
+                              {[
+                                completedOrders.serverConfig.backupAddon !== 'none'
+                                  ? completedOrders.serverConfig.backupAddonLabel
+                                  : null,
+                                completedOrders.serverConfig.dedicatedIpAddon ? 'Extra Dedicated IPv4' : null,
+                                completedOrders.serverConfig.firewallShieldAddon ? 'Managed Firewall Shield' : null,
+                              ]
+                                .filter(Boolean)
+                                .join(' · ')}
+                            </span>
+                          </div>
+                        )}
+                      </>
+                    )}
+                    {completedOrders.isFreeTrial && (
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-slate-500">Evaluation Window</span>
+                        <span className="font-semibold text-[#16A34A]">
+                          30-Day Free Trial (Standard Renewal Applies Day 31)
+                        </span>
+                      </div>
+                    )}
                     <div className="flex items-center justify-between gap-3 pt-2 border-t border-[#E2E8F0]">
-                      <span className="font-semibold text-[#0F172A]">Total Invoice Balance Due</span>
+                      <span className="font-semibold text-[#0F172A]">
+                        {completedOrders.totalPaidUsd === 0 && completedOrders.isFreeTrial
+                          ? 'Total Charged Today'
+                          : 'Total Invoice Balance Due'}
+                      </span>
                       <span className="font-mono tabular-nums text-base font-extrabold text-[#0E6B63]">
                         {formatPrice(completedOrders.totalPaidUsd)}
                       </span>
                     </div>
                   </div>
 
-                  {/* Post-Order Payment Submission (Shown ONLY after order & invoice are generated) */}
-                  {postOrderPaymentSubmitted ? (
+                  {completedOrders.hasDomainRegistration && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50/80 p-4 flex items-start gap-3">
+                      <Clock className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" aria-hidden="true" />
+                      <div className="text-xs text-amber-950 space-y-1 leading-relaxed">
+                        <p className="font-bold">
+                          Domain Order Queued for Team Review &amp; WHOIS Verification
+                        </p>
+                        <p className="text-amber-900">
+                          Our registrar team has received your domain order and will review and approve it shortly. Immediately upon admin approval, you will receive an email with your Domain Registration certificate and a <strong>Verify &amp; Manage Domain</strong> link to confirm your WHOIS contact details and unlock DNS management.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {completedOrders.hasDomainTransfer && (
+                    <div className="rounded-xl border border-teal-200 bg-[#F2FAF8] p-4 flex items-start gap-3">
+                      <MailCheck className="w-5 h-5 text-[#0E6B63] shrink-0 mt-0.5" aria-hidden="true" />
+                      <div className="text-xs text-slate-800 space-y-1 leading-relaxed">
+                        <p className="font-bold text-[#0F172A]">
+                          Inbound Domain Transfer Initiated — Approve Email for Instant Completion
+                        </p>
+                        <p>
+                          Approve the transfer authorization link sent to your current registrant email to complete the move immediately. If you do not receive or approve that email, the domain will automatically transfer to our registrar within <strong>7 days</strong>.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Post-Order Payment Submission (or $0 Trial Verified Banner) */}
+                  {completedOrders.totalPaidUsd === 0 && completedOrders.isFreeTrial ? (
+                    <div className="rounded-xl border border-emerald-200 bg-[#F2FAF8] p-5 space-y-3">
+                      <div className="flex items-center gap-2 text-xs font-bold text-[#16A34A]">
+                        <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden="true" />
+                        <span>30-Day Free Trial Invoice Verified ($0.00 Due Today)</span>
+                      </div>
+                      <p className="text-xs text-slate-700 leading-relaxed">
+                        Promo code <span className="font-mono font-bold text-[#0F172A]">STARTFREE</span> waived 100% of your initial 30-day billing cycle. No manual payment proof is required to evaluate your hosting container.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => onOpenDashboard('/dashboard/services')}
+                        className="min-h-[42px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+                      >
+                        <Server className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Manage Active Services</span>
+                      </button>
+                    </div>
+                  ) : postOrderPaymentSubmitted ? (
                     <div className="rounded-xl border border-emerald-200 bg-[#F2FAF8] p-5 space-y-3">
                       <div className="flex items-center gap-2 text-xs font-bold text-[#16A34A]">
                         <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden="true" />
@@ -2198,10 +2668,16 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                     </span>
                     <div className="min-w-0">
                       <div className="text-xs font-bold text-[#0F172A] truncate">
-                        {isDomainOnly ? 'Domain & DNS' : 'Domain Name'}
+                        {isDomainOnly
+                          ? 'Domain & DNS'
+                          : isCompute
+                          ? 'Server & OS Setup'
+                          : 'Domain Name'}
                       </div>
                       <div className="text-[11px] text-slate-500 truncate">
-                        {domainOption === 'transfer'
+                        {isCompute
+                          ? 'OS, Panel & SSH Auth'
+                          : domainOption === 'transfer'
                           ? 'EPP & Unlock'
                           : 'Domain & Nameservers'}
                       </div>
@@ -2276,23 +2752,28 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-7 items-start">
               {/* LEFT MAIN WORKSPACE (8 Cols) */}
               <div className="lg:col-span-8 space-y-6">
-                {/* ==================== STEP 1: SELECTED PLAN + BILLING PERIOD ==================== */}
+                    {/* ==================== STEP 1: SELECTED PLAN + BILLING PERIOD ==================== */}
                 {!isDomainOnly && step === 1 && (
                   <div className="bg-white border border-[#E2E8F0] rounded-2xl p-6 sm:p-7 space-y-6">
                     <div>
                       <p className="text-xs font-semibold text-[#0E6B63]">
-                        Step 1 of 4 · Plan &amp; Datacenter Configuration
+                        Step 1 of 4 · {isCompute ? 'Compute Hardware & Region' : 'Plan & Datacenter Configuration'}
                       </p>
                       <h1 className="font-display text-2xl font-extrabold text-[#0F172A] mt-1">
-                        Configure {activePlan.name}
+                        {isFreeTrialMode
+                          ? `Start 30-Day Free Trial — ${activePlan.name}`
+                          : `Configure ${activePlan.name}`}
                       </h1>
                       <p className="text-xs sm:text-sm text-slate-600 mt-1">
-                        Select your billing cycle and server node for{' '}
-                        <strong className="text-[#0F172A]">{activePlan.name}</strong>. Multi-year cycles lock discounted pricing.
+                        {isFreeTrialMode
+                          ? 'Evaluate full NVMe cloud resources for 30 days with $0.00 charged today. Standard renewal begins Day 31.'
+                          : isCompute
+                          ? 'Choose your KVM hardware tier, billing duration, regional datacenter, and NVMe/SSD storage architecture.'
+                          : `Select your billing cycle and server node for ${activePlan.name}. Multi-year cycles lock discounted pricing.`}
                       </p>
                     </div>
 
-                    {/* Focused Single Selected Plan Card (Does NOT re-list all 3 plans) */}
+                    {/* Focused Single Selected Plan Card */}
                     <div className="p-4 sm:p-5 rounded-xl border border-[#0E6B63]/35 bg-[#F4FAF9] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 text-xs text-[#0E6B63] font-semibold">
@@ -2308,7 +2789,7 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                       </div>
                       <div className="flex sm:flex-col items-center sm:items-end justify-between gap-2 shrink-0">
                         <span className="font-mono tabular-nums text-base font-extrabold text-[#0F172A]">
-                          {formatPrice(activePlan.monthlyPrice)}/mo
+                          {isFreeTrialMode ? '$0.00 today' : `${formatPrice(activePlan.monthlyPrice)}/mo`}
                         </span>
                         <button
                           type="button"
@@ -2327,63 +2808,129 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                       </div>
                     </div>
 
-                    {/* Billing Period Selector */}
-                    <div>
-                      <label className="block text-xs font-semibold text-[#0F172A] mb-2">
-                        Select Billing Period
-                      </label>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                        {BILLING_PERIODS.map((period) => {
-                          const calc = computePlanCyclePrice(activePlan, period.id);
-                          const isSelected = billingCycle === period.id;
-                          return (
-                            <button
-                              key={period.id}
-                              type="button"
-                              onClick={() => setBillingCycle(period.id)}
-                              className={`p-4 rounded-xl border text-left transition-all cursor-pointer ${
-                                isSelected
-                                  ? 'border-[#0E6B63] bg-[#F4FAF9] ring-1 ring-[#0E6B63]'
-                                  : 'border-[#E2E8F0] bg-white hover:border-slate-300'
-                              }`}
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="font-display text-base font-bold text-[#0F172A]">
-                                  {period.label}
-                                </span>
-                                {period.badge && (
-                                  <span
-                                    className={`text-[11px] font-bold ${
-                                      isSelected ? 'text-[#0E6B63]' : 'text-slate-500'
-                                    }`}
-                                  >
-                                    {period.badge}
-                                  </span>
-                                )}
-                              </div>
-
-                              <div className="mt-2 flex items-baseline gap-2">
-                                <span className="font-mono tabular-nums text-xl font-extrabold text-[#0F172A]">
-                                  {formatPrice(calc.priceUsd)}
-                                </span>
-                                <span className="text-xs text-slate-500">
-                                  ({formatPrice(calc.effectiveMonthlyUsd)}/mo avg)
-                                </span>
-                              </div>
-
-                              <div className="mt-1.5 flex items-center justify-between text-[11px]">
-                                <span className="text-slate-500">{period.sublabel}</span>
-                                {calc.savingsUsd > 0 && (
-                                  <span className="font-mono font-semibold text-[#16A34A]">
-                                    Save {formatPrice(calc.savingsUsd)}
-                                  </span>
-                                )}
-                              </div>
-                            </button>
-                          );
-                        })}
+                    {/* Tier Quick-Switcher for Free Trial Plans and Compute Hardware Tiers */}
+                    {(isCompute || isFreeTrialMode) && categoryPlans.length > 1 && (
+                      <div>
+                        <label className="block text-xs font-semibold text-[#0F172A] mb-2">
+                          {isFreeTrialMode
+                            ? 'Switch 30-Day Free Trial Tier'
+                            : isN8nCompute
+                            ? 'Switch n8n Dedicated Compute Tier'
+                            : 'Switch KVM Hardware Tier'}
+                        </label>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-2.5">
+                          {categoryPlans.map((tier) => {
+                            const selected = tier.id === activePlan.id;
+                            return (
+                              <button
+                                key={tier.id}
+                                type="button"
+                                onClick={() => setSelectedPlanId(tier.id)}
+                                className={`p-3 rounded-xl border text-left transition-colors cursor-pointer ${
+                                  selected
+                                    ? 'border-[#0E6B63] bg-[#F4FAF9] ring-1 ring-[#0E6B63]'
+                                    : 'border-[#E2E8F0] bg-white hover:border-slate-300'
+                                }`}
+                              >
+                                <div className="text-xs font-bold text-[#0F172A] truncate">
+                                  {tier.name}
+                                </div>
+                                <div className="text-[11px] text-slate-500 mt-0.5 truncate">
+                                  {tier.storage}
+                                </div>
+                                <div className="font-mono tabular-nums text-xs font-bold text-[#0E6B63] mt-1.5">
+                                  {isFreeTrialMode
+                                    ? `$0.00 · then ${formatPrice(tier.monthlyPrice)}/mo`
+                                    : `${formatPrice(tier.monthlyPrice)}/mo`}
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
-                    </div>
+                    )}
+
+                    {/* Billing Period Selector */}
+                    {isFreeTrialMode ? (
+                      <div>
+                        <label className="block text-xs font-semibold text-[#0F172A] mb-2">
+                          Trial Evaluation Period
+                        </label>
+                        <div className="p-4 rounded-xl border border-[#0E6B63] bg-[#F4FAF9] ring-1 ring-[#0E6B63] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <Sparkles className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                              <span className="font-display text-base font-bold text-[#0F172A]">
+                                30-Day Free Trial (1 Month Cycle · $0.00 Due Today)
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-600 mt-1">
+                              Promo <span className="font-mono font-bold text-[#0F172A]">STARTFREE</span> automatically waives your first 30 days. Standard renewal at {formatPrice(activePlan.monthlyPrice)}/mo applies on Day 31 unless cancelled.
+                            </p>
+                          </div>
+                          <span className="font-mono tabular-nums text-2xl font-extrabold text-[#16A34A] shrink-0">
+                            {formatPrice(0)}
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="block text-xs font-semibold text-[#0F172A] mb-2">
+                          Select Billing Period
+                        </label>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                          {BILLING_PERIODS.map((period) => {
+                            const calc = computePlanCyclePrice(activePlan, period.id);
+                            const isSelected = billingCycle === period.id;
+                            return (
+                              <button
+                                key={period.id}
+                                type="button"
+                                onClick={() => setBillingCycle(period.id)}
+                                className={`p-4 rounded-xl border text-left transition-all cursor-pointer ${
+                                  isSelected
+                                    ? 'border-[#0E6B63] bg-[#F4FAF9] ring-1 ring-[#0E6B63]'
+                                    : 'border-[#E2E8F0] bg-white hover:border-slate-300'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="font-display text-base font-bold text-[#0F172A]">
+                                    {period.label}
+                                  </span>
+                                  {period.badge && (
+                                    <span
+                                      className={`text-[11px] font-bold ${
+                                        isSelected ? 'text-[#0E6B63]' : 'text-slate-500'
+                                      }`}
+                                    >
+                                      {period.badge}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="mt-2 flex items-baseline gap-2">
+                                  <span className="font-mono tabular-nums text-xl font-extrabold text-[#0F172A]">
+                                    {formatPrice(calc.priceUsd)}
+                                  </span>
+                                  <span className="text-xs text-slate-500">
+                                    ({formatPrice(calc.effectiveMonthlyUsd)}/mo avg)
+                                  </span>
+                                </div>
+
+                                <div className="mt-1.5 flex items-center justify-between text-[11px]">
+                                  <span className="text-slate-500">{period.sublabel}</span>
+                                  {calc.savingsUsd > 0 && (
+                                    <span className="font-mono font-semibold text-[#16A34A]">
+                                      Save {formatPrice(calc.savingsUsd)}
+                                    </span>
+                                  )}
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
 
                     {/* Datacenter Location Selector */}
                     <div>
@@ -2391,7 +2938,7 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                         <label className="block text-xs font-semibold text-[#0F172A]">
                           Datacenter Location
                         </label>
-                        {isWpOrWin && (
+                        {isWinOnly && (
                           <span className="text-[11px] font-semibold text-[#0E6B63]">
                             Strict UK Cluster (London)
                           </span>
@@ -2401,46 +2948,144 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                             Strict USA Cluster (Dallas NVMe)
                           </span>
                         )}
+                        {activeCategory === 'wordpress-hosting' && (
+                          <span className="text-[11px] font-semibold text-[#0E6B63]">
+                            3 Multi-Region WordPress Nodes (UK · USA · Singapore)
+                          </span>
+                        )}
+                        {isCompute && (
+                          <span className="text-[11px] font-semibold text-[#0E6B63]">
+                            4 Low-Latency KVM Compute Hubs
+                          </span>
+                        )}
                       </div>
 
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                        {SHARED_DATACENTERS.map((dc) => {
-                          const isLockedOut =
-                            (isWpOrWin && dc.id !== 'uk') || (isCpanel && dc.id !== 'us');
-                          const isSelected = activeDatacenter.id === dc.id;
-
-                          if (isLockedOut) return null;
-
-                          return (
-                            <button
-                              key={dc.id}
-                              type="button"
-                              onClick={() => setDatacenterId(dc.id)}
-                              className={`flex items-center gap-2.5 p-3.5 rounded-xl border text-left transition-colors cursor-pointer ${
-                                isSelected
-                                  ? 'border-[#0E6B63] bg-[#F4FAF9] ring-1 ring-[#0E6B63]'
-                                  : 'border-[#E2E8F0] bg-white hover:border-slate-300'
-                              }`}
-                            >
-                              <MapPin
-                                className={`w-4 h-4 shrink-0 ${
-                                  isSelected ? 'text-[#0E6B63]' : 'text-slate-400'
+                      {isCompute ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          {COMPUTE_DATACENTERS.map((dc) => {
+                            const isSelected = activeDatacenter.id === dc.id;
+                            return (
+                              <button
+                                key={dc.id}
+                                type="button"
+                                onClick={() => setDatacenterId(dc.id)}
+                                className={`flex items-center justify-between gap-3 p-3.5 rounded-xl border text-left transition-colors cursor-pointer ${
+                                  isSelected
+                                    ? 'border-[#0E6B63] bg-[#F4FAF9] ring-1 ring-[#0E6B63]'
+                                    : 'border-[#E2E8F0] bg-white hover:border-slate-300'
                                 }`}
-                                aria-hidden="true"
-                              />
-                              <div className="min-w-0">
-                                <div className="text-xs font-bold text-[#0F172A] truncate">
-                                  {dc.city}
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <MapPin
+                                    className={`w-4 h-4 shrink-0 ${
+                                      isSelected ? 'text-[#0E6B63]' : 'text-slate-400'
+                                    }`}
+                                    aria-hidden="true"
+                                  />
+                                  <div className="min-w-0">
+                                    <div className="text-xs font-bold text-[#0F172A] truncate">
+                                      {dc.city}
+                                    </div>
+                                    <div className="text-[10px] text-slate-500 truncate">
+                                      {dc.clusterLabel}
+                                    </div>
+                                  </div>
                                 </div>
-                                <div className="text-[10px] text-slate-500 truncate">
-                                  {dc.latencyLabel}
+                                <span className="font-mono text-[10px] font-bold px-2 py-0.5 rounded bg-white border border-[#E2E8F0] text-[#0E6B63] shrink-0">
+                                  {dc.flagCode}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          {SHARED_DATACENTERS.map((dc) => {
+                            const isLockedOut =
+                              (isWinOnly && dc.id !== 'uk') || (isCpanel && dc.id !== 'us');
+                            const isSelected = activeDatacenter.id === dc.id;
+
+                            if (isLockedOut) return null;
+
+                            return (
+                              <button
+                                key={dc.id}
+                                type="button"
+                                onClick={() => setDatacenterId(dc.id)}
+                                className={`flex items-center gap-2.5 p-3.5 rounded-xl border text-left transition-colors cursor-pointer ${
+                                  isSelected
+                                    ? 'border-[#0E6B63] bg-[#F4FAF9] ring-1 ring-[#0E6B63]'
+                                    : 'border-[#E2E8F0] bg-white hover:border-slate-300'
+                                }`}
+                              >
+                                <MapPin
+                                  className={`w-4 h-4 shrink-0 ${
+                                    isSelected ? 'text-[#0E6B63]' : 'text-slate-400'
+                                  }`}
+                                  aria-hidden="true"
+                                />
+                                <div className="min-w-0">
+                                  <div className="text-xs font-bold text-[#0F172A] truncate">
+                                    {dc.city}
+                                  </div>
+                                  <div className="text-[10px] text-slate-500 truncate">
+                                    {dc.latencyLabel}
+                                  </div>
                                 </div>
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
+
+                    {/* Storage Architecture Picker for VPS / n8n */}
+                    {isCompute && (
+                      <div>
+                        <label className="block text-xs font-semibold text-[#0F172A] mb-2">
+                          Storage Architecture Mode
+                        </label>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          {(
+                            [
+                              {
+                                id: 'NVMe High-IOPS' as const,
+                                desc: 'PCIe Gen4 NVMe RAID-10 · Maximum database & queue throughput',
+                              },
+                              {
+                                id: 'SSD High-Capacity' as const,
+                                desc: 'Enterprise SATA/SAS SSD array · Balanced capacity & snapshots',
+                              },
+                            ] as const
+                          ).map((mode) => {
+                            const selected = computeStorageMode === mode.id;
+                            return (
+                              <button
+                                key={mode.id}
+                                type="button"
+                                onClick={() => setComputeStorageMode(mode.id)}
+                                className={`p-3.5 rounded-xl border text-left transition-colors cursor-pointer ${
+                                  selected
+                                    ? 'border-[#0E6B63] bg-[#F4FAF9] ring-1 ring-[#0E6B63]'
+                                    : 'border-[#E2E8F0] bg-white hover:border-slate-300'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="inline-flex items-center gap-2 text-xs font-bold text-[#0F172A]">
+                                    <HardDrive className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                                    {mode.id}
+                                  </span>
+                                  {selected && (
+                                    <CheckCircle2 className="w-4 h-4 text-[#0E6B63] shrink-0" aria-hidden="true" />
+                                  )}
+                                </div>
+                                <p className="text-[11px] text-slate-500 mt-1">{mode.desc}</p>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
 
                     <div className="pt-3 border-t border-[#E2E8F0] flex items-center justify-end">
                       <button
@@ -2452,7 +3097,7 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                         className="min-h-[44px] inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-sm font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
                       >
                         <span>
-                          {isCompute ? 'Continue to Hostname / Domain' : 'Continue to Domain'}
+                          {isCompute ? 'Continue to OS & Server Config' : 'Continue to Domain'}
                         </span>
                         <ArrowRight className="w-4 h-4" aria-hidden="true" />
                       </button>
@@ -2460,57 +3105,463 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                   </div>
                 )}
 
-                {/* ==================== STEP 2: DOMAIN & NAMESERVERS ==================== */}
+                {/* ==================== STEP 2: SERVER CONFIGURATOR (VPS/n8n) OR DOMAIN SETUP ==================== */}
                 {step === 2 && (
                   <div className="bg-white border border-[#E2E8F0] rounded-2xl p-6 sm:p-7 space-y-6">
-                    <div>
-                      <p className="text-xs font-semibold text-[#0E6B63]">
-                        {isDomainOnly ? 'Step 1 of 3' : 'Step 2 of 4'} · Domain &amp; DNS Setup
-                      </p>
-                      <h1 className="font-display text-2xl font-extrabold text-[#0F172A] mt-1">
-                        {isDomainOnly
-                          ? activeCategory === 'domain-transfer'
-                            ? 'Transfer Your Domain to CPCloudHost'
-                            : 'Confirm Your Domain & Nameservers'
-                          : 'Connect or Register Domain'}
-                      </h1>
-                      <p className="text-xs sm:text-sm text-slate-600 mt-1">
-                        {isDomainOnly
-                          ? 'Includes Anycast nameservers and free WHOIS privacy protection.'
-                          : 'Pair your cloud service with your domain, transfer an existing domain, or assign a staging hostname.'}
-                      </p>
-                    </div>
+                    {isCompute ? (
+                      <>
+                        <div>
+                          <p className="text-xs font-semibold text-[#0E6B63]">
+                            Step 2 of 4 · Hostinger-Style Server &amp; OS Setup
+                          </p>
+                          <h1 className="font-display text-2xl font-extrabold text-[#0F172A] mt-1">
+                            {isN8nCompute
+                              ? 'Configure Your n8n Automation Stack'
+                              : 'Select Operating System, Control Panel & Root Auth'}
+                          </h1>
+                          <p className="text-xs sm:text-sm text-slate-600 mt-1">
+                            {isN8nCompute
+                              ? 'Pick your containerized n8n + Postgres stack, webhook subdomain, SSH credentials, and automated snapshot schedule. No domain purchase required.'
+                              : 'Deploy a clean Linux distribution, pre-installed hosting panel, or Docker stack with dedicated root authentication. Domain registration is skipped for unmanaged compute.'}
+                          </p>
+                        </div>
 
-                    {/* Domain Option Tabs (Hosting Orders) */}
-                    {!isDomainOnly && (
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                        {[
-                          { id: 'register' as const, label: 'Register New' },
-                          { id: 'transfer' as const, label: 'Transfer In' },
-                          { id: 'existing' as const, label: 'Use Existing' },
-                          { id: 'later' as const, label: 'Add Later' },
-                        ].map((opt) => {
-                          const active = domainOption === opt.id;
-                          return (
+                        {/* OS / Panel / n8n Stack Selector */}
+                        <div className="space-y-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <label className="block text-xs font-semibold text-[#0F172A]">
+                              {isN8nCompute
+                                ? 'Select n8n Orchestration Image'
+                                : 'Select OS / Control Panel / App Image'}
+                            </label>
+                            <span className="font-mono text-[11px] text-[#0E6B63] font-semibold">
+                              Selected: {activeComputeTemplate.name} ({activeComputeTemplate.version})
+                            </span>
+                          </div>
+
+                          {!isN8nCompute && (
+                            <div className="flex flex-wrap gap-2">
+                              {(
+                                [
+                                  { id: 'all' as const, label: `All Templates (${VPS_OS_CATALOG.length})` },
+                                  { id: 'plain-os' as const, label: 'Plain OS' },
+                                  { id: 'os-panel' as const, label: 'OS + Control Panel' },
+                                  { id: 'app-docker' as const, label: 'Docker & Dev Stacks' },
+                                ] as const
+                              ).map((tab) => {
+                                const active = computeOsTab === tab.id;
+                                return (
+                                  <button
+                                    key={tab.id}
+                                    type="button"
+                                    onClick={() => setComputeOsTab(tab.id)}
+                                    className={`px-3.5 py-1.5 rounded-lg border text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                                      active
+                                        ? 'border-[#0E6B63] bg-[#F4FAF9] text-[#0E6B63]'
+                                        : 'border-[#E2E8F0] bg-white text-slate-600 hover:border-slate-300'
+                                    }`}
+                                  >
+                                    {tab.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            {(isN8nCompute
+                              ? N8N_STACK_CATALOG
+                              : computeOsTab === 'all'
+                              ? VPS_OS_CATALOG
+                              : VPS_OS_CATALOG.filter((tpl) => tpl.category === computeOsTab)
+                            ).map((tpl) => {
+                              const selected = activeComputeTemplate.id === tpl.id;
+                              return (
+                                <button
+                                  key={tpl.id}
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedOsId(tpl.id);
+                                    setStep2Error('');
+                                  }}
+                                  className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
+                                    selected
+                                      ? 'border-[#0E6B63] bg-[#F4FAF9] ring-1 ring-[#0E6B63]'
+                                      : 'border-[#E2E8F0] bg-white hover:border-slate-300'
+                                  }`}
+                                >
+                                  <div className="flex items-start gap-3">
+                                    <div
+                                      className={`w-10 h-10 rounded-lg border flex items-center justify-center font-mono text-xs font-extrabold shrink-0 ${
+                                        selected
+                                          ? 'bg-[#0E6B63] text-white border-[#0E6B63]'
+                                          : 'bg-[#F8FAFC] text-[#0F172A] border-[#E2E8F0]'
+                                      }`}
+                                    >
+                                      {tpl.badgeText}
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <span className="text-xs font-bold text-[#0F172A] truncate">
+                                          {tpl.name} · {tpl.version}
+                                        </span>
+                                        {selected && (
+                                          <CheckCircle2 className="w-4 h-4 text-[#0E6B63] shrink-0" aria-hidden="true" />
+                                        )}
+                                      </div>
+                                      <div className="text-[11px] font-semibold text-[#0E6B63] mt-0.5 truncate">
+                                        {tpl.controlPanelOrStack}
+                                      </div>
+                                      <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                                        {tpl.description}
+                                      </p>
+                                      <div className="mt-1.5 flex items-center justify-between gap-2 text-[10px] font-mono text-slate-500">
+                                        <span>{tpl.shortTag}</span>
+                                        <span className="text-[#0F172A] font-semibold">{tpl.licenseNote}</span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* Hostname / Webhook FQDN */}
+                        <div className="border-t border-[#E2E8F0] pt-5 space-y-2.5">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <label className="block text-xs font-semibold text-[#0F172A]">
+                              {isN8nCompute
+                                ? 'Webhook Endpoint Hostname / FQDN'
+                                : 'Server Hostname (FQDN)'}
+                            </label>
                             <button
-                              key={opt.id}
                               type="button"
                               onClick={() => {
-                                setDomainOption(opt.id);
+                                const suffix = Math.floor(10 + Math.random() * 89);
+                                setComputeHostname(
+                                  isN8nCompute
+                                    ? `flows${suffix}.cpcloudhost.internal`
+                                    : `node${suffix}.cpcloudhost.internal`
+                                );
                                 setStep2Error('');
                               }}
-                              className={`p-3 rounded-xl border text-center transition-colors cursor-pointer ${
-                                active
-                                  ? 'border-[#0E6B63] bg-[#F4FAF9] text-[#0E6B63] font-bold ring-1 ring-[#0E6B63]'
-                                  : 'border-[#E2E8F0] bg-white text-slate-600 hover:border-slate-300'
+                              className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#0E6B63] hover:underline cursor-pointer"
+                            >
+                              <RefreshCw className="w-3 h-3" aria-hidden="true" />
+                              <span>Suggest Hostname</span>
+                            </button>
+                          </div>
+                          <div className="relative">
+                            <Terminal
+                              className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                              aria-hidden="true"
+                            />
+                            <input
+                              type="text"
+                              value={computeHostname}
+                              onChange={(e) => {
+                                setComputeHostname(e.target.value);
+                                setStep2Error('');
+                              }}
+                              placeholder={
+                                isN8nCompute
+                                  ? 'flows.yourdomain.com or flows01.cpcloudhost.internal'
+                                  : 'node01.yourdomain.com or node01.cpcloudhost.internal'
+                              }
+                              className="w-full min-h-[44px] pl-10 pr-4 py-2 text-xs sm:text-sm font-mono bg-white border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                            />
+                          </div>
+                          <p className="text-[11px] text-slate-500">
+                            Used for reverse DNS (rDNS), automated TLS provisioning, and cloud-init system identity.
+                          </p>
+                        </div>
+
+                        {/* Root Access Authentication Mode */}
+                        <div className="border-t border-[#E2E8F0] pt-5 space-y-4">
+                          <div>
+                            <label className="block text-xs font-semibold text-[#0F172A] mb-2">
+                              Root / SSH Access Authentication
+                            </label>
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                              {(
+                                [
+                                  { id: 'both' as const, label: 'Password + SSH Key', hint: 'Recommended flexibility' },
+                                  { id: 'password' as const, label: 'Root Password Only', hint: 'Instant console login' },
+                                  { id: 'ssh' as const, label: 'SSH Key Only (Hardened)', hint: 'Passwordless root' },
+                                ] as const
+                              ).map((mode) => {
+                                const active = computeAuthMode === mode.id;
+                                return (
+                                  <button
+                                    key={mode.id}
+                                    type="button"
+                                    onClick={() => {
+                                      setComputeAuthMode(mode.id);
+                                      setStep2Error('');
+                                    }}
+                                    className={`p-3 rounded-xl border text-left transition-colors cursor-pointer ${
+                                      active
+                                        ? 'border-[#0E6B63] bg-[#F4FAF9] ring-1 ring-[#0E6B63]'
+                                        : 'border-[#E2E8F0] bg-white hover:border-slate-300'
+                                    }`}
+                                  >
+                                    <div className="text-xs font-bold text-[#0F172A]">{mode.label}</div>
+                                    <div className="text-[10px] text-slate-500 mt-0.5">{mode.hint}</div>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {(computeAuthMode === 'password' || computeAuthMode === 'both') && (
+                            <div className="space-y-1.5">
+                              <div className="flex items-center justify-between gap-2">
+                                <label className="block text-xs font-semibold text-[#0F172A]">
+                                  Root Password (Min 8 Characters)
+                                </label>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setComputeRootPassword(generateStrongServerPassword());
+                                    setShowRootPassword(true);
+                                    setStep2Error('');
+                                  }}
+                                  className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#0E6B63] hover:underline cursor-pointer"
+                                >
+                                  <RefreshCw className="w-3 h-3" aria-hidden="true" />
+                                  <span>Generate Strong Password</span>
+                                </button>
+                              </div>
+                              <div className="relative">
+                                <Lock
+                                  className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                                  aria-hidden="true"
+                                />
+                                <input
+                                  type={showRootPassword ? 'text' : 'password'}
+                                  value={computeRootPassword}
+                                  onChange={(e) => {
+                                    setComputeRootPassword(e.target.value);
+                                    setStep2Error('');
+                                  }}
+                                  placeholder="Enter strong root password"
+                                  className="w-full min-h-[44px] pl-10 pr-12 py-2 text-xs sm:text-sm font-mono bg-white border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setShowRootPassword((prev) => !prev)}
+                                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-[#0F172A] cursor-pointer"
+                                  aria-label={showRootPassword ? 'Hide root password' : 'Show root password'}
+                                >
+                                  {showRootPassword ? (
+                                    <EyeOff className="w-4 h-4" aria-hidden="true" />
+                                  ) : (
+                                    <Eye className="w-4 h-4" aria-hidden="true" />
+                                  )}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {(computeAuthMode === 'ssh' || computeAuthMode === 'both') && (
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                              <div>
+                                <label className="block text-xs font-semibold text-[#0F172A] mb-1">
+                                  SSH Key Label {computeAuthMode === 'ssh' ? '*' : '(Optional)'}
+                                </label>
+                                <div className="relative">
+                                  <Key
+                                    className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                                    aria-hidden="true"
+                                  />
+                                  <input
+                                    type="text"
+                                    value={computeSshKeyLabel}
+                                    onChange={(e) => setComputeSshKeyLabel(e.target.value)}
+                                    placeholder="e.g. Ops-MacBook-Pro"
+                                    className="w-full min-h-[42px] pl-9 pr-3 py-2 text-xs bg-white border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                                  />
+                                </div>
+                              </div>
+                              <div className="sm:col-span-2">
+                                <label className="block text-xs font-semibold text-[#0F172A] mb-1">
+                                  SSH Public Key {computeAuthMode === 'ssh' ? '*' : '(Optional)'}
+                                </label>
+                                <textarea
+                                  rows={2}
+                                  value={computeSshPublicKey}
+                                  onChange={(e) => {
+                                    setComputeSshPublicKey(e.target.value);
+                                    setStep2Error('');
+                                  }}
+                                  placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... dev@workstation"
+                                  className="w-full px-3.5 py-2 text-xs font-mono bg-white border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Backups & Optional Compute Add-ons */}
+                        <div className="border-t border-[#E2E8F0] pt-5 space-y-4">
+                          <div>
+                            <label className="block text-xs font-semibold text-[#0F172A] mb-2">
+                              Automated Backups &amp; Snapshots Schedule
+                            </label>
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                              {COMPUTE_BACKUP_ADDONS.map((opt) => {
+                                const active = computeBackupAddon === opt.id;
+                                return (
+                                  <button
+                                    key={opt.id}
+                                    type="button"
+                                    onClick={() => setComputeBackupAddon(opt.id)}
+                                    className={`p-3.5 rounded-xl border text-left transition-colors cursor-pointer ${
+                                      active
+                                        ? 'border-[#0E6B63] bg-[#F4FAF9] ring-1 ring-[#0E6B63]'
+                                        : 'border-[#E2E8F0] bg-white hover:border-slate-300'
+                                    }`}
+                                  >
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="text-xs font-bold text-[#0F172A]">{opt.name}</span>
+                                      <span className="font-mono tabular-nums text-xs font-bold text-[#0E6B63]">
+                                        {opt.monthlyPriceUsd === 0
+                                          ? 'Included'
+                                          : `+${formatPrice(opt.monthlyPriceUsd)}/mo`}
+                                      </span>
+                                    </div>
+                                    <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                                      {opt.description}
+                                    </p>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <label
+                              className={`flex items-start gap-3 p-3.5 rounded-xl border cursor-pointer transition-colors ${
+                                computeDedicatedIpAddon
+                                  ? 'border-[#0E6B63] bg-[#F4FAF9]'
+                                  : 'border-[#E2E8F0] bg-white hover:border-slate-300'
                               }`}
                             >
-                              <span className="text-xs">{opt.label}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
+                              <input
+                                type="checkbox"
+                                checked={computeDedicatedIpAddon}
+                                onChange={(e) => setComputeDedicatedIpAddon(e.target.checked)}
+                                className="mt-0.5 rounded border-slate-300 text-[#0E6B63] focus:ring-[#0E6B63]"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-2 text-xs">
+                                  <span className="font-bold text-[#0F172A]">Extra Dedicated IPv4</span>
+                                  <span className="font-mono font-bold text-[#0E6B63]">
+                                    +{formatPrice(3)}/mo
+                                  </span>
+                                </div>
+                                <p className="text-[11px] text-slate-500 mt-0.5">
+                                  Assign a secondary clean static IPv4 address for outbound mail or ingress isolation.
+                                </p>
+                              </div>
+                            </label>
+
+                            <label
+                              className={`flex items-start gap-3 p-3.5 rounded-xl border cursor-pointer transition-colors ${
+                                computeFirewallAddon
+                                  ? 'border-[#0E6B63] bg-[#F4FAF9]'
+                                  : 'border-[#E2E8F0] bg-white hover:border-slate-300'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={computeFirewallAddon}
+                                onChange={(e) => setComputeFirewallAddon(e.target.checked)}
+                                className="mt-0.5 rounded border-slate-300 text-[#0E6B63] focus:ring-[#0E6B63]"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-2 text-xs">
+                                  <span className="font-bold text-[#0F172A]">Managed Firewall Shield</span>
+                                  <span className="font-mono font-bold text-[#0E6B63]">
+                                    +{formatPrice(4)}/mo
+                                  </span>
+                                </div>
+                                <p className="text-[11px] text-slate-500 mt-0.5">
+                                  Edge L3/L4 port filtering, fail2ban telemetry, and automated malware quarantine.
+                                </p>
+                              </div>
+                            </label>
+                          </div>
+
+                          <div>
+                            <label className="block text-xs font-semibold text-[#0F172A] mb-1">
+                              Custom Initialization / Env Ports Note (Optional)
+                            </label>
+                            <input
+                              type="text"
+                              value={computeCustomEnvNote}
+                              onChange={(e) => setComputeCustomEnvNote(e.target.value)}
+                              placeholder={
+                                isN8nCompute
+                                  ? 'e.g. EXECUTIONS_MODE=queue · Open port 5678 & webhook TLS'
+                                  : 'e.g. Open ports 80/443/22 · Mount /var/lib/docker on NVMe'
+                              }
+                              className="w-full min-h-[42px] px-3.5 py-2 text-xs bg-white border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63]"
+                            />
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div>
+                          <p className="text-xs font-semibold text-[#0E6B63]">
+                            {isDomainOnly ? 'Step 1 of 3' : 'Step 2 of 4'} · Domain &amp; DNS Setup
+                          </p>
+                          <h1 className="font-display text-2xl font-extrabold text-[#0F172A] mt-1">
+                            {isDomainOnly
+                              ? activeCategory === 'domain-transfer'
+                                ? 'Transfer Your Domain to CPCloudHost'
+                                : 'Confirm Your Domain & Nameservers'
+                              : 'Connect or Register Domain'}
+                          </h1>
+                          <p className="text-xs sm:text-sm text-slate-600 mt-1">
+                            {isDomainOnly
+                              ? 'Includes Anycast nameservers and free WHOIS privacy protection.'
+                              : 'Pair your cloud service with your domain, transfer an existing domain, or assign a staging hostname.'}
+                          </p>
+                        </div>
+
+                        {/* Domain Option Tabs (Hosting Orders) */}
+                        {!isDomainOnly && (
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                            {[
+                              { id: 'register' as const, label: 'Register New' },
+                              { id: 'transfer' as const, label: 'Transfer In' },
+                              { id: 'existing' as const, label: 'Use Existing' },
+                              { id: 'later' as const, label: 'Add Later' },
+                            ].map((opt) => {
+                              const active = domainOption === opt.id;
+                              return (
+                                <button
+                                  key={opt.id}
+                                  type="button"
+                                  onClick={() => {
+                                    setDomainOption(opt.id);
+                                    setStep2Error('');
+                                  }}
+                                  className={`p-3 rounded-xl border text-center transition-colors cursor-pointer ${
+                                    active
+                                      ? 'border-[#0E6B63] bg-[#F4FAF9] text-[#0E6B63] font-bold ring-1 ring-[#0E6B63]'
+                                      : 'border-[#E2E8F0] bg-white text-slate-600 hover:border-slate-300'
+                                  }`}
+                                >
+                                  <span className="text-xs">{opt.label}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
 
                     {/* ================= REGISTER NEW DOMAIN WORKFLOW ================= */}
                     {domainOption === 'register' && (
@@ -2811,15 +3862,51 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                           </div>
                         </div>
 
-                        <DomainContactAddressSelector
-                          selectedContactId={selectedWhoisContact?.id || null}
-                          onSelectContact={(addr) => {
-                            setSelectedWhoisContact(addr);
-                            setStep2Error('');
-                          }}
-                          title="WHOIS Registrant Contact & Address"
-                          subtitle="Required for ICANN domain registration. Select a saved address below or click Add Address to enter your country, state, and street details once."
-                        />
+                        {currentUser ? (
+                          <DomainContactAddressSelector
+                            selectedContactId={selectedWhoisContact?.id || null}
+                            onSelectContact={(addr) => {
+                              setSelectedWhoisContact(addr);
+                              setStep2Error('');
+                            }}
+                            title="WHOIS Registrant Contact & Address"
+                            subtitle={`Saved to ${currentUser.email}. Select a saved address below or click Add Address to save your registrant details permanently to your account.`}
+                          />
+                        ) : (
+                          <div className="border border-[#CBD5E1] rounded-xl bg-[#F8FAFC] p-5 space-y-3">
+                            <div className="flex items-start gap-3">
+                              <div className="w-9 h-9 rounded-xl bg-white border border-[#E2E8F0] flex items-center justify-center shrink-0">
+                                <Lock className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                              </div>
+                              <div>
+                                <h3 className="text-sm font-bold text-[#0F172A]">
+                                  Sign In or Create Account to Add WHOIS Registrant Address
+                                </h3>
+                                <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                                  WHOIS registrant contact addresses are saved securely to your verified client account so you can reuse them on renewals and future orders. Sign in or create an account and you will return directly to this step.
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2.5 pt-1">
+                              <button
+                                type="button"
+                                onClick={() => handleRequireAuthAtStep2('login')}
+                                className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer transition-colors whitespace-nowrap shrink-0"
+                              >
+                                <Lock className="w-3.5 h-3.5" aria-hidden="true" />
+                                <span>Sign In to Continue</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleRequireAuthAtStep2('register')}
+                                className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border border-[#0E6B63] bg-white hover:bg-[#F2FAF8] text-[#0E6B63] text-xs font-semibold cursor-pointer transition-colors whitespace-nowrap shrink-0"
+                              >
+                                <UserPlus className="w-3.5 h-3.5" aria-hidden="true" />
+                                <span>Create Account</span>
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -2928,15 +4015,61 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                           </div>
                         </div>
 
-                        <DomainContactAddressSelector
-                          selectedContactId={selectedWhoisContact?.id || null}
-                          onSelectContact={(addr) => {
-                            setSelectedWhoisContact(addr);
-                            setStep2Error('');
-                          }}
-                          title="WHOIS Registrant Contact & Address"
-                          subtitle="Required for incoming domain transfers. Your saved address stays available automatically across all future orders."
-                        />
+                        <div className="p-4 rounded-xl bg-teal-50/70 border border-teal-200 flex items-start gap-3 text-xs text-slate-800">
+                          <Clock className="w-4 h-4 text-[#0E6B63] shrink-0 mt-0.5" aria-hidden="true" />
+                          <div className="leading-relaxed">
+                            <span className="font-bold text-[#0F172A] block mb-0.5">
+                              Transfer Approval &amp; Timeline
+                            </span>
+                            After placing your transfer order with your EPP code, approve the verification link sent to your registrant email to transfer immediately. If the email is not received or approved, your domain transfers automatically to our registrar within <strong>7 days</strong>.
+                          </div>
+                        </div>
+
+                        {currentUser ? (
+                          <DomainContactAddressSelector
+                            selectedContactId={selectedWhoisContact?.id || null}
+                            onSelectContact={(addr) => {
+                              setSelectedWhoisContact(addr);
+                              setStep2Error('');
+                            }}
+                            title="WHOIS Registrant Contact & Address"
+                            subtitle={`Saved to ${currentUser.email}. Your WHOIS address stays saved automatically across all future transfers and domain orders.`}
+                          />
+                        ) : (
+                          <div className="border border-[#CBD5E1] rounded-xl bg-[#F8FAFC] p-5 space-y-3">
+                            <div className="flex items-start gap-3">
+                              <div className="w-9 h-9 rounded-xl bg-white border border-[#E2E8F0] flex items-center justify-center shrink-0">
+                                <Lock className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                              </div>
+                              <div>
+                                <h3 className="text-sm font-bold text-[#0F172A]">
+                                  Sign In or Create Account to Add WHOIS Registrant Address
+                                </h3>
+                                <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                                  Sign in or register first so your WHOIS registrant contact details save directly to your account before completing this domain transfer.
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2.5 pt-1">
+                              <button
+                                type="button"
+                                onClick={() => handleRequireAuthAtStep2('login')}
+                                className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer transition-colors whitespace-nowrap shrink-0"
+                              >
+                                <Lock className="w-3.5 h-3.5" aria-hidden="true" />
+                                <span>Sign In to Continue</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleRequireAuthAtStep2('register')}
+                                className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border border-[#0E6B63] bg-white hover:bg-[#F2FAF8] text-[#0E6B63] text-xs font-semibold cursor-pointer transition-colors whitespace-nowrap shrink-0"
+                              >
+                                <UserPlus className="w-3.5 h-3.5" aria-hidden="true" />
+                                <span>Create Account</span>
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -2981,6 +4114,8 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                         </strong>
                         We will provision your cloud container on a sandbox URL. You can map or register your custom domain at any time directly from the Client Dashboard.
                       </div>
+                    )}
+                      </>
                     )}
 
                     {step2Error && (
@@ -3037,10 +4172,12 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                             <div className="text-slate-500 mt-0.5">
                               Term: <strong>{billingCycle}</strong> · Node:{' '}
                               <strong>{activeDatacenter.city}</strong>
+                              {isCompute ? ` · Storage: ${computeStorageMode}` : ''}
                             </div>
                             <div className="text-[#0E6B63] font-semibold mt-1">
-                              Renews at{' '}
-                              {formatPrice(activePlan.yearlyPrice || activePlan.monthlyPrice * 12)} / year on expiration
+                              {isFreeTrialMode
+                                ? `30-Day Free Trial ($0.00 today) · Renews Day 31 at ${formatPrice(activePlan.monthlyPrice)}/mo`
+                                : `Renews at ${formatPrice(activePlan.yearlyPrice || activePlan.monthlyPrice * 12)} / year on expiration`}
                             </div>
                           </div>
                           <div className="text-right font-mono tabular-nums font-bold text-sm text-[#0F172A]">
@@ -3049,60 +4186,149 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                         </div>
                       )}
 
-                      <div className="p-4 flex items-center justify-between gap-4 bg-white">
-                        <div>
-                          <div className="font-semibold text-[#0F172A]">
-                            {domainOption === 'register' && selectedNewDomain
-                              ? `Domain Registration: ${selectedNewDomain.domain}`
-                              : domainOption === 'transfer'
-                              ? `Domain Transfer: ${transferDomainInput}`
-                              : domainOption === 'existing'
-                              ? `Existing Domain: ${existingDomainInput}`
-                              : 'Temporary Staging Hostname'}
-                          </div>
-                          <div className="text-slate-500 mt-0.5">
-                            {domainOption === 'register' && selectedNewDomain
-                              ? `${selectedNewDomain.minYears === 2 ? '2 Years' : '1 Year'} Term · Nameservers: ${
-                                  nameserversType === 'default' ? 'CPCloudHost Anycast' : 'Custom'
-                                } · WHOIS Privacy Included`
-                              : domainOption === 'transfer'
-                              ? `Includes 1-Year Extension · Nameservers: ${
-                                  transferStrategy === 'cloud' ? 'CPCloudHost Anycast' : 'Preserved'
-                                } · EPP Verified`
-                              : domainOption === 'existing'
-                              ? 'Nameserver configuration post-provisioning'
-                              : 'Standard development subdomain provided'}
-                          </div>
-                          {(domainOption === 'register' || domainOption === 'transfer') && (
-                            <div className="space-y-1 mt-1">
-                              <div className="text-[#0E6B63] font-semibold">
-                                Renewal Rate:{' '}
-                                {formatPrice(
-                                  selectedNewDomain?.renewalUsd ||
-                                    detectedTransferTld?.renewalUsd ||
-                                    getPricingForTld('.com').renewalPrice
-                                )}{' '}
-                                / year
+                      {isCompute ? (
+                        <>
+                          <div className="p-4 flex items-start justify-between gap-4 bg-white">
+                            <div className="space-y-1">
+                              <div className="font-semibold text-[#0F172A]">
+                                {isN8nCompute ? 'n8n Stack Template:' : 'OS & Control Panel:'}{' '}
+                                {activeComputeTemplate.name} ({activeComputeTemplate.version})
                               </div>
-                              {selectedWhoisContact && (
-                                <div className="text-slate-600">
-                                  WHOIS Registrant:{' '}
-                                  <strong className="text-[#0F172A]">
-                                    {selectedWhoisContact.firstName}{' '}
-                                    {selectedWhoisContact.lastName}
-                                  </strong>{' '}
-                                  · {selectedWhoisContact.city},{' '}
-                                  {selectedWhoisContact.stateProvince},{' '}
-                                  {selectedWhoisContact.countryName}
+                              <div className="text-slate-500">
+                                Panel / Runtime: <strong className="text-[#0F172A]">{activeComputeTemplate.controlPanelOrStack}</strong>
+                              </div>
+                              <div className="text-slate-500">
+                                Hostname: <span className="font-mono font-semibold text-[#0E6B63]">{computeHostname}</span> · Root Auth:{' '}
+                                <strong className="text-[#0F172A]">
+                                  {computeAuthMode === 'both'
+                                    ? 'Root Password + SSH Key'
+                                    : computeAuthMode === 'ssh'
+                                    ? 'SSH Key Only'
+                                    : 'Root Password'}
+                                </strong>
+                                {computeSshKeyLabel.trim() ? ` (${computeSshKeyLabel.trim()})` : ''}
+                              </div>
+                              {computeCustomEnvNote.trim() && (
+                                <div className="text-[11px] text-slate-500 font-mono">
+                                  Init Note: {computeCustomEnvNote.trim()}
                                 </div>
                               )}
                             </div>
+                            <div className="text-right font-mono tabular-nums font-bold text-sm text-[#0E6B63] shrink-0">
+                              Included
+                            </div>
+                          </div>
+
+                          {activeBackupOption.id !== 'none' && (
+                            <div className="p-4 flex items-center justify-between gap-4 bg-white">
+                              <div>
+                                <div className="font-semibold text-[#0F172A]">
+                                  Backup Schedule: {activeBackupOption.name}
+                                </div>
+                                <div className="text-slate-500 mt-0.5">
+                                  {formatPrice(activeBackupOption.monthlyPriceUsd)}/mo × {computeCycleMonths} mo
+                                </div>
+                              </div>
+                              <div className="text-right font-mono tabular-nums font-bold text-sm text-[#0F172A]">
+                                {formatPrice(activeBackupOption.monthlyPriceUsd * computeCycleMonths)}
+                              </div>
+                            </div>
                           )}
+
+                          {computeDedicatedIpAddon && (
+                            <div className="p-4 flex items-center justify-between gap-4 bg-white">
+                              <div>
+                                <div className="font-semibold text-[#0F172A]">Extra Dedicated IPv4 Address</div>
+                                <div className="text-slate-500 mt-0.5">
+                                  {formatPrice(3)}/mo × {computeCycleMonths} mo
+                                </div>
+                              </div>
+                              <div className="text-right font-mono tabular-nums font-bold text-sm text-[#0F172A]">
+                                {formatPrice(3 * computeCycleMonths)}
+                              </div>
+                            </div>
+                          )}
+
+                          {computeFirewallAddon && (
+                            <div className="p-4 flex items-center justify-between gap-4 bg-white">
+                              <div>
+                                <div className="font-semibold text-[#0F172A]">Managed Firewall Shield</div>
+                                <div className="text-slate-500 mt-0.5">
+                                  {formatPrice(4)}/mo × {computeCycleMonths} mo
+                                </div>
+                              </div>
+                              <div className="text-right font-mono tabular-nums font-bold text-sm text-[#0F172A]">
+                                {formatPrice(4 * computeCycleMonths)}
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="p-4 flex items-center justify-between gap-4 bg-white">
+                          <div>
+                            <div className="font-semibold text-[#0F172A]">
+                              {domainOption === 'register' && selectedNewDomain
+                                ? `Domain Registration: ${selectedNewDomain.domain}`
+                                : domainOption === 'transfer'
+                                ? `Domain Transfer: ${transferDomainInput}`
+                                : domainOption === 'existing'
+                                ? `Existing Domain: ${existingDomainInput}`
+                                : 'Temporary Staging Hostname'}
+                            </div>
+                            <div className="text-slate-500 mt-0.5">
+                              {domainOption === 'register' && selectedNewDomain
+                                ? `${selectedNewDomain.minYears === 2 ? '2 Years' : '1 Year'} Term · Nameservers: ${
+                                    nameserversType === 'default' ? 'CPCloudHost Anycast' : 'Custom'
+                                  } · WHOIS Privacy Included`
+                                : domainOption === 'transfer'
+                                ? `Includes 1-Year Extension · Nameservers: ${
+                                    transferStrategy === 'cloud' ? 'CPCloudHost Anycast' : 'Preserved'
+                                  } · EPP Verified`
+                                : domainOption === 'existing'
+                                ? 'Nameserver configuration post-provisioning'
+                                : 'Standard development subdomain provided'}
+                            </div>
+                            {(domainOption === 'register' || domainOption === 'transfer') && (
+                              <div className="space-y-1 mt-1">
+                                <div className="text-[#0E6B63] font-semibold">
+                                  Renewal Rate:{' '}
+                                  {formatPrice(
+                                    selectedNewDomain?.renewalUsd ||
+                                      detectedTransferTld?.renewalUsd ||
+                                      getPricingForTld('.com').renewalPrice
+                                  )}{' '}
+                                  / year
+                                </div>
+                                {selectedWhoisContact && (
+                                  <div className="text-slate-600">
+                                    WHOIS Registrant:{' '}
+                                    <strong className="text-[#0F172A]">
+                                      {selectedWhoisContact.firstName}{' '}
+                                      {selectedWhoisContact.lastName}
+                                    </strong>{' '}
+                                    · {selectedWhoisContact.city},{' '}
+                                    {selectedWhoisContact.stateProvince},{' '}
+                                    {selectedWhoisContact.countryName}
+                                  </div>
+                                )}
+                                {domainOption === 'transfer' && (
+                                  <div className="text-[11px] text-slate-600">
+                                    Transfer ETA: Approve registrant email link for immediate transfer, or completes automatically within <strong>7 days</strong>.
+                                  </div>
+                                )}
+                                {domainOption === 'register' && (
+                                  <div className="text-[11px] text-slate-600">
+                                    Activation: Team reviews order &rarr; approval email + WHOIS verification link unlocks Domain Management.
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          <div className="text-right font-mono tabular-nums font-bold text-sm text-[#0F172A]">
+                            {domainPriceUsd > 0 ? formatPrice(domainPriceUsd) : 'Included'}
+                          </div>
                         </div>
-                        <div className="text-right font-mono tabular-nums font-bold text-sm text-[#0F172A]">
-                          {domainPriceUsd > 0 ? formatPrice(domainPriceUsd) : 'Included'}
-                        </div>
-                      </div>
+                      )}
                     </div>
 
                     <div className="border border-[#E2E8F0] rounded-xl bg-[#F8FAFC] p-4 space-y-3">
@@ -3196,7 +4422,9 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                         {isDomainOnly ? 'Step 3 of 3' : 'Step 4 of 4'} · Payment &amp; Submission
                       </p>
                       <h1 className="font-display text-2xl font-extrabold text-[#0F172A] mt-1">
-                        Select Payment Gateway &amp; Complete Order
+                        {isFreeTrialMode && netTotalUsd === 0
+                          ? 'Verify & Activate 30-Day Free Trial ($0.00)'
+                          : 'Select Payment Gateway & Complete Order'}
                       </h1>
                     </div>
 
@@ -3300,9 +4528,18 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                             )}
 
                             <div className="p-3 rounded-lg bg-white border border-[#E2E8F0] text-[11px] text-slate-600 leading-relaxed">
-                              <strong className="text-[#0F172A]">Invoice First Workflow:</strong>{' '}
-                              No transaction reference or TID is required right now. Click{' '}
-                              <strong>Complete Order &amp; Generate Invoice</strong> below to generate your official invoice, then submit your payment reference or settle directly on your invoice page.
+                              {isFreeTrialMode && netTotalUsd === 0 ? (
+                                <>
+                                  <strong className="text-[#16A34A]">$0.00 Trial Verification:</strong>{' '}
+                                  Your selected gateway is recorded solely as a future renewal preference on Day 31. Zero charges are applied today.
+                                </>
+                              ) : (
+                                <>
+                                  <strong className="text-[#0F172A]">Invoice First Workflow:</strong>{' '}
+                                  No transaction reference or TID is required right now. Click{' '}
+                                  <strong>Complete Order &amp; Generate Invoice</strong> below to generate your official invoice, then submit your payment reference or settle directly on your invoice page.
+                                </>
+                              )}
                             </div>
                           </div>
                         )}
@@ -3326,7 +4563,11 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                             type="submit"
                             className="min-h-[46px] inline-flex items-center gap-2 px-7 py-2.5 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-sm font-semibold shadow-[0_6px_20px_rgba(14,107,99,0.22)] whitespace-nowrap shrink-0 cursor-pointer transition-colors"
                           >
-                            <span>Complete Order &amp; Generate Invoice</span>
+                            <span>
+                              {isFreeTrialMode && netTotalUsd === 0
+                                ? 'Activate 30-Day Free Trial ($0.00)'
+                                : 'Complete Order & Generate Invoice'}
+                            </span>
                             <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
                           </button>
                         </div>
@@ -3353,15 +4594,18 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                           <span className="font-bold text-[#0F172A] block">
                             {activePlan.name}
                           </span>
-                          <span className="text-slate-500">{billingCycle} Billing Cycle</span>
+                          <span className="text-slate-500">
+                            {isFreeTrialMode ? '30-Day Trial Evaluation' : `${billingCycle} Billing Cycle`}
+                          </span>
                         </div>
                         <span className="font-mono tabular-nums font-bold text-[#0F172A]">
                           {formatPrice(hostingPricing.priceUsd)}
                         </span>
                       </div>
                       <p className="text-[11px] text-[#0E6B63] font-medium mt-0.5">
-                        Renews at{' '}
-                        {formatPrice(activePlan.yearlyPrice || activePlan.monthlyPrice * 12)} / year
+                        {isFreeTrialMode
+                          ? `Renews Day 31 at ${formatPrice(activePlan.monthlyPrice)}/mo`
+                          : `Renews at ${formatPrice(activePlan.yearlyPrice || activePlan.monthlyPrice * 12)} / year`}
                       </p>
                     </div>
                   )}
@@ -3376,44 +4620,106 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                     </div>
                   )}
 
-                  <div className="flex items-start justify-between gap-3 pt-1">
-                    <div className="min-w-0">
-                      <span className="font-semibold text-[#0F172A] block">
-                        {domainOption === 'register'
-                          ? 'Domain Registration'
-                          : domainOption === 'transfer'
-                          ? 'Domain Transfer'
-                          : domainOption === 'existing'
-                          ? 'Existing Domain'
-                          : 'Staging Hostname'}
-                      </span>
-                      <span className="font-mono text-[11px] text-[#0E6B63] truncate block">
-                        {domainOption === 'register'
-                          ? selectedNewDomain?.domain || 'Select a domain'
-                          : domainOption === 'transfer'
-                          ? transferDomainInput.trim() || 'Enter transfer domain'
-                          : domainOption === 'existing'
-                          ? existingDomainInput.trim() || 'Custom domain'
-                          : 'Temporary container'}
-                      </span>
-                      {(domainOption === 'register' || domainOption === 'transfer') && (
-                        <span className="text-[10px] text-slate-500 block">
-                          Renewal:{' '}
-                          {formatPrice(
-                            selectedNewDomain?.renewalUsd ||
-                              detectedTransferTld?.renewalUsd ||
-                              getPricingForTld('.com').renewalPrice
-                          )}
-                          /yr
+                  {isCompute ? (
+                    <div className="space-y-2.5 pt-1 border-t border-[#E2E8F0]">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <span className="font-semibold text-[#0F172A] block">
+                            OS / Stack Image
+                          </span>
+                          <span className="text-[11px] text-[#0E6B63] font-semibold block truncate">
+                            {activeComputeTemplate.name} ({activeComputeTemplate.version})
+                          </span>
+                          <span className="text-[10px] text-slate-500 block truncate">
+                            {activeComputeTemplate.controlPanelOrStack}
+                          </span>
+                        </div>
+                        <span className="font-mono text-[11px] font-bold text-[#0E6B63] shrink-0">
+                          Included
                         </span>
+                      </div>
+
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <span className="font-semibold text-[#0F172A] block">
+                            Storage &amp; Hostname
+                          </span>
+                          <span className="font-mono text-[11px] text-slate-600 truncate block">
+                            {computeHostname}
+                          </span>
+                          <span className="text-[10px] text-slate-500 block">
+                            {computeStorageMode} · Auth: {computeAuthMode.toUpperCase()}
+                          </span>
+                        </div>
+                      </div>
+
+                      {activeBackupOption.id !== 'none' && (
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-slate-600 truncate">{activeBackupOption.name}</span>
+                          <span className="font-mono tabular-nums font-bold text-[#0F172A] shrink-0">
+                            {formatPrice(activeBackupOption.monthlyPriceUsd * computeCycleMonths)}
+                          </span>
+                        </div>
+                      )}
+
+                      {computeDedicatedIpAddon && (
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-slate-600">Extra Dedicated IPv4</span>
+                          <span className="font-mono tabular-nums font-bold text-[#0F172A] shrink-0">
+                            {formatPrice(3 * computeCycleMonths)}
+                          </span>
+                        </div>
+                      )}
+
+                      {computeFirewallAddon && (
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-slate-600">Managed Firewall Shield</span>
+                          <span className="font-mono tabular-nums font-bold text-[#0F172A] shrink-0">
+                            {formatPrice(4 * computeCycleMonths)}
+                          </span>
+                        </div>
                       )}
                     </div>
-                    <span className="font-mono tabular-nums font-bold text-[#0F172A] shrink-0">
-                      {domainPriceUsd > 0
-                        ? formatPrice(domainPriceUsd)
-                        : formatPrice(0, { compactZero: true })}
-                    </span>
-                  </div>
+                  ) : (
+                    <div className="flex items-start justify-between gap-3 pt-1">
+                      <div className="min-w-0">
+                        <span className="font-semibold text-[#0F172A] block">
+                          {domainOption === 'register'
+                            ? 'Domain Registration'
+                            : domainOption === 'transfer'
+                            ? 'Domain Transfer'
+                            : domainOption === 'existing'
+                            ? 'Existing Domain'
+                            : 'Staging Hostname'}
+                        </span>
+                        <span className="font-mono text-[11px] text-[#0E6B63] truncate block">
+                          {domainOption === 'register'
+                            ? selectedNewDomain?.domain || 'Select a domain'
+                            : domainOption === 'transfer'
+                            ? transferDomainInput.trim() || 'Enter transfer domain'
+                            : domainOption === 'existing'
+                            ? existingDomainInput.trim() || 'Custom domain'
+                            : 'Temporary container'}
+                        </span>
+                        {(domainOption === 'register' || domainOption === 'transfer') && (
+                          <span className="text-[10px] text-slate-500 block">
+                            Renewal:{' '}
+                            {formatPrice(
+                              selectedNewDomain?.renewalUsd ||
+                                detectedTransferTld?.renewalUsd ||
+                                getPricingForTld('.com').renewalPrice
+                            )}
+                            /yr
+                          </span>
+                        )}
+                      </div>
+                      <span className="font-mono tabular-nums font-bold text-[#0F172A] shrink-0">
+                        {domainPriceUsd > 0
+                          ? formatPrice(domainPriceUsd)
+                          : formatPrice(0, { compactZero: true })}
+                      </span>
+                    </div>
+                  )}
 
                   {appliedPromo && promoDiscountUsd > 0 && (
                     <div className="flex items-center justify-between gap-3 text-[#16A34A] font-semibold">
@@ -3442,7 +4748,11 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                 <div className="border-t border-[#E2E8F0] pt-4 space-y-2 text-[11px] text-slate-500">
                   <div className="flex items-center gap-2">
                     <ShieldCheck className="w-3.5 h-3.5 text-[#0E6B63] shrink-0" aria-hidden="true" />
-                    <span>Free WHOIS Privacy &amp; Wildcard SSL</span>
+                    <span>
+                      {isCompute
+                        ? 'Full Root Access & Edge DDoS Protection'
+                        : 'Free WHOIS Privacy & Wildcard SSL'}
+                    </span>
                   </div>
                   <div className="flex items-center gap-2">
                     <Server className="w-3.5 h-3.5 text-[#0E6B63] shrink-0" aria-hidden="true" />

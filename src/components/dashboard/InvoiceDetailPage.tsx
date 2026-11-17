@@ -8,12 +8,15 @@ import {
   CheckCircle2,
   Clock,
   Copy,
+  Cpu,
   CreditCard,
   Download,
   FileText,
   Printer,
   RotateCcw,
+  Server,
   ShieldCheck,
+  Sparkles,
 } from 'lucide-react';
 import { useCurrency } from '../../context/CurrencyContext';
 import {
@@ -235,6 +238,10 @@ export const InvoiceDetailPage: React.FC<InvoiceDetailPageProps> = ({
             lineTotalUsd: invoice.amountUsd,
           },
         ];
+
+  const activeServerConfig = invoice.serverConfig || linkedOrder?.serverConfig;
+  const activeIsFreeTrial = Boolean(invoice.isFreeTrial ?? linkedOrder?.isFreeTrial);
+  const activeTrialDays = invoice.trialDays ?? linkedOrder?.trialDays ?? 30;
 
   const subtotal = Number(invoice.subtotalUsd ?? invoice.amountUsd);
   const discount = Number(invoice.discountUsd ?? 0);
@@ -638,6 +645,111 @@ export const InvoiceDetailPage: React.FC<InvoiceDetailPageProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Free Trial & Compute Provisioning Specification Strip */}
+          {activeIsFreeTrial && (
+            <div className="bg-[#F2FAF8] border border-[#0E6B63]/30 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <div className="flex items-start gap-3">
+                <Sparkles className="w-4 h-4 text-[#0E6B63] shrink-0 mt-0.5" aria-hidden="true" />
+                <div>
+                  <p className="font-display text-sm font-bold text-[#0F172A]">
+                    {activeTrialDays}-Day Free Hosting Evaluation
+                  </p>
+                  <p className="text-slate-600 mt-0.5">
+                    Promo code{' '}
+                    <span className="font-mono font-bold text-[#0E6B63]">
+                      {invoice.promoCode || 'STARTFREE'}
+                    </span>{' '}
+                    applied for 100% first-month discount. Standard plan rate applies automatically on Day {activeTrialDays + 1} unless cancelled beforehand.
+                  </p>
+                </div>
+              </div>
+              <span className="font-mono tabular-nums font-bold text-[#0E6B63] shrink-0">
+                $0.00 Evaluation
+              </span>
+            </div>
+          )}
+
+          {activeServerConfig && (
+            <div className="bg-[#F8FAFC] border border-[#E2E8F0] rounded-xl p-4 sm:p-5 space-y-3 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E2E8F0] pb-2.5">
+                <span className="inline-flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-[#0F172A]">
+                  {activeServerConfig.serverType === 'n8n' ? (
+                    <Cpu className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                  ) : (
+                    <Server className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+                  )}
+                  <span>
+                    {activeServerConfig.serverType === 'n8n'
+                      ? 'n8n Automation Node Configuration'
+                      : 'KVM VPS Provisioning Configuration'}
+                  </span>
+                </span>
+                <span className="font-mono text-[11px] font-semibold text-[#0E6B63]">
+                  {activeServerConfig.datacenterLabel}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-5 gap-y-2.5">
+                <div>
+                  <span className="text-[11px] text-slate-500 block">Operating System / Image</span>
+                  <span className="font-semibold text-[#0F172A]">
+                    {activeServerConfig.osName} ({activeServerConfig.osVersion})
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[11px] text-slate-500 block">Panel / Automation Stack</span>
+                  <span className="font-semibold text-[#0F172A]">
+                    {activeServerConfig.controlPanelOrStack}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[11px] text-slate-500 block">Hostname / Webhook FQDN</span>
+                  <span className="font-mono font-semibold text-[#0E6B63] break-all">
+                    {activeServerConfig.hostname}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[11px] text-slate-500 block">Storage Architecture</span>
+                  <span className="font-semibold text-[#0F172A]">
+                    {activeServerConfig.storageMode || 'NVMe High-IOPS'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[11px] text-slate-500 block">Root Access Method</span>
+                  <span className="font-semibold text-[#0F172A]">
+                    {activeServerConfig.authMode === 'both'
+                      ? 'Root Password + SSH Key'
+                      : activeServerConfig.authMode === 'ssh'
+                        ? 'SSH Public Key Only'
+                        : 'Root Password'}
+                    {activeServerConfig.sshKeyLabel ? ` (${activeServerConfig.sshKeyLabel})` : ''}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[11px] text-slate-500 block">Protection &amp; Add-ons</span>
+                  <span className="font-semibold text-[#0F172A]">
+                    {[
+                      activeServerConfig.backupAddon && activeServerConfig.backupAddon !== 'none'
+                        ? activeServerConfig.backupAddonLabel || activeServerConfig.backupAddon
+                        : null,
+                      activeServerConfig.dedicatedIpAddon ? 'Extra Dedicated IPv4' : null,
+                      activeServerConfig.firewallShieldAddon ? 'Managed Firewall Shield' : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ') || 'Standard Snapshot Slots'}
+                  </span>
+                </div>
+              </div>
+
+              {activeServerConfig.customEnvNote && (
+                <p className="text-[11px] text-slate-600 pt-2 border-t border-[#E2E8F0]">
+                  <span className="font-semibold text-[#0F172A]">Deployment Note:</span>{' '}
+                  {activeServerConfig.customEnvNote}
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Line Items — Desktop Table & Responsive Mobile Cards */}
           <div>

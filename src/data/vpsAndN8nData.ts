@@ -40,6 +40,342 @@ export interface ComputeFaqItem {
   answer: string;
 }
 
+export interface ComputeDatacenterOption {
+  id: 'uk' | 'us' | 'sg' | 'eu';
+  country: string;
+  city: string;
+  clusterLabel: string;
+  latencyLabel: string;
+  flagCode: string;
+}
+
+export interface ComputeOsTemplate {
+  id: string;
+  category: 'plain-os' | 'os-panel' | 'app-docker' | 'n8n-stack';
+  categoryLabel: string;
+  name: string;
+  version: string;
+  badgeText: string;
+  shortTag: string;
+  controlPanelOrStack: string;
+  licenseNote: string;
+  description: string;
+  recommended?: boolean;
+  defaultPortOrUrl?: string;
+}
+
+export interface ComputeAddonOption {
+  id: 'none' | 'weekly-snapshots' | 'daily-backups';
+  name: string;
+  description: string;
+  monthlyPriceUsd: number;
+}
+
+export const COMPUTE_DATACENTERS: ComputeDatacenterOption[] = [
+  {
+    id: 'uk',
+    country: 'United Kingdom',
+    city: 'London, UK',
+    clusterLabel: 'UK KVM Edge Hub · London Tier-III+',
+    latencyLabel: '4ms UK & Western EU',
+    flagCode: 'UK',
+  },
+  {
+    id: 'us',
+    country: 'United States',
+    city: 'Dallas, Texas',
+    clusterLabel: 'US Central Compute · Dallas Multi-AZ',
+    latencyLabel: '11ms North America',
+    flagCode: 'US',
+  },
+  {
+    id: 'eu',
+    country: 'Germany (EU)',
+    city: 'Frankfurt, DE',
+    clusterLabel: 'EU Sovereign KVM · Frankfurt Tier-III+',
+    latencyLabel: '7ms Central Europe',
+    flagCode: 'DE',
+  },
+  {
+    id: 'sg',
+    country: 'Asia Pacific',
+    city: 'Singapore',
+    clusterLabel: 'APAC Fiber Node · Singapore Tier-III+',
+    latencyLabel: '12ms Asia-Pacific',
+    flagCode: 'SG',
+  },
+];
+
+export const VPS_OS_CATALOG: ComputeOsTemplate[] = [
+  {
+    id: 'ubuntu-24-04',
+    category: 'plain-os',
+    categoryLabel: 'Plain OS',
+    name: 'Ubuntu',
+    version: '24.04 LTS (Noble)',
+    badgeText: 'UB',
+    shortTag: 'Recommended · Minimal',
+    controlPanelOrStack: 'Clean Ubuntu 24.04 LTS Server',
+    licenseNote: 'Free Open Source',
+    description: 'Latest LTS release with kernel 6.8, cloud-init, and OpenSSH hardened out of the box.',
+    recommended: true,
+  },
+  {
+    id: 'ubuntu-22-04',
+    category: 'plain-os',
+    categoryLabel: 'Plain OS',
+    name: 'Ubuntu',
+    version: '22.04 LTS (Jammy)',
+    badgeText: 'UB',
+    shortTag: 'Stable LTS',
+    controlPanelOrStack: 'Clean Ubuntu 22.04 LTS Server',
+    licenseNote: 'Free Open Source',
+    description: 'Battle-tested LTS image for legacy runtimes, custom stacks, and enterprise packages.',
+  },
+  {
+    id: 'debian-12',
+    category: 'plain-os',
+    categoryLabel: 'Plain OS',
+    name: 'Debian',
+    version: '12 (Bookworm)',
+    badgeText: 'DB',
+    shortTag: 'Ultra-Lightweight',
+    controlPanelOrStack: 'Clean Debian 12 Minimal',
+    licenseNote: 'Free Open Source',
+    description: 'Low-overhead Debian base prized for stability, containers, and minimal memory footprint.',
+  },
+  {
+    id: 'almalinux-9',
+    category: 'plain-os',
+    categoryLabel: 'Plain OS',
+    name: 'AlmaLinux',
+    version: '9.4 Enterprise',
+    badgeText: 'AL',
+    shortTag: 'RHEL 9 Compatible',
+    controlPanelOrStack: 'AlmaLinux 9 Minimal',
+    licenseNote: 'Free Open Source',
+    description: '1:1 binary-compatible RHEL 9 Linux built for production workloads and control panels.',
+  },
+  {
+    id: 'rocky-9',
+    category: 'plain-os',
+    categoryLabel: 'Plain OS',
+    name: 'Rocky Linux',
+    version: '9.4 Enterprise',
+    badgeText: 'RK',
+    shortTag: 'Enterprise Linux',
+    controlPanelOrStack: 'Rocky Linux 9 Minimal',
+    licenseNote: 'Free Open Source',
+    description: 'Community enterprise operating system engineered for critical long-term deployments.',
+  },
+  {
+    id: 'centos-stream-9',
+    category: 'plain-os',
+    categoryLabel: 'Plain OS',
+    name: 'CentOS Stream',
+    version: '9 Rolling',
+    badgeText: 'CS',
+    shortTag: 'Upstream RHEL',
+    controlPanelOrStack: 'CentOS Stream 9 Server',
+    licenseNote: 'Free Open Source',
+    description: 'Continuous-delivery distribution tracking upstream Red Hat Enterprise Linux enhancements.',
+  },
+  {
+    id: 'ubuntu-cyberpanel',
+    category: 'os-panel',
+    categoryLabel: 'OS + Control Panel',
+    name: 'Ubuntu 24.04 + CyberPanel',
+    version: 'OpenLiteSpeed + LSCache',
+    badgeText: 'CP',
+    shortTag: 'Free Web Panel',
+    controlPanelOrStack: 'CyberPanel (OpenLiteSpeed · Port 8090)',
+    licenseNote: 'Panel Included Free',
+    description: 'High-speed OpenLiteSpeed web server with automated Let’s Encrypt SSL, DNS, and Mail.',
+    recommended: true,
+    defaultPortOrUrl: ':8090',
+  },
+  {
+    id: 'ubuntu-cloudpanel',
+    category: 'os-panel',
+    categoryLabel: 'OS + Control Panel',
+    name: 'Ubuntu 24.04 + CloudPanel',
+    version: 'NGINX + PHP / Node / Python',
+    badgeText: 'CL',
+    shortTag: 'Modern Panel',
+    controlPanelOrStack: 'CloudPanel v2 (NGINX · Port 8443)',
+    licenseNote: 'Panel Included Free',
+    description: 'Lightweight server control panel built for PHP, WordPress, Node.js, and reverse proxies.',
+    defaultPortOrUrl: ':8443',
+  },
+  {
+    id: 'almalinux-cpanel',
+    category: 'os-panel',
+    categoryLabel: 'OS + Control Panel',
+    name: 'AlmaLinux 9 + cPanel/WHM',
+    version: 'Auto-Provisioned Image',
+    badgeText: 'WH',
+    shortTag: 'Industry Standard',
+    controlPanelOrStack: 'cPanel & WHM (Port 2087)',
+    licenseNote: '15-Day Trial / BYOL License',
+    description: 'Pre-installed cPanel & WHM environment ready for multi-tenant hosting or agency billing.',
+    defaultPortOrUrl: ':2087',
+  },
+  {
+    id: 'ubuntu-plesk',
+    category: 'os-panel',
+    categoryLabel: 'OS + Control Panel',
+    name: 'Ubuntu 24.04 + Plesk',
+    version: 'Obsidian Web Host Edition',
+    badgeText: 'PL',
+    shortTag: 'WP Toolkit Ready',
+    controlPanelOrStack: 'Plesk Obsidian (Port 8443)',
+    licenseNote: 'Trial / BYOL License',
+    description: 'Turnkey Plesk dashboard featuring WordPress Toolkit, Git deploy, and Docker extension.',
+    defaultPortOrUrl: ':8443',
+  },
+  {
+    id: 'debian-hestiacp',
+    category: 'os-panel',
+    categoryLabel: 'OS + Control Panel',
+    name: 'Debian 12 + HestiaCP',
+    version: 'NGINX + Apache2 + Exim',
+    badgeText: 'HC',
+    shortTag: 'Low Footprint',
+    controlPanelOrStack: 'Hestia Control Panel (Port 8083)',
+    licenseNote: 'Panel Included Free',
+    description: 'Open-source control panel for websites, DNS zones, cron jobs, and business mailboxes.',
+    defaultPortOrUrl: ':8083',
+  },
+  {
+    id: 'ubuntu-docker',
+    category: 'app-docker',
+    categoryLabel: 'Apps & Docker',
+    name: 'Ubuntu 24.04 + Docker',
+    version: 'Docker Engine + Compose v2',
+    badgeText: 'DK',
+    shortTag: 'Container Ready',
+    controlPanelOrStack: 'Docker CE + Compose v2',
+    licenseNote: 'Free Open Source',
+    description: 'Clean container host pre-configured with Docker Engine, Compose plugin, and UFW rules.',
+    recommended: true,
+  },
+  {
+    id: 'ubuntu-coolify',
+    category: 'app-docker',
+    categoryLabel: 'Apps & Docker',
+    name: 'Ubuntu 24.04 + Coolify',
+    version: 'Self-Hosted PaaS v4',
+    badgeText: 'CF',
+    shortTag: 'Deploy Git Apps',
+    controlPanelOrStack: 'Coolify Self-Hosted PaaS (Port 8000)',
+    licenseNote: 'Free Open Source',
+    description: 'Push Next.js, Node, Python, PostgreSQL, and Redis stacks directly from Git repositories.',
+    defaultPortOrUrl: ':8000',
+  },
+  {
+    id: 'ubuntu-portainer',
+    category: 'app-docker',
+    categoryLabel: 'Apps & Docker',
+    name: 'Ubuntu 24.04 + Portainer',
+    version: 'Docker + Portainer CE',
+    badgeText: 'PT',
+    shortTag: 'Visual Containers',
+    controlPanelOrStack: 'Docker + Portainer CE (Port 9443)',
+    licenseNote: 'Free Open Source',
+    description: 'Manage Docker images, volumes, networks, and stacks through a browser GUI.',
+    defaultPortOrUrl: ':9443',
+  },
+  {
+    id: 'ubuntu-nodejs',
+    category: 'app-docker',
+    categoryLabel: 'Apps & Docker',
+    name: 'Ubuntu 24.04 + Node.js 22',
+    version: 'Node 22 + PM2 + NGINX',
+    badgeText: 'JS',
+    shortTag: 'API & SaaS Stack',
+    controlPanelOrStack: 'Node.js 22 LTS + PM2 + NGINX SSL',
+    licenseNote: 'Free Open Source',
+    description: 'Ready for Express, NestJS, and TypeScript backends with Certbot HTTPS proxy pre-tuned.',
+  },
+];
+
+export const N8N_STACK_CATALOG: ComputeOsTemplate[] = [
+  {
+    id: 'n8n-postgres-redis',
+    category: 'n8n-stack',
+    categoryLabel: 'Production Queue Stack',
+    name: 'n8n + PostgreSQL 16 + Redis',
+    version: 'Ubuntu 24.04 + Docker Queue Mode',
+    badgeText: 'N8',
+    shortTag: 'Recommended Production',
+    controlPanelOrStack: 'n8n Latest + PostgreSQL 16 + Redis Worker Queue + Traefik SSL',
+    licenseNote: 'Pre-Configured Stack',
+    description: 'High-concurrency n8n deployment using PostgreSQL persistence and Redis background workers with automatic TLS.',
+    recommended: true,
+    defaultPortOrUrl: 'https:// (Auto-SSL)',
+  },
+  {
+    id: 'n8n-caddy-ssl',
+    category: 'n8n-stack',
+    categoryLabel: 'Lightweight SSL Stack',
+    name: 'n8n + Caddy Auto-HTTPS',
+    version: 'Ubuntu 24.04 + Docker Compose',
+    badgeText: 'CD',
+    shortTag: 'Fast Single-Node',
+    controlPanelOrStack: 'n8n Latest + Caddy Reverse Proxy + Automated Let’s Encrypt SSL',
+    licenseNote: 'Pre-Configured Stack',
+    description: 'Clean single-container n8n setup with zero-config Caddy HTTPS webhook termination on your custom subdomain.',
+    defaultPortOrUrl: 'https:// (Caddy TLS)',
+  },
+  {
+    id: 'n8n-ai-langchain',
+    category: 'n8n-stack',
+    categoryLabel: 'AI & Vector Stack',
+    name: 'n8n + AI Agents & Qdrant',
+    version: 'Ubuntu 24.04 + LangChain + Vector DB',
+    badgeText: 'AI',
+    shortTag: 'AI Pipelines',
+    controlPanelOrStack: 'n8n AI Nodes + PostgreSQL pgvector + Qdrant Vector Engine',
+    licenseNote: 'Pre-Configured Stack',
+    description: 'Optimized for LLM agents, RAG document indexing, webhook memory stores, and multi-model orchestration.',
+    defaultPortOrUrl: 'https:// (AI Ready)',
+  },
+  {
+    id: 'n8n-puppeteer-python',
+    category: 'n8n-stack',
+    categoryLabel: 'Worker & Scraper Stack',
+    name: 'n8n + Python & Puppeteer',
+    version: 'Ubuntu 24.04 + Headless Chromium',
+    badgeText: 'PY',
+    shortTag: 'Browser & Scripts',
+    controlPanelOrStack: 'n8n + Python 3.12 + Chromium Puppeteer Worker Image',
+    licenseNote: 'Pre-Configured Stack',
+    description: 'Includes headless Chromium, FFmpeg, and Python 3.12 packages for custom data extraction and PDF automation.',
+    defaultPortOrUrl: 'https:// (Worker Node)',
+  },
+];
+
+export const COMPUTE_BACKUP_ADDONS: ComputeAddonOption[] = [
+  {
+    id: 'none',
+    name: 'Standard Snapshot Slots Only',
+    description: 'Use manual hardware snapshots included in your tier.',
+    monthlyPriceUsd: 0,
+  },
+  {
+    id: 'weekly-snapshots',
+    name: 'Automated Weekly Off-Site Snapshots',
+    description: 'Scheduled weekly full-disk VM snapshots stored off-cluster with 4-week retention.',
+    monthlyPriceUsd: 2.0,
+  },
+  {
+    id: 'daily-backups',
+    name: 'Automated Daily Cloud Backups',
+    description: 'Daily incremental backups + PostgreSQL/volume dump safety with 14-day point-in-time restore.',
+    monthlyPriceUsd: 5.0,
+  },
+];
+
 export const SHARED_HARDWARE_TIERS: ComputeHardwareTier[] = [
   {
     tierKey: 'tier1',

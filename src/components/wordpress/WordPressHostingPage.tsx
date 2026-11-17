@@ -48,7 +48,7 @@ export const WordPressHostingPage: React.FC<WordPressHostingPageProps> = ({
   const { formatPrice } = useCurrency();
   const { cmsPages, lastSearchedDomain, setOrderCheckoutDraft } = usePlatform();
   const pageCms = cmsPages.find((p) => p.id === 'wordpress-hosting');
-  const [selectedRegion] = useState<'uk'>('uk');
+  const [selectedRegion, setSelectedRegion] = useState<'uk' | 'us' | 'sg'>('uk');
   const [selectedPlan, setSelectedPlan] = useState<WordPressPlan | null>(null);
   const [trialEmail, setTrialEmail] = useState('');
   const [trialDomain, setTrialDomain] = useState('');
@@ -66,7 +66,7 @@ export const WordPressHostingPage: React.FC<WordPressHostingPageProps> = ({
   const [migrationImgFailed, setMigrationImgFailed] = useState(false);
 
   const activeDatacenter =
-    SHARED_DATACENTERS.find((dc) => dc.id === 'uk') ??
+    SHARED_DATACENTERS.find((dc) => dc.id === selectedRegion) ??
     SHARED_DATACENTERS[0];
 
   const scrollToElement = (selector: string) => {
@@ -86,8 +86,8 @@ export const WordPressHostingPage: React.FC<WordPressHostingPageProps> = ({
       planName: plan.name,
       productType: 'Managed WordPress',
       billingCycle: '1 Year',
-      datacenterId: 'uk',
-      datacenterLabel: 'London, UK',
+      datacenterId: activeDatacenter.id,
+      datacenterLabel: activeDatacenter.city,
       domainOption: lastSearchedDomain ? lastSearchedDomain.mode : 'register',
       domainName: lastSearchedDomain?.domain || '',
       domainTld: lastSearchedDomain?.tld,
@@ -268,21 +268,37 @@ export const WordPressHostingPage: React.FC<WordPressHostingPageProps> = ({
             </p>
           </div>
 
-          {/* Strict UK Datacenter Display */}
-          <div className="mt-8 max-w-[480px] mx-auto">
-            <div className="flex items-center gap-3.5 px-5 py-4 rounded-xl border border-[#0E6B63] bg-[#F4FAF9] ring-1 ring-[#0E6B63] text-left">
-              <FlagBadge country="uk" />
-              <div className="min-w-0 flex-1">
-                <div className="font-display text-sm font-bold text-[#0F172A] flex items-center gap-2">
-                  <span>United Kingdom</span>
-                  <span className="text-[10px] font-bold bg-[#0E6B63] text-white px-2 py-0.5 rounded">
-                    Strict UK Datacenter
-                  </span>
-                </div>
-                <div className="text-xs text-slate-500">London, UK · Sub-10ms NVMe Staging Node</div>
-              </div>
-              <CheckCircle2 className="w-5 h-5 text-[#0E6B63] shrink-0" aria-hidden="true" />
-            </div>
+          {/* 3 Datacenter Location Flag Cards (UK, USA, Singapore) */}
+          <div className="mt-10 grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-[780px] mx-auto">
+            {SHARED_DATACENTERS.map((dc) => {
+              const isSelected = selectedRegion === dc.id;
+              return (
+                <button
+                  key={dc.id}
+                  type="button"
+                  onClick={() => setSelectedRegion(dc.id)}
+                  className={`flex items-center gap-3.5 px-5 py-4 rounded-xl border text-left transition-all cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0E6B63] ${
+                    isSelected
+                      ? 'border-[#0E6B63] bg-[#F4FAF9] ring-1 ring-[#0E6B63]'
+                      : 'border-[#E2E8F0] bg-white hover:border-slate-300'
+                  }`}
+                >
+                  <FlagBadge country={dc.id} />
+                  <div className="min-w-0 flex-1">
+                    <div className="font-display text-sm font-bold text-[#0F172A] truncate">
+                      {dc.country}
+                    </div>
+                    <div className="text-xs text-slate-500 truncate">{dc.city}</div>
+                  </div>
+                  {isSelected && (
+                    <CheckCircle2
+                      className="w-4 h-4 text-[#0E6B63] shrink-0"
+                      aria-hidden="true"
+                    />
+                  )}
+                </button>
+              );
+            })}
           </div>
 
           {/* 3-Column WordPress Plan Grid */}

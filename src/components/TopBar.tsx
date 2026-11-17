@@ -25,6 +25,7 @@ interface TopBarProps {
       | 'shared-hosting'
       | 'wordpress-hosting'
       | 'windows-hosting'
+      | 'reseller-hosting'
       | 'free-trial'
       | 'vps-hosting'
       | 'n8n-hosting'

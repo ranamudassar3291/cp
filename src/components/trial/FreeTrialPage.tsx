@@ -42,7 +42,7 @@ export const FreeTrialPage: React.FC<FreeTrialPageProps> = ({
   onNavigatePath,
 }) => {
   const { formatPrice, formatPriceString } = useCurrency();
-  const { cmsPages } = usePlatform();
+  const { cmsPages, lastSearchedDomain, setOrderCheckoutDraft } = usePlatform();
   const pageCms = cmsPages.find((p) => p.id === 'free-trial');
   const zeroToday = formatPrice(0);
   const [selectedDc, setSelectedDc] = useState<TrialDatacenter>(
@@ -72,12 +72,75 @@ export const FreeTrialPage: React.FC<FreeTrialPageProps> = ({
     }
   };
 
+  const resolveTrialPlanMeta = (
+    plan: TrialEligiblePlan
+  ): {
+    planId: string;
+    productType: 'Shared Cloud' | 'Managed WordPress' | 'Windows Hosting';
+    datacenterId: 'uk' | 'us' | 'sg';
+    datacenterLabel: string;
+  } => {
+    if (plan.id === 'wp-core') {
+      return {
+        planId: 'plan-wp-core',
+        productType: 'Managed WordPress',
+        datacenterId: selectedDc.id,
+        datacenterLabel: selectedDc.city,
+      };
+    }
+    if (plan.id === 'wincore-pro') {
+      return {
+        planId: 'plan-win-core',
+        productType: 'Windows Hosting',
+        datacenterId: selectedDc.id,
+        datacenterLabel: selectedDc.city,
+      };
+    }
+    return {
+      planId: 'plan-shared-ignite',
+      productType: 'Shared Cloud',
+      datacenterId: selectedDc.id,
+      datacenterLabel: selectedDc.city,
+    };
+  };
+
   const handleChoosePlan = (plan: TrialEligiblePlan) => {
     setSelectedPlan(plan);
     setPromoCode('STARTFREE');
-    setShowActivationPanel(true);
     setTrialProvisioned(false);
     setFormError('');
+
+    const mapped = resolveTrialPlanMeta(plan);
+    setOrderCheckoutDraft({
+      orderCategory: 'free-trial',
+      planId: mapped.planId,
+      planName: plan.name,
+      productType: mapped.productType,
+      billingCycle: '1 Month',
+      datacenterId: mapped.datacenterId,
+      datacenterLabel: mapped.datacenterLabel,
+      domainOption: lastSearchedDomain ? lastSearchedDomain.mode : 'later',
+      domainName: lastSearchedDomain?.domain || '',
+      domainTld: lastSearchedDomain?.tld,
+      domainYears: lastSearchedDomain?.minYears,
+      domainPriceUsd: lastSearchedDomain?.priceUsd,
+      eppAuthCode: lastSearchedDomain?.eppAuthCode,
+      promoCode: 'STARTFREE',
+      isFreeTrial: true,
+      trialDays: 30,
+      preselectedFromSite: true,
+      domainSearchedFromSite: Boolean(lastSearchedDomain),
+      step: 1,
+      sourceOrigin: 'public',
+      updatedAtUtc: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
+    });
+
+    if (onNavigatePath) {
+      onNavigatePath('/order/free-trial');
+      return;
+    }
+
+    setShowActivationPanel(true);
     setTimeout(() => {
       scrollToElement('#trial-activation-panel');
     }, 60);

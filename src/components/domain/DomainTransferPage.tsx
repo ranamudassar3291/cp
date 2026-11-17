@@ -58,12 +58,14 @@ export const DomainTransferPage: React.FC<DomainTransferPageProps> = ({
 }) => {
   const { formatPrice } = useCurrency();
   const {
+    currentUser,
     cmsPages,
     tldExtensions,
     domainContactAddresses,
     addOrder,
     setOrderCheckoutDraft,
     setLastSearchedDomain,
+    setPendingPostAuthPath,
   } = usePlatform();
   const pageCms = cmsPages.find((p) => p.id === 'domain-transfer');
   const [transferMode, setTransferMode] = useState<'single' | 'bulk'>('single');
@@ -200,11 +202,19 @@ export const DomainTransferPage: React.FC<DomainTransferPageProps> = ({
       setSubmitError('Please enter a valid contact email for transfer approvals.');
       return;
     }
-    if (!selectedWhoisContact) {
-      setSubmitError(
-        'Please select a saved WHOIS contact address or add a new address below.'
-      );
-      return;
+    if (!onNavigatePath) {
+      if (!currentUser) {
+        setSubmitError(
+          'Please Sign In or Create Account below to add your WHOIS registrant address.'
+        );
+        return;
+      }
+      if (!selectedWhoisContact) {
+        setSubmitError(
+          'Please select a saved WHOIS contact address or add a new address below.'
+        );
+        return;
+      }
     }
     setSubmitError('');
     setLastSearchedDomain({
@@ -234,7 +244,7 @@ export const DomainTransferPage: React.FC<DomainTransferPageProps> = ({
       domainYears: 1,
       domainPriceUsd: checkedDomain.price,
       eppAuthCode: eppCode.trim(),
-      whoisContactId: selectedWhoisContact.id,
+      whoisContactId: selectedWhoisContact?.id,
       domainUnlockedConfirmed: true,
       domainSearchedFromSite: true,
       step: 2,
@@ -245,6 +255,7 @@ export const DomainTransferPage: React.FC<DomainTransferPageProps> = ({
       onNavigatePath('/order/domain-transfer');
       return;
     }
+    if (!selectedWhoisContact) return;
     addOrder({
       clientEmail: transferEmail.trim(),
       clientName: `${selectedWhoisContact.firstName} ${selectedWhoisContact.lastName}`.trim(),
@@ -691,19 +702,57 @@ export const DomainTransferPage: React.FC<DomainTransferPageProps> = ({
                         </div>
                       </div>
 
-                      <DomainContactAddressSelector
-                        compact
-                        selectedContactId={selectedWhoisContact?.id || null}
-                        onSelectContact={(addr) => {
-                          setSelectedWhoisContact(addr);
-                          if (!transferEmail.trim()) {
-                            setTransferEmail(addr.email);
-                          }
-                          setSubmitError('');
-                        }}
-                        title="WHOIS Registrant Contact & Address"
-                        subtitle="Select your saved WHOIS address or click Add Address to enter your country & state once for transfers."
-                      />
+                      <div className="p-3.5 rounded-xl bg-teal-50/70 border border-teal-200 text-xs text-slate-800 leading-relaxed">
+                        <strong className="text-[#0F172A] block mb-0.5">
+                          Transfer Approval &amp; 7-Day Timeline
+                        </strong>
+                        Approve the authorization link sent to your registrant email to transfer immediately. If you do not receive or approve the email, the domain will automatically transfer to our registrar within <strong>7 days</strong>.
+                      </div>
+
+                      {currentUser ? (
+                        <DomainContactAddressSelector
+                          compact
+                          selectedContactId={selectedWhoisContact?.id || null}
+                          onSelectContact={(addr) => {
+                            setSelectedWhoisContact(addr);
+                            if (!transferEmail.trim()) {
+                              setTransferEmail(addr.email);
+                            }
+                            setSubmitError('');
+                          }}
+                          title="WHOIS Registrant Contact & Address"
+                          subtitle={`Saved to ${currentUser.email} — automatically available across future transfers.`}
+                        />
+                      ) : (
+                        <div className="border border-slate-200 rounded-xl bg-slate-50 p-4 flex flex-wrap items-center justify-between gap-3">
+                          <p className="text-xs text-slate-700">
+                            <strong className="text-[#0F172A] block">Sign In or Create Account to Save WHOIS Address</strong>
+                            Continue to checkout or sign in now to manage saved WHOIS registrant addresses.
+                          </p>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPendingPostAuthPath('/domain-transfer');
+                                onNavigatePath?.('/auth/login');
+                              }}
+                              className="px-3.5 py-2 rounded-lg bg-[#0E6B63] text-white text-xs font-semibold cursor-pointer"
+                            >
+                              Sign In
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPendingPostAuthPath('/domain-transfer');
+                                onNavigatePath?.('/auth/register');
+                              }}
+                              className="px-3.5 py-2 rounded-lg border border-[#0E6B63] bg-white text-[#0E6B63] text-xs font-semibold cursor-pointer"
+                            >
+                              Create Account
+                            </button>
+                          </div>
+                        </div>
+                      )}
 
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-1">
                         <div className="flex flex-wrap gap-4 text-xs text-slate-700">
