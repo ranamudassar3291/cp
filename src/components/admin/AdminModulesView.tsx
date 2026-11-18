@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
@@ -103,6 +103,26 @@ export const AdminModulesView: React.FC<AdminModulesViewProps> = ({
     setFormError('');
     setTestDiagnostic(null);
   };
+
+  useEffect(() => {
+    if (provisioningModules.length === 0 && !creatingNew) {
+      setSelectedId('');
+      setCreatingNew(true);
+      setName('Primary WHM / cPanel Server');
+      setModuleType('whm');
+      setHostname('');
+      setPort('2087');
+      setUseSsl(true);
+      setUsername('root');
+      setApiToken('');
+      setIgnoreSslErrors(false);
+      setNs1('ns1.cpcloudhost.com');
+      setNs2('ns2.cpcloudhost.com');
+      setAutoProvisionEnabled(true);
+      setEnabled(true);
+      setPackagesText('');
+    }
+  }, [provisioningModules.length, creatingNew]);
 
   const openCreateForm = () => {
     setCreatingNew(true);
@@ -354,58 +374,72 @@ export const AdminModulesView: React.FC<AdminModulesViewProps> = ({
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
         {/* Left List of Modules */}
         <div className="xl:col-span-4 space-y-3">
-          {provisioningModules.map((mod) => {
-            const isSelected = !creatingNew && activeModule?.id === mod.id;
-            return (
-              <button
-                key={mod.id}
-                type="button"
-                onClick={() => loadModuleIntoForm(mod)}
-                className={`w-full text-left p-4 rounded-xl border transition-colors cursor-pointer ${
-                  isSelected
-                    ? 'bg-[#F2FAF8] border-[#0E6B63]'
-                    : 'bg-white border-[#E2E8F0] hover:border-slate-300'
-                }`}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <span className="inline-block font-mono text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-slate-100 text-slate-700 mb-1.5">
-                      {mod.moduleType}
+          {provisioningModules.length === 0 ? (
+            <div className="bg-white border border-dashed border-[#CBD5E1] rounded-xl p-6 text-center space-y-2.5">
+              <div className="w-10 h-10 rounded-lg bg-[#0E6B63]/10 text-[#0E6B63] flex items-center justify-center mx-auto">
+                <Server className="w-5 h-5" aria-hidden="true" />
+              </div>
+              <h3 className="font-display text-sm font-bold text-[#0F172A]">
+                No Servers Configured
+              </h3>
+              <p className="text-xs text-slate-500">
+                Add your production WHM / cPanel server using the form on the right and verify connectivity with your WHM API Token.
+              </p>
+            </div>
+          ) : (
+            provisioningModules.map((mod) => {
+              const isSelected = !creatingNew && activeModule?.id === mod.id;
+              return (
+                <button
+                  key={mod.id}
+                  type="button"
+                  onClick={() => loadModuleIntoForm(mod)}
+                  className={`w-full text-left p-4 rounded-xl border transition-colors cursor-pointer ${
+                    isSelected
+                      ? 'bg-[#F2FAF8] border-[#0E6B63]'
+                      : 'bg-white border-[#E2E8F0] hover:border-slate-300'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <span className="inline-block font-mono text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-slate-100 text-slate-700 mb-1.5">
+                        {mod.moduleType}
+                      </span>
+                      <h3 className="font-display text-sm font-bold text-[#0F172A] truncate">
+                        {mod.name}
+                      </h3>
+                      <p className="font-mono text-[11px] text-slate-500 truncate mt-0.5">
+                        {mod.hostname}:{mod.port}
+                      </p>
+                    </div>
+
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap shrink-0 ${
+                        mod.lastConnectionStatus === 'connected'
+                          ? 'bg-[#16A34A]/10 text-[#16A34A]'
+                          : mod.lastConnectionStatus === 'error'
+                          ? 'bg-[#DC2626]/10 text-[#DC2626]'
+                          : 'bg-amber-50 text-[#D97706]'
+                      }`}
+                    >
+                      {mod.lastConnectionStatus === 'connected'
+                        ? 'CONNECTED'
+                        : mod.lastConnectionStatus === 'error'
+                        ? 'ERROR'
+                        : 'UNTESTED'}
                     </span>
-                    <h3 className="font-display text-sm font-bold text-[#0F172A] truncate">
-                      {mod.name}
-                    </h3>
-                    <p className="font-mono text-[11px] text-slate-500 truncate mt-0.5">
-                      {mod.hostname}:{mod.port}
-                    </p>
                   </div>
 
-                  <span
-                    className={`px-2 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap shrink-0 ${
-                      mod.lastConnectionStatus === 'connected'
-                        ? 'bg-[#16A34A]/10 text-[#16A34A]'
-                        : mod.lastConnectionStatus === 'error'
-                        ? 'bg-[#DC2626]/10 text-[#DC2626]'
-                        : 'bg-amber-50 text-[#D97706]'
-                    }`}
-                  >
-                    {mod.lastConnectionStatus === 'connected'
-                      ? 'CONNECTED'
-                      : mod.lastConnectionStatus === 'error'
-                      ? 'ERROR'
-                      : 'UNTESTED'}
-                  </span>
-                </div>
-
-                <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
-                  <span>{mod.packages.length} packages synced</span>
-                  <span className="font-semibold text-[#0E6B63]">
-                    {mod.autoProvisionEnabled ? 'Auto-Provision ON' : 'Manual'}
-                  </span>
-                </div>
-              </button>
-            );
-          })}
+                  <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
+                    <span>{mod.packages.length} packages synced</span>
+                    <span className="font-semibold text-[#0E6B63]">
+                      {mod.autoProvisionEnabled ? 'Auto-Provision ON' : 'Manual'}
+                    </span>
+                  </div>
+                </button>
+              );
+            })
+          )}
         </div>
 
         {/* Right Module Config & Real WHM Test Connection */}
@@ -433,7 +467,7 @@ export const AdminModulesView: React.FC<AdminModulesViewProps> = ({
                 </div>
               </div>
 
-              {!creatingNew && activeModule && provisioningModules.length > 1 && (
+              {!creatingNew && activeModule && (
                 <button
                   type="button"
                   onClick={() => {
@@ -443,7 +477,11 @@ export const AdminModulesView: React.FC<AdminModulesViewProps> = ({
                       const remaining = provisioningModules.find(
                         (m) => m.id !== activeModule.id
                       );
-                      if (remaining) loadModuleIntoForm(remaining);
+                      if (remaining) {
+                        loadModuleIntoForm(remaining);
+                      } else {
+                        openCreateForm();
+                      }
                     }
                   }}
                   className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-[#DC2626] border border-red-200 hover:bg-red-50 rounded-lg cursor-pointer"

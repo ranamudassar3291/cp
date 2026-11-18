@@ -936,20 +936,20 @@ export const AdminBillingInvoicesView: React.FC<AdminBillingInvoicesViewProps> =
 
   if (mode === 'template') {
     const sampleInvoice = invoices[0] || {
-      id: `${tplDraft.invoicePrefix}2026-9901`,
-      orderId: 'ORD-2026-9901',
-      clientEmail: 'client@acme-studios.co',
-      clientName: 'Hannah Thornton',
+      id: `${tplDraft.invoicePrefix}2026-0001`,
+      orderId: 'ORD-2026-0001',
+      clientEmail: 'billing-preview@cpcloudhost.com',
+      clientName: 'Template Preview Client',
       productType: 'cPanel Hosting' as const,
-      planName: 'cPanel Velocity NVMe',
-      domainOrHost: 'acme-studios.co',
+      planName: 'cPanel Velocity',
+      domainOrHost: 'yourdomain.com',
       billingCycle: 'Yearly' as const,
       items: [
         {
           id: 'ITEM-1',
-          description: 'cPanel Velocity NVMe Hosting',
+          description: 'cPanel Velocity Hosting',
           productType: 'cPanel Hosting' as const,
-          domainOrHost: 'acme-studios.co',
+          domainOrHost: 'yourdomain.com',
           billingCycle: 'Yearly' as const,
           quantity: 1,
           unitPriceUsd: 94.8,

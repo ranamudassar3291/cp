@@ -1238,7 +1238,7 @@ const ORDER_DRAFT_KEY = 'cpcloud_order_draft_v1';
 const LAST_SEARCHED_DOMAIN_KEY = 'cpcloud_last_searched_domain_v1';
 const POST_AUTH_REDIRECT_KEY = 'cpcloud_post_auth_redirect_v1';
 const DOMAIN_CONTACTS_KEY = 'cpcloud_domain_contacts_v1';
-const PROD_CLEANUP_KEY = 'cpcloud_prod_clean_v1';
+const PROD_CLEANUP_KEY = 'cpcloud_prod_clean_v2';
 
 const LEGACY_FAKE_USER_IDS = new Set([
   'USR-1042',
@@ -1246,6 +1246,12 @@ const LEGACY_FAKE_USER_IDS = new Set([
   'USR-1114',
   'USR-1156',
   'USR-1178',
+]);
+const LEGACY_FAKE_EMAILS = new Set([
+  'tariq@lahorecommerce.pk',
+  'client@acme-studios.co',
+  'hannah@northwind.io',
+  'billing@acme-studios.co',
 ]);
 const LEGACY_FAKE_ORDER_IDS = new Set([
   'ORD-904310',
@@ -2244,7 +2250,11 @@ function applyAutomaticOrderExpirations(list: PlatformOrder[]): {
     }
     const dueIso = ord.nextDueDate ? parseIsoDateOnly(ord.nextDueDate) : '';
     if (!dueIso) return ord;
-    if (diffDaysIso(todayIso, dueIso) < 0) {
+    const daysRemaining = diffDaysIso(todayIso, dueIso);
+    const createdIso = ord.createdAt ? parseIsoDateOnly(ord.createdAt) : '';
+    const isDueTodayAndUnsettled =
+      daysRemaining === 0 && (!ord.invoicePaid || (Boolean(createdIso) && createdIso < todayIso));
+    if (daysRemaining < 0 || isDueTodayAndUnsettled) {
       changed = true;
       if (isDomainOrderRecord(ord)) {
         newlyExpiredIds.push(ord.id);
@@ -2256,7 +2266,7 @@ function applyAutomaticOrderExpirations(list: PlatformOrder[]): {
           notes:
             ord.notes && ord.notes.includes('Auto-expired')
               ? ord.notes
-              : `Auto-expired after due date (${dueIso}) passed without renewal.`,
+              : `Auto-expired on due date (${dueIso}) without renewal.`,
         };
       }
       if (ord.status === 'active') {
@@ -2268,7 +2278,7 @@ function applyAutomaticOrderExpirations(list: PlatformOrder[]): {
           notes:
             ord.notes && ord.notes.includes('Auto-suspended')
               ? ord.notes
-              : `Auto-suspended after due date (${dueIso}) passed without payment.`,
+              : `Auto-suspended on due date (${dueIso}) without payment.`,
         };
       }
     }
@@ -2302,19 +2312,37 @@ function runOneTimeProductionStorageCleanup(): void {
 
     filterJsonArray<ManagedUserAccount>(
       USERS_KEY,
-      (u) => !LEGACY_FAKE_USER_IDS.has(u.id),
+      (u) =>
+        !LEGACY_FAKE_USER_IDS.has(u.id) &&
+        !LEGACY_FAKE_EMAILS.has((u.email || '').toLowerCase()),
       (u) => (u.role === 'admin' ? { ...u, activeServices: 0, totalSpendUsd: 0 } : u)
     );
-    filterJsonArray<PlatformOrder>(ORDERS_KEY, (o) => !LEGACY_FAKE_ORDER_IDS.has(o.id));
+    filterJsonArray<PlatformOrder>(
+      ORDERS_KEY,
+      (o) =>
+        !LEGACY_FAKE_ORDER_IDS.has(o.id) &&
+        !LEGACY_FAKE_EMAILS.has((o.clientEmail || '').toLowerCase())
+    );
     filterJsonArray<PlatformInvoice>(
       INVOICES_KEY,
       (inv) =>
         !LEGACY_FAKE_ORDER_IDS.has(inv.orderId) &&
-        !LEGACY_FAKE_ORDER_IDS.has(`ORD-${inv.id.replace(/^INV-/, '')}`)
+        !LEGACY_FAKE_ORDER_IDS.has(`ORD-${inv.id.replace(/^INV-/, '')}`) &&
+        !LEGACY_FAKE_EMAILS.has((inv.clientEmail || '').toLowerCase())
     );
-    filterJsonArray<SupportTicketRecord>(TICKETS_KEY, (t) => !LEGACY_FAKE_TICKET_IDS.has(t.id));
+    filterJsonArray<SupportTicketRecord>(
+      TICKETS_KEY,
+      (t) =>
+        !LEGACY_FAKE_TICKET_IDS.has(t.id) &&
+        !LEGACY_FAKE_EMAILS.has((t.clientEmail || '').toLowerCase())
+    );
     filterJsonArray<AbuseComplaintRecord>(ABUSE_KEY, (a) => !LEGACY_FAKE_ABUSE_IDS.has(a.ticketId));
-    filterJsonArray<LoginActivityRecord>(LOGIN_LOGS_KEY, (l) => !LEGACY_FAKE_LOG_IDS.has(l.id));
+    filterJsonArray<LoginActivityRecord>(
+      LOGIN_LOGS_KEY,
+      (l) =>
+        !LEGACY_FAKE_LOG_IDS.has(l.id) &&
+        !LEGACY_FAKE_EMAILS.has((l.userEmail || '').toLowerCase())
+    );
     filterJsonArray<DomainContactAddress>(
       DOMAIN_CONTACTS_KEY,
       (c) => !LEGACY_FAKE_CONTACT_IDS.has(c.id)
@@ -3069,7 +3097,7 @@ function deriveInvoiceIdFromOrderId(orderId: string, prefix = 'INV-'): string {
     : `${cleanPrefix}${orderId}`;
 }
 
-function computeDefaultNextDueDate(
+export function computeDefaultNextDueDate(
   startDateStr: string,
   cycle: PlatformOrder['billingCycle']
 ): string {
@@ -3676,10 +3704,99 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   }, [allDomainContacts]);
 
+  const ordersRef = useRef<PlatformOrder[]>(orders);
+  ordersRef.current = orders;
+  const provisioningModulesRef = useRef<ProvisioningModuleRecord[]>(provisioningModules);
+  provisioningModulesRef.current = provisioningModules;
+  const systemSettingsRef = useRef<SystemIntegrationSettings>(systemSettings);
+  systemSettingsRef.current = systemSettings;
+  const invoiceTemplateConfigRef = useRef<InvoiceTemplateConfig>(invoiceTemplateConfig);
+  invoiceTemplateConfigRef.current = invoiceTemplateConfig;
+  const emailTemplatesRef = useRef<EmailTemplateRecord[]>(emailTemplates);
+  emailTemplatesRef.current = emailTemplates;
+
+  const appendLoginActivity = useCallback(
+    (entry: {
+      userEmail: string;
+      userName: string;
+      eventType: LoginActivityEventType;
+      status: LoginActivityStatus;
+      authMethod: string;
+      country?: string;
+    }) => {
+      const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+      const record: LoginActivityRecord = {
+        id: `LOG-${Math.floor(100000 + Math.random() * 899999)}`,
+        userEmail: entry.userEmail.toLowerCase(),
+        userName: entry.userName,
+        eventType: entry.eventType,
+        status: entry.status,
+        authMethod: entry.authMethod,
+        deviceSummary: detectClientDeviceSummary(),
+        ipAddress: deriveClientIpLabel(),
+        locationLabel: resolveSessionTimezoneRegion(entry.country),
+        timestampUtc: nowUtc,
+      };
+      setLoginActivityLogs((prev) => [record, ...prev].slice(0, 100));
+    },
+    []
+  );
+
+  const dispatchSuspensionNoticeEmail = useCallback(
+    (order: PlatformOrder, reason: string) => {
+      const smtp = systemSettingsRef.current.smtp;
+      if (
+        typeof window === 'undefined' ||
+        !smtp?.enabled ||
+        !smtp.host.trim() ||
+        !smtp.username.trim() ||
+        !smtp.password
+      ) {
+        return;
+      }
+      const tpl =
+        emailTemplatesRef.current.find((t) => t.key === 'service-suspended' || t.id === 'service-suspended') ??
+        INITIAL_EMAIL_TEMPLATES.find((t) => t.key === 'service-suspended');
+      if (!tpl || !tpl.enabled) return;
+      const cfg = invoiceTemplateConfigRef.current;
+      const mergeVars: Record<string, string> = {
+        company_name: cfg.companyName || 'CPCloudHost',
+        client_name: order.clientName,
+        plan_name: order.planName,
+        domain: order.domainOrHost,
+        reason,
+        server_ip: order.serverIp || order.datacenter,
+        due_date: order.nextDueDate || '',
+        order_id: order.id,
+      };
+      void fetch('/api/system/send-templated-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          smtp,
+          toEmail: order.clientEmail,
+          companyName: cfg.companyName,
+          companyEmail: cfg.companyEmail,
+          companyWebsite: cfg.companyWebsite,
+          accentColor: cfg.accentColor,
+          headerBadge: 'BILLING SUSPENSION NOTICE',
+          subject: renderEmailMergeText(tpl.subject, mergeVars),
+          preheader: renderEmailMergeText(tpl.preheader, mergeVars),
+          heading: renderEmailMergeText(tpl.heading, mergeVars),
+          body: renderEmailMergeText(tpl.body, mergeVars),
+          ctaLabel: renderEmailMergeText(tpl.ctaLabel, mergeVars),
+          ctaUrl: renderEmailMergeText(tpl.ctaUrl, mergeVars),
+          footerNote: renderEmailMergeText(tpl.footerNote, mergeVars),
+        }),
+      }).catch(() => undefined);
+    },
+    []
+  );
+
   const syncWhmAccountState = useCallback(
     (order: PlatformOrder, action: 'suspend' | 'unsuspend', reason?: string) => {
       if (typeof window === 'undefined' || !order.serverModuleId) return;
-      const mod = provisioningModules.find(
+      const mod = provisioningModulesRef.current.find(
         (m) =>
           m.id === order.serverModuleId &&
           m.enabled &&
@@ -3694,6 +3811,12 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         action === 'suspend'
           ? '/api/modules/whm/suspend'
           : '/api/modules/whm/unsuspend';
+      const resolvedReason =
+        reason ||
+        (action === 'suspend'
+          ? 'Automated due-date billing suspension'
+          : 'Reactivated after billing settlement');
+
       void fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3706,23 +3829,56 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
           ignoreSslErrors: mod.ignoreSslErrors,
           acctUsername: acctUser,
           cpanelUsername: acctUser,
-          reason:
-            reason ||
-            (action === 'suspend'
-              ? 'Automated due-date billing suspension'
-              : 'Reactivated after billing settlement'),
+          reason: resolvedReason,
         }),
-      }).catch(() => undefined);
+      })
+        .then(async (resp) => {
+          const data = (await resp.json().catch(() => ({}))) as {
+            ok?: boolean;
+            reason?: string;
+            message?: string;
+            error?: string;
+          };
+          const ok = resp.ok && Boolean(data.ok);
+          appendLoginActivity({
+            userEmail: order.clientEmail,
+            userName: order.clientName,
+            eventType: ok
+              ? action === 'suspend'
+                ? 'WHM Account Auto-Suspended'
+                : 'WHM Account Unsuspended'
+              : 'WHM State Sync Warning',
+            status: ok ? 'success' : 'warning',
+            authMethod: `${mod.name} (${acctUser}): ${
+              ok ? data.reason || data.message || 'Done' : data.error || `HTTP ${resp.status}`
+            }`,
+            country: order.country,
+          });
+        })
+        .catch((err) => {
+          appendLoginActivity({
+            userEmail: order.clientEmail,
+            userName: order.clientName,
+            eventType: 'WHM State Sync Warning',
+            status: 'warning',
+            authMethod: `${mod.name} (${acctUser}): ${
+              err instanceof Error ? err.message : 'Network error'
+            }`,
+            country: order.country,
+          });
+        });
     },
-    [provisioningModules]
+    [appendLoginActivity]
   );
 
-  const runDueDateBillingSweep = useCallback(() => {
-    const res = applyAutomaticOrderExpirations(orders);
+  const executeDueDateSweep = useCallback(() => {
+    const res = applyAutomaticOrderExpirations(ordersRef.current);
     if (!res.changed) {
       return { suspendedCount: 0, expiredCount: 0 };
     }
+    ordersRef.current = res.orders;
     setOrders(res.orders);
+
     const affectedIds = new Set([...res.newlySuspendedIds, ...res.newlyExpiredIds]);
     if (affectedIds.size > 0) {
       setInvoices((prev) =>
@@ -3737,7 +3893,17 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       res.newlySuspendedIds.forEach((ordId) => {
         const ord = res.orders.find((o) => o.id === ordId);
         if (ord) {
-          syncWhmAccountState(ord, 'suspend', 'Automated due-date billing suspension');
+          const reason = `Automated due-date billing suspension (${ord.nextDueDate || 'due'})`;
+          syncWhmAccountState(ord, 'suspend', reason);
+          dispatchSuspensionNoticeEmail(ord, reason);
+          appendLoginActivity({
+            userEmail: ord.clientEmail,
+            userName: ord.clientName,
+            eventType: 'Service Auto-Suspended (Due Date)',
+            status: 'warning',
+            authMethod: `${ord.id} · ${ord.domainOrHost}`,
+            country: ord.country,
+          });
         }
       });
     }
@@ -3745,45 +3911,28 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       suspendedCount: res.newlySuspendedIds.length,
       expiredCount: res.newlyExpiredIds.length,
     };
-  }, [orders, syncWhmAccountState]);
+  }, [syncWhmAccountState, dispatchSuspensionNoticeEmail, appendLoginActivity]);
 
-  // Automatic date-based service suspension & domain expiry check (on mount, focus & every 60s)
+  const runDueDateBillingSweep = useCallback(
+    () => executeDueDateSweep(),
+    [executeDueDateSweep]
+  );
+
+  // Automatic date-based service suspension & domain expiry check (on mount, focus & every 30s)
   useEffect(() => {
-    const syncExpiredAndDueServices = () => {
-      let capturedSuspended: PlatformOrder[] = [];
-      let capturedAffectedIds = new Set<string>();
-      setOrders((prev) => {
-        const res = applyAutomaticOrderExpirations(prev);
-        if (!res.changed) return prev;
-        capturedAffectedIds = new Set([...res.newlySuspendedIds, ...res.newlyExpiredIds]);
-        capturedSuspended = res.newlySuspendedIds
-          .map((id) => res.orders.find((o) => o.id === id))
-          .filter((o): o is PlatformOrder => Boolean(o));
-        return res.orders;
-      });
-      if (capturedAffectedIds.size > 0) {
-        setInvoices((prev) =>
-          prev.map((inv) =>
-            inv.orderId &&
-            capturedAffectedIds.has(inv.orderId) &&
-            (inv.status === 'unpaid' || inv.status === 'pending')
-              ? { ...inv, status: 'overdue' }
-              : inv
-          )
-        );
-        capturedSuspended.forEach((ord) => {
-          syncWhmAccountState(ord, 'suspend', 'Automated due-date billing suspension');
-        });
-      }
+    executeDueDateSweep();
+    const timer = window.setInterval(() => {
+      executeDueDateSweep();
+    }, 30000);
+    const onFocusSweep = () => {
+      executeDueDateSweep();
     };
-    syncExpiredAndDueServices();
-    const timer = window.setInterval(syncExpiredAndDueServices, 60000);
-    window.addEventListener('focus', syncExpiredAndDueServices);
+    window.addEventListener('focus', onFocusSweep);
     return () => {
       window.clearInterval(timer);
-      window.removeEventListener('focus', syncExpiredAndDueServices);
+      window.removeEventListener('focus', onFocusSweep);
     };
-  }, [syncWhmAccountState]);
+  }, [executeDueDateSweep]);
 
   useEffect(() => {
     try {
@@ -3960,33 +4109,6 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       // ignore
     }
   }, [pendingPostAuthPath]);
-
-  const appendLoginActivity = useCallback(
-    (entry: {
-      userEmail: string;
-      userName: string;
-      eventType: LoginActivityEventType;
-      status: LoginActivityStatus;
-      authMethod: string;
-      country?: string;
-    }) => {
-      const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
-      const record: LoginActivityRecord = {
-        id: `LOG-${Math.floor(100000 + Math.random() * 899999)}`,
-        userEmail: entry.userEmail.toLowerCase(),
-        userName: entry.userName,
-        eventType: entry.eventType,
-        status: entry.status,
-        authMethod: entry.authMethod,
-        deviceSummary: detectClientDeviceSummary(),
-        ipAddress: deriveClientIpLabel(),
-        locationLabel: resolveSessionTimezoneRegion(entry.country),
-        timestampUtc: nowUtc,
-      };
-      setLoginActivityLogs((prev) => [record, ...prev].slice(0, 100));
-    },
-    []
-  );
 
   const isAdmin = useMemo(
     () => Boolean(currentUser && currentUser.role === 'admin' && currentUser.status === 'active'),
@@ -5471,6 +5593,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         domainVerificationToken: generatedVerifyToken,
         nameserverUpdateStatus: isDomain ? 'idle' : undefined,
       };
+      ordersRef.current = [created, ...ordersRef.current];
       setOrders((prev) => [created, ...prev]);
 
       let generatedInvoice: PlatformInvoice | null = null;
@@ -5867,7 +5990,9 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       if (!isAdmin || !currentUser) {
         return { ok: false, error: 'Administrator clearance required.' };
       }
-      const target = orders.find((o) => o.id === input.orderId);
+      const target =
+        orders.find((o) => o.id === input.orderId) ??
+        ordersRef.current.find((o) => o.id === input.orderId);
       if (!target) {
         return { ok: false, error: 'Order record not found.' };
       }
@@ -5877,9 +6002,18 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         input.notes?.trim() ||
         `Approved & provisioned on ${mod ? mod.name : 'Manual Server'} (${input.serverPackageName || 'default'}) by ${currentUser.name} (${nowUtc}).`;
 
+      const resolvedDueDate =
+        target.nextDueDate && target.nextDueDate.trim()
+          ? target.nextDueDate
+          : computeDefaultNextDueDate(
+              parseIsoDateOnly(target.createdAt) || getTodayIsoUtc(),
+              target.billingCycle
+            );
+
       const updatedOrder: PlatformOrder = {
         ...target,
         status: 'active',
+        nextDueDate: resolvedDueDate,
         invoicePaid:
           invoiceTemplateConfig.autoMarkPaidOnApproval !== false
             ? true
@@ -5892,6 +6026,9 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         notes: resolvedNote,
       };
 
+      ordersRef.current = ordersRef.current.map((ord) =>
+        ord.id === input.orderId ? updatedOrder : ord
+      );
       setOrders((prev) =>
         prev.map((ord) => (ord.id === input.orderId ? updatedOrder : ord))
       );
@@ -7108,16 +7245,25 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
           ? 'verified'
           : 'pending_contact_verification';
 
+      const computedDueDate =
+        target.nextDueDate && target.nextDueDate.trim()
+          ? target.nextDueDate
+          : computeDefaultNextDueDate(
+              parseIsoDateOnly(target.createdAt) || getTodayIsoUtc(),
+              target.billingCycle
+            );
+
       const approvedOrder: PlatformOrder = {
         ...target,
         status: 'active',
+        nextDueDate: computedDueDate,
         invoicePaid:
           invoiceTemplateConfig.autoMarkPaidOnApproval !== false
             ? true
             : target.invoicePaid,
         domainVerificationToken: token,
         domainVerificationStatus: nextVerifyStatus,
-        notes: `Domain approved by ${currentUser?.name || 'Admin'} (${nowUtc}). WHOIS verification link issued.`,
+        notes: `${target.productType} approved by ${currentUser?.name || 'Admin'} (${nowUtc}). WHOIS verification link issued.`,
       };
 
       setOrders((prev) =>
@@ -7127,7 +7273,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       if (invoiceTemplateConfig.autoGenerateOnApproval !== false) {
         upsertInvoiceOnOrderApproval(
           approvedOrder,
-          `Domain registration approved & verification dispatched (${nowUtc}).`
+          `${target.productType} approved & verification dispatched (${nowUtc}).`
         );
       }
 

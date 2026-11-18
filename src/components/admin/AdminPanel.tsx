@@ -82,6 +82,7 @@ import { AdminAnalyticsView } from './AdminAnalyticsView';
 import { AdminSystemView } from './AdminSystemView';
 import { AdminPromoCodesView } from './AdminPromoCodesView';
 import { AdminLiveChatView } from './AdminLiveChatView';
+import { AdminOrderCreatePage } from './AdminOrderCreatePage';
 import type { LiveChatSession } from '../../types/liveChat';
 
 interface AdminPanelProps {
@@ -143,18 +144,6 @@ const TICKET_DEPARTMENTS: TicketDepartment[] = [
   'Support',
 ];
 
-const ORDER_PRODUCT_TYPES: PlatformOrder['productType'][] = [
-  'cPanel Hosting',
-  'Shared Cloud',
-  'Managed WordPress',
-  'Windows Hosting',
-  'Reseller Hosting',
-  'Unmanaged VPS',
-  'n8n Hosting',
-  'Domain Registration',
-  'Domain Transfer',
-];
-
 const MAX_ATTACHMENT_COUNT = 5;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const ACCEPTED_ATTACHMENT_TYPES =
@@ -166,6 +155,7 @@ function parseAdminRoute(rawPath?: string): {
   cmsPageId: string | null;
   cmsCreatingNew: boolean;
   managingUserId: string | null;
+  creatingNewOrder: boolean;
 } {
   const clean = (rawPath || '/admin').replace(/\/+$/, '') || '/admin';
   const parts = clean.replace(/^\/admin\/?/, '').split('/').filter(Boolean);
@@ -178,6 +168,7 @@ function parseAdminRoute(rawPath?: string): {
       cmsPageId: null,
       cmsCreatingNew: false,
       managingUserId: null,
+      creatingNewOrder: false,
     };
   }
   if (sub === 'tickets') {
@@ -187,6 +178,7 @@ function parseAdminRoute(rawPath?: string): {
       cmsPageId: null,
       cmsCreatingNew: false,
       managingUserId: null,
+      creatingNewOrder: false,
     };
   }
   if (sub === 'cms') {
@@ -197,6 +189,7 @@ function parseAdminRoute(rawPath?: string): {
         cmsPageId: null,
         cmsCreatingNew: true,
         managingUserId: null,
+        creatingNewOrder: false,
       };
     }
     return {
@@ -205,6 +198,7 @@ function parseAdminRoute(rawPath?: string): {
       cmsPageId: parts[1] ? decodeURIComponent(parts[1]) : null,
       cmsCreatingNew: false,
       managingUserId: null,
+      creatingNewOrder: false,
     };
   }
   if (sub === 'users') {
@@ -214,6 +208,7 @@ function parseAdminRoute(rawPath?: string): {
       cmsPageId: null,
       cmsCreatingNew: false,
       managingUserId: parts[1] ? decodeURIComponent(parts[1]) : null,
+      creatingNewOrder: false,
     };
   }
   if (sub === 'orders' || sub === 'invoices') {
@@ -223,6 +218,7 @@ function parseAdminRoute(rawPath?: string): {
       cmsPageId: null,
       cmsCreatingNew: false,
       managingUserId: null,
+      creatingNewOrder: sub === 'orders' && parts[1] === 'new',
     };
   }
   if (sub === 'promos') {
@@ -232,6 +228,7 @@ function parseAdminRoute(rawPath?: string): {
       cmsPageId: null,
       cmsCreatingNew: false,
       managingUserId: null,
+      creatingNewOrder: false,
     };
   }
   if (sub === 'analytics') {
@@ -241,6 +238,7 @@ function parseAdminRoute(rawPath?: string): {
       cmsPageId: null,
       cmsCreatingNew: false,
       managingUserId: null,
+      creatingNewOrder: false,
     };
   }
   if (sub === 'domains') {
@@ -250,6 +248,7 @@ function parseAdminRoute(rawPath?: string): {
       cmsPageId: null,
       cmsCreatingNew: false,
       managingUserId: null,
+      creatingNewOrder: false,
     };
   }
   if (sub === 'plans') {
@@ -259,6 +258,7 @@ function parseAdminRoute(rawPath?: string): {
       cmsPageId: null,
       cmsCreatingNew: false,
       managingUserId: null,
+      creatingNewOrder: false,
     };
   }
   if (sub === 'modules') {
@@ -268,6 +268,7 @@ function parseAdminRoute(rawPath?: string): {
       cmsPageId: null,
       cmsCreatingNew: false,
       managingUserId: null,
+      creatingNewOrder: false,
     };
   }
   if (sub === 'system') {
@@ -277,6 +278,7 @@ function parseAdminRoute(rawPath?: string): {
       cmsPageId: null,
       cmsCreatingNew: false,
       managingUserId: null,
+      creatingNewOrder: false,
     };
   }
   if (sub === 'payments') {
@@ -286,6 +288,7 @@ function parseAdminRoute(rawPath?: string): {
       cmsPageId: null,
       cmsCreatingNew: false,
       managingUserId: null,
+      creatingNewOrder: false,
     };
   }
   if (sub === 'emails') {
@@ -295,6 +298,7 @@ function parseAdminRoute(rawPath?: string): {
       cmsPageId: null,
       cmsCreatingNew: false,
       managingUserId: null,
+      creatingNewOrder: false,
     };
   }
   if (sub === 'abuse') {
@@ -304,6 +308,7 @@ function parseAdminRoute(rawPath?: string): {
       cmsPageId: null,
       cmsCreatingNew: false,
       managingUserId: null,
+      creatingNewOrder: false,
     };
   }
   if (sub === 'activity') {
@@ -313,6 +318,7 @@ function parseAdminRoute(rawPath?: string): {
       cmsPageId: null,
       cmsCreatingNew: false,
       managingUserId: null,
+      creatingNewOrder: false,
     };
   }
   return {
@@ -321,6 +327,7 @@ function parseAdminRoute(rawPath?: string): {
     cmsPageId: null,
     cmsCreatingNew: false,
     managingUserId: null,
+    creatingNewOrder: false,
   };
 }
 
@@ -501,6 +508,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [activeTicketId, setActiveTicketId] = useState<string | null>(initialParsed.ticketId);
   const [editingCmsId, setEditingCmsId] = useState<string | null>(initialParsed.cmsPageId);
   const [creatingNewCms, setCreatingNewCms] = useState<boolean>(initialParsed.cmsCreatingNew);
+  const [creatingNewOrder, setCreatingNewOrder] = useState<boolean>(
+    initialParsed.creatingNewOrder
+  );
   const [managingUserId, setManagingUserId] = useState<string | null>(
     initialParsed.managingUserId
   );
@@ -519,6 +529,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setActiveTicketId(parsed.ticketId);
     setEditingCmsId(parsed.cmsPageId);
     setCreatingNewCms(parsed.cmsCreatingNew);
+    setCreatingNewOrder(parsed.creatingNewOrder);
     setManagingUserId(parsed.managingUserId);
   }, [initialRoutePath]);
 
@@ -528,6 +539,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       ticketId?: string | null;
       cmsPageId?: string | null;
       newCms?: boolean;
+      newOrder?: boolean;
       userId?: string | null;
     }
   ) => {
@@ -535,6 +547,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setActiveTicketId(opts?.ticketId ?? null);
     setEditingCmsId(opts?.cmsPageId ?? null);
     setCreatingNewCms(Boolean(opts?.newCms));
+    setCreatingNewOrder(Boolean(opts?.newOrder));
     setManagingUserId(opts?.userId ?? null);
     setSidebarOpen(false);
 
@@ -554,6 +567,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       nextPath = opts?.userId
         ? `/admin/users/${encodeURIComponent(opts.userId)}`
         : '/admin/users';
+    } else if (section === 'orders') {
+      nextPath = opts?.newOrder ? '/admin/orders/new' : '/admin/orders';
     } else if (section !== 'overview') {
       nextPath = `/admin/${section}`;
     }
@@ -1017,18 +1032,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [editOrderPackage, setEditOrderPackage] = useState('');
   const [editOrderAutoRenew, setEditOrderAutoRenew] = useState(true);
   const [editOrderNotes, setEditOrderNotes] = useState('');
-  const [showCreateOrder, setShowCreateOrder] = useState(false);
-  const [newOrderEmail, setNewOrderEmail] = useState('tariq@lahorecommerce.pk');
-  const [newOrderType, setNewOrderType] =
-    useState<PlatformOrder['productType']>('cPanel Hosting');
-  const [newOrderPlan, setNewOrderPlan] = useState('cPanel Velocity');
-  const [newOrderDomain, setNewOrderDomain] = useState('');
-  const [newOrderCycle, setNewOrderCycle] =
-    useState<PlatformOrder['billingCycle']>('Yearly');
-  const [newOrderAmountUsd, setNewOrderAmountUsd] = useState('239.88');
-  const [newOrderDatacenter, setNewOrderDatacenter] = useState('London, UK');
-  const [newOrderInitialStatus, setNewOrderInitialStatus] = useState<'pending' | 'active'>('pending');
-  const [createOrderError, setCreateOrderError] = useState('');
 
   // Approve & Provision Server Modal state
   const [approvingOrder, setApprovingOrder] = useState<PlatformOrder | null>(null);
@@ -1290,6 +1293,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
     const selectedMod = provisioningModules.find((m) => m.id === approveModuleId);
     let extraNote = approveNotes.trim();
+    let provisionedCpanelUser = approvingOrder.cpanelUsername || '';
+    let provisionedServerIp = approveServerIp.trim();
 
     if (
       approveLiveWhm &&
@@ -1300,10 +1305,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setApproveSubmitting(true);
       setApproveError('');
       try {
-        const cleanUser = approvingOrder.domainOrHost
-          .replace(/[^a-z0-9]/gi, '')
-          .toLowerCase()
-          .slice(0, 8) || 'cpuser01';
+        const cleanUser =
+          approvingOrder.cpanelUsername?.trim() ||
+          approvingOrder.domainOrHost
+            .replace(/[^a-z0-9]/gi, '')
+            .toLowerCase()
+            .replace(/^[0-9]+/, '')
+            .slice(0, 8) ||
+          'cpuser01';
         const res = await fetch('/api/modules/whm/provision', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1315,6 +1324,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             apiToken: selectedMod.apiToken,
             ignoreSslErrors: selectedMod.ignoreSslErrors,
             domain: approvingOrder.domainOrHost,
+            acctUsername: cleanUser,
             cpanelUsername: cleanUser,
             plan: approvePackageName.trim() || selectedMod.packages[0] || 'default',
             contactEmail: approvingOrder.clientEmail,
@@ -1322,19 +1332,29 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         });
         const data = (await res.json()) as {
           ok?: boolean;
+          reason?: string;
           message?: string;
           error?: string;
+          ip?: string;
+          acctUsername?: string;
         };
         if (!res.ok || !data.ok) {
           setApproveSubmitting(false);
           setApproveError(
             data.error ||
               data.message ||
-              'WHM live provisioning failed. Uncheck live WHM sync to approve locally or check WHM credentials.'
+              data.reason ||
+              'WHM live provisioning failed. Verify server package, domain, and WHM API credentials.'
           );
           return;
         }
-        extraNote = `${extraNote ? `${extraNote} · ` : ''}WHM Live: ${data.message || 'Account created'}`;
+        provisionedCpanelUser = data.acctUsername || cleanUser;
+        if (!provisionedServerIp && data.ip) {
+          provisionedServerIp = data.ip;
+        }
+        extraNote = `${extraNote ? `${extraNote} · ` : ''}WHM Live: ${
+          data.reason || data.message || 'Account created'
+        }`;
       } catch (err) {
         setApproveSubmitting(false);
         setApproveError(
@@ -1351,7 +1371,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       orderId: approvingOrder.id,
       serverModuleId: approveModuleId,
       serverPackageName: approvePackageName.trim(),
-      serverIp: approveServerIp.trim(),
+      serverIp: provisionedServerIp || undefined,
+      cpanelUsername: provisionedCpanelUser || undefined,
       notes: extraNote || undefined,
     });
 
@@ -1433,47 +1454,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     showToast('Client account provisioned');
   };
 
-  const handleCreateOrderSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const parsedAmount = parseFloat(newOrderAmountUsd);
-    if (!newOrderEmail.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newOrderEmail.trim())) {
-      setCreateOrderError('Enter a valid client email address.');
-      return;
-    }
-    if (!newOrderDomain.trim()) {
-      setCreateOrderError('Enter target hostname or domain name.');
-      return;
-    }
-    if (!Number.isFinite(parsedAmount) || parsedAmount < 0) {
-      setCreateOrderError('Enter a valid non-negative USD base amount.');
-      return;
-    }
-
-    const createdRes = addOrder({
-      clientEmail: newOrderEmail.trim(),
-      productType: newOrderType,
-      planName: newOrderPlan.trim() || newOrderType,
-      domainOrHost: newOrderDomain.trim(),
-      billingCycle: newOrderCycle,
-      amountUsd: parsedAmount,
-      datacenter: newOrderDatacenter,
-      paymentMethod:
-        newOrderInitialStatus === 'pending'
-          ? 'Pending Approval'
-          : 'Admin Manual Provision',
-      status: newOrderInitialStatus,
-      generateInvoice: newOrderInitialStatus === 'active',
-    });
-    setCreateOrderError('');
-    setNewOrderDomain('');
-    setShowCreateOrder(false);
-    showToast(
-      newOrderInitialStatus === 'pending'
-        ? `Order ${createdRes.order.id} queued (invoice auto-generates upon approval)`
-        : `Order ${createdRes.order.id} provisioned with invoice ${createdRes.invoice?.id || ''}`
-    );
-  };
-
   const handleModerationSave = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedAbuseTicket) return;
@@ -1539,6 +1519,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       return activeManagedUser
         ? ['Users & Clients', activeManagedUser.name]
         : ['Users & Clients'];
+    }
+    if (activeSection === 'orders' && creatingNewOrder) {
+      return ['Orders & Billing', 'Add New Order'];
     }
     const found = ADMIN_NAV_ITEMS.find((i) => i.id === activeSection);
     return [found?.label || 'Overview'];
@@ -1807,14 +1790,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </button>
             )}
 
-            {activeSection === 'orders' && ordersBillingSubTab === 'orders' && (
+            {activeSection === 'orders' && ordersBillingSubTab === 'orders' && !creatingNewOrder && (
               <button
                 type="button"
-                onClick={() => setShowCreateOrder((v) => !v)}
+                onClick={() => navigateAdmin('orders', { newOrder: true })}
                 className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#0E6B63] hover:bg-[#0A534D] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>{showCreateOrder ? 'Close Form' : 'Provision Order'}</span>
+                <span>Add Order</span>
               </button>
             )}
           </div>
@@ -3753,7 +3736,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           )}
 
           {/* ==================== ORDERS & BILLING MANAGEMENT ==================== */}
-          {activeSection === 'orders' && (
+          {activeSection === 'orders' && creatingNewOrder && (
+            <AdminOrderCreatePage
+              onBackToOrders={() => navigateAdmin('orders')}
+              onOpenOrderInQueue={(ordId) => {
+                setSelectedOrderId(ordId);
+                setOrdersBillingSubTab('orders');
+                navigateAdmin('orders');
+              }}
+              onOpenModules={() => navigateAdmin('modules')}
+              onShowToast={showToast}
+            />
+          )}
+
+          {activeSection === 'orders' && !creatingNewOrder && (
             <div className="space-y-5">
               {/* Sub-Navigation Tabs: Orders Queue | Invoices Manager & Editor | Invoice Template */}
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E2E8F0] pb-px">
@@ -3856,128 +3852,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     </button>
                   </div>
                 </div>
-              )}
-
-              {showCreateOrder && (
-                <form
-                  onSubmit={handleCreateOrderSubmit}
-                  className="bg-white border border-[#E2E8F0] rounded-xl p-5 space-y-4"
-                >
-                  <h2 className="font-display text-sm font-bold text-[#0F172A]">
-                    Provision Manual Hosting / VPS / Domain Order
-                  </h2>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                    <input
-                      type="email"
-                      value={newOrderEmail}
-                      onChange={(e) => setNewOrderEmail(e.target.value)}
-                      placeholder="Client Email *"
-                      className="px-3 py-2 text-xs border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
-                    />
-                    <select
-                      value={newOrderType}
-                      onChange={(e) =>
-                        setNewOrderType(e.target.value as PlatformOrder['productType'])
-                      }
-                      className="px-3 py-2 text-xs border border-[#CBD5E1] rounded-lg bg-white"
-                    >
-                      {ORDER_PRODUCT_TYPES.map((pt) => (
-                        <option key={pt} value={pt}>
-                          {pt}
-                        </option>
-                      ))}
-                    </select>
-                    <input
-                      type="text"
-                      value={newOrderPlan}
-                      onChange={(e) => setNewOrderPlan(e.target.value)}
-                      placeholder="Plan Name (e.g. cPanel Velocity)"
-                      className="px-3 py-2 text-xs border border-[#CBD5E1] rounded-lg"
-                    />
-                    <input
-                      type="text"
-                      value={newOrderDomain}
-                      onChange={(e) => setNewOrderDomain(e.target.value)}
-                      placeholder="Domain or Node Hostname *"
-                      className="px-3 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg"
-                    />
-                    <select
-                      value={newOrderCycle}
-                      onChange={(e) =>
-                        setNewOrderCycle(
-                          e.target.value as PlatformOrder['billingCycle']
-                        )
-                      }
-                      className="px-3 py-2 text-xs border border-[#CBD5E1] rounded-lg bg-white"
-                    >
-                      <option value="1 Month">1 Month</option>
-                      <option value="1 Year">1 Year</option>
-                      <option value="2 Years">2 Years</option>
-                      <option value="4 Years">4 Years</option>
-                      <option value="Monthly">Monthly</option>
-                      <option value="Yearly">Yearly</option>
-                      <option value="5-Year">5-Year</option>
-                    </select>
-                    <div className="flex gap-2">
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={newOrderAmountUsd}
-                        onChange={(e) => setNewOrderAmountUsd(e.target.value)}
-                        placeholder="USD Amount"
-                        className="w-1/2 px-3 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg"
-                      />
-                      <input
-                        type="text"
-                        value={newOrderDatacenter}
-                        onChange={(e) => setNewOrderDatacenter(e.target.value)}
-                        placeholder="Datacenter"
-                        className="w-1/2 px-3 py-2 text-xs border border-[#CBD5E1] rounded-lg"
-                      />
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-                    <label className="inline-flex items-center gap-2 text-xs text-slate-600">
-                      <span className="font-semibold text-[#0F172A]">Initial Order State:</span>
-                      <select
-                        value={newOrderInitialStatus}
-                        onChange={(e) =>
-                          setNewOrderInitialStatus(e.target.value as 'pending' | 'active')
-                        }
-                        className="px-2.5 py-1.5 text-xs border border-[#CBD5E1] rounded-lg bg-white font-medium text-[#0F172A]"
-                      >
-                        <option value="pending">
-                          Pending Approval (Auto-generates invoice on Approve)
-                        </option>
-                        <option value="active">
-                          Active Immediately (Generate invoice now)
-                        </option>
-                      </select>
-                    </label>
-                  </div>
-                  {createOrderError && (
-                    <p className="text-xs font-semibold text-[#DC2626]">
-                      {createOrderError}
-                    </p>
-                  )}
-                  <div className="flex justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowCreateOrder(false)}
-                      className="px-4 py-2 text-xs font-semibold text-slate-600 cursor-pointer"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      className="px-4 py-2 text-xs font-semibold text-white bg-[#0E6B63] hover:bg-[#0A534D] rounded-lg cursor-pointer"
-                    >
-                      {newOrderInitialStatus === 'pending'
-                        ? 'Queue Pending Order'
-                        : 'Create & Provision Order'}
-                    </button>
-                  </div>
-                </form>
               )}
 
               <div className="bg-white border border-[#E2E8F0] rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
@@ -4468,11 +4342,36 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               {selectedOrder.datacenter}
                             </span>
                           </div>
+                          {selectedOrder.serverModuleId && (
+                            <div className="flex justify-between">
+                              <span className="text-slate-500">Assigned Server</span>
+                              <span className="font-semibold text-[#0F172A]">
+                                {provisioningModules.find((m) => m.id === selectedOrder.serverModuleId)?.name ||
+                                  selectedOrder.serverModuleId}
+                              </span>
+                            </div>
+                          )}
                           {selectedOrder.serverPackageName && (
                             <div className="flex justify-between">
                               <span className="text-slate-500">Server Package</span>
                               <span className="font-mono text-[#0E6B63]">
                                 {selectedOrder.serverPackageName}
+                              </span>
+                            </div>
+                          )}
+                          {selectedOrder.cpanelUsername && (
+                            <div className="flex justify-between">
+                              <span className="text-slate-500">cPanel Username</span>
+                              <span className="font-mono font-semibold text-[#0F172A]">
+                                {selectedOrder.cpanelUsername}
+                              </span>
+                            </div>
+                          )}
+                          {selectedOrder.serverIp && (
+                            <div className="flex justify-between">
+                              <span className="text-slate-500">Server IP</span>
+                              <span className="font-mono text-[#0F172A]">
+                                {selectedOrder.serverIp}
                               </span>
                             </div>
                           )}
@@ -4501,6 +4400,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               </span>
                             </div>
                           )}
+                          {selectedOrder.notes && (
+                            <div className="pt-2 border-t border-slate-100">
+                              <span className="text-slate-500 block mb-0.5">Order Details / Notes</span>
+                              <p className="text-[11px] text-[#0F172A] leading-relaxed">
+                                {selectedOrder.notes}
+                              </p>
+                            </div>
+                          )}
                         </div>
 
                         {selectedOrder.status === 'pending' && (
@@ -4510,6 +4417,38 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             className="w-full py-2 px-4 rounded-lg bg-[#16A34A] hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer"
                           >
                             Approve &amp; Assign Provisioning Server
+                          </button>
+                        )}
+                        {selectedOrder.status === 'active' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              updateOrderStatus(
+                                selectedOrder.id,
+                                'suspended',
+                                `Suspended by ${currentUser.name}`
+                              );
+                              showToast(`Service ${selectedOrder.domainOrHost} suspended`);
+                            }}
+                            className="w-full py-2 px-4 rounded-lg border border-red-200 text-[#DC2626] hover:bg-red-50 text-xs font-semibold cursor-pointer"
+                          >
+                            Suspend Service (Syncs WHM)
+                          </button>
+                        )}
+                        {selectedOrder.status === 'suspended' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              updateOrderStatus(
+                                selectedOrder.id,
+                                'active',
+                                `Reactivated by ${currentUser.name}`
+                              );
+                              showToast(`Service ${selectedOrder.domainOrHost} reactivated`);
+                            }}
+                            className="w-full py-2 px-4 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer"
+                          >
+                            Reactivate / Unsuspend Service
                           </button>
                         )}
 

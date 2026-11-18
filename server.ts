@@ -772,9 +772,11 @@ async function startServer() {
         });
         return;
       }
+      const reasonMsg = parsed.metadata?.reason || 'Account created on WHM server.';
       res.json({
         ok: true,
-        reason: parsed.metadata?.reason || 'Account created on WHM server.',
+        reason: reasonMsg,
+        message: reasonMsg,
         ip: parsed.data?.ip,
         acctUsername: cleanAcctUser,
         nameserver: parsed.data?.nameserver,
@@ -833,7 +835,8 @@ async function startServer() {
         });
         return;
       }
-      res.json({ ok: true, reason: parsed.metadata?.reason || 'Password updated on WHM server.' });
+      const reasonMsg = parsed.metadata?.reason || 'Password updated on WHM server.';
+      res.json({ ok: true, reason: reasonMsg, message: reasonMsg });
     } catch (err) {
       const errorObj = err as { message?: string };
       res.status(400).json({ ok: false, error: errorObj.message || 'WHM passwd request failed.' });
@@ -884,7 +887,8 @@ async function startServer() {
         });
         return;
       }
-      res.json({ ok: true, reason: parsed.metadata?.reason || 'Account suspended on WHM server.' });
+      const reasonMsg = parsed.metadata?.reason || 'Account suspended on WHM server.';
+      res.json({ ok: true, reason: reasonMsg, message: reasonMsg });
     } catch (err) {
       const errorObj = err as { message?: string };
       res.status(400).json({ ok: false, error: errorObj.message || 'WHM suspendacct request failed.' });
@@ -933,7 +937,8 @@ async function startServer() {
         });
         return;
       }
-      res.json({ ok: true, reason: parsed.metadata?.reason || 'Account unsuspended on WHM server.' });
+      const reasonMsg = parsed.metadata?.reason || 'Account unsuspended on WHM server.';
+      res.json({ ok: true, reason: reasonMsg, message: reasonMsg });
     } catch (err) {
       const errorObj = err as { message?: string };
       res.status(400).json({ ok: false, error: errorObj.message || 'WHM unsuspendacct request failed.' });
@@ -984,7 +989,8 @@ async function startServer() {
         });
         return;
       }
-      res.json({ ok: true, reason: parsed.metadata?.reason || 'WHM package updated.' });
+      const reasonMsg = parsed.metadata?.reason || 'WHM package updated.';
+      res.json({ ok: true, reason: reasonMsg, message: reasonMsg });
     } catch (err) {
       const errorObj = err as { message?: string };
       res.status(400).json({ ok: false, error: errorObj.message || 'WHM changepackage request failed.' });

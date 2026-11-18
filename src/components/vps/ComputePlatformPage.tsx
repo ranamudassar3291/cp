@@ -13,6 +13,7 @@ import n8nHeroImg from '../../assets/images/n8n_hero_automation_nodes_1794563675
 import {
   COMPUTE_DATACENTERS,
   ComputePlan,
+  groupComputeTemplatesByName,
   N8N_FAQS,
   N8N_FEATURE_PILLARS,
   N8N_PLANS,
@@ -38,10 +39,6 @@ interface ComputePlatformPageProps {
 
 const REGIONS = COMPUTE_DATACENTERS.map((dc) => `${dc.city} (${dc.clusterLabel})`);
 
-const VPS_OS_OPTIONS = VPS_OS_CATALOG.map((item) => `${item.name} — ${item.version}`);
-
-const N8N_STACK_OPTIONS = N8N_STACK_CATALOG.map((item) => item.name);
-
 export const ComputePlatformPage: React.FC<ComputePlatformPageProps> = ({
   mode,
   onNavigateHome,
@@ -54,12 +51,18 @@ export const ComputePlatformPage: React.FC<ComputePlatformPageProps> = ({
   const plans = isN8n ? N8N_PLANS : VPS_PLANS;
   const pillars = isN8n ? N8N_FEATURE_PILLARS : VPS_FEATURE_PILLARS;
   const faqs = isN8n ? N8N_FAQS : VPS_FAQS;
+  const activeCatalog = isN8n ? N8N_STACK_CATALOG : VPS_OS_CATALOG;
+  const families = groupComputeTemplatesByName(activeCatalog);
 
   const [selectedPlan, setSelectedPlan] = useState<ComputePlan | null>(null);
   const [selectedRegion, setSelectedRegion] = useState(REGIONS[0]);
-  const [selectedRuntime, setSelectedRuntime] = useState(
-    isN8n ? N8N_STACK_OPTIONS[0] : VPS_OS_OPTIONS[0]
-  );
+  const [selectedOsId, setSelectedOsId] = useState<string>(activeCatalog[0].id);
+  const selectedTemplate =
+    activeCatalog.find((item) => item.id === selectedOsId) ?? activeCatalog[0];
+  const selectedFamily =
+    families.find((f) => f.versions.some((v) => v.id === selectedTemplate.id)) ??
+    families[0];
+  const selectedRuntime = `${selectedTemplate.name} (${selectedTemplate.version})`;
   const [addPanelOrBackup, setAddPanelOrBackup] = useState(true);
   const [hostnameInput, setHostnameInput] = useState('');
   const [contactEmail, setContactEmail] = useState('');
@@ -106,7 +109,7 @@ export const ComputePlatformPage: React.FC<ComputePlatformPageProps> = ({
 
   const handleConfigurePlan = (plan: ComputePlan) => {
     setSelectedPlan(plan);
-    setSelectedRuntime(isN8n ? N8N_STACK_OPTIONS[0] : VPS_OS_OPTIONS[0]);
+    setSelectedOsId(activeCatalog[0].id);
     setOrderSubmitted(false);
     setFormError('');
     const targetCategory = isN8n ? 'n8n-hosting' : 'vps-hosting';
@@ -151,7 +154,6 @@ export const ComputePlatformPage: React.FC<ComputePlatformPageProps> = ({
     }
     setFormError('');
     if (selectedPlan) {
-      const defaultTpl = isN8n ? N8N_STACK_CATALOG[0] : VPS_OS_CATALOG[0];
       const host =
         hostnameInput.trim() ||
         `${selectedPlan.id}.${isN8n ? 'n8n' : 'vps'}.cpcloudhost.internal`;
@@ -168,11 +170,11 @@ export const ComputePlatformPage: React.FC<ComputePlatformPageProps> = ({
         status: 'pending',
         serverConfig: {
           serverType: isN8n ? 'n8n' : 'vps',
-          osCategory: defaultTpl.category,
-          osId: defaultTpl.id,
-          osName: selectedRuntime,
-          osVersion: defaultTpl.version,
-          controlPanelOrStack: selectedRuntime,
+          osCategory: selectedTemplate.category,
+          osId: selectedTemplate.id,
+          osName: selectedTemplate.name,
+          osVersion: selectedTemplate.version,
+          controlPanelOrStack: `${selectedTemplate.name} (${selectedTemplate.version})`,
           datacenterId: 'uk',
           datacenterLabel: selectedRegion,
           storageMode: 'NVMe High-IOPS',
@@ -519,7 +521,7 @@ export const ComputePlatformPage: React.FC<ComputePlatformPageProps> = ({
                   </div>
 
                   <div className="lg:col-span-7 space-y-4">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
                       <div>
                         <label
                           htmlFor="compute-region"
@@ -543,24 +545,48 @@ export const ComputePlatformPage: React.FC<ComputePlatformPageProps> = ({
 
                       <div>
                         <label
-                          htmlFor="compute-runtime"
+                          htmlFor="compute-family"
                           className="block text-xs font-semibold text-[#0F172A] mb-1.5"
                         >
-                          {isN8n ? 'Automation Stack' : 'Operating System Image'}
+                          {isN8n ? 'Stack Name' : 'OS / Image Name'}
                         </label>
                         <select
-                          id="compute-runtime"
-                          value={selectedRuntime}
-                          onChange={(e) => setSelectedRuntime(e.target.value)}
+                          id="compute-family"
+                          value={selectedFamily.familyKey}
+                          onChange={(e) => {
+                            const nextFam = families.find((f) => f.familyKey === e.target.value);
+                            if (nextFam?.versions[0]) {
+                              setSelectedOsId(nextFam.versions[0].id);
+                            }
+                          }}
                           className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 bg-white text-sm text-[#0F172A] focus:outline-none focus:border-[#0E6B63]"
                         >
-                          {(isN8n ? N8N_STACK_OPTIONS : VPS_OS_OPTIONS).map(
-                            (opt) => (
-                              <option key={opt} value={opt}>
-                                {opt}
-                              </option>
-                            )
-                          )}
+                          {families.map((fam) => (
+                            <option key={fam.familyKey} value={fam.familyKey}>
+                              {fam.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label
+                          htmlFor="compute-version"
+                          className="block text-xs font-semibold text-[#0F172A] mb-1.5"
+                        >
+                          Version
+                        </label>
+                        <select
+                          id="compute-version"
+                          value={selectedTemplate.id}
+                          onChange={(e) => setSelectedOsId(e.target.value)}
+                          className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 bg-white text-sm text-[#0F172A] focus:outline-none focus:border-[#0E6B63]"
+                        >
+                          {selectedFamily.versions.map((ver) => (
+                            <option key={ver.id} value={ver.id}>
+                              {ver.version}
+                            </option>
+                          ))}
                         </select>
                       </div>
                     </div>

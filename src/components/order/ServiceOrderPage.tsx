@@ -55,6 +55,7 @@ import {
   COMPUTE_BACKUP_ADDONS,
   COMPUTE_DATACENTERS,
   ComputeOsTemplate,
+  groupComputeTemplatesByName,
   N8N_STACK_CATALOG,
   VPS_OS_CATALOG,
 } from '../../data/vpsAndN8nData';
@@ -3143,10 +3144,10 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                             <div className="flex flex-wrap gap-2">
                               {(
                                 [
-                                  { id: 'all' as const, label: `All Templates (${VPS_OS_CATALOG.length})` },
+                                  { id: 'all' as const, label: 'All Images' },
                                   { id: 'plain-os' as const, label: 'Plain OS' },
-                                  { id: 'os-panel' as const, label: 'OS + Control Panel' },
-                                  { id: 'app-docker' as const, label: 'Docker & Dev Stacks' },
+                                  { id: 'os-panel' as const, label: 'Control Panel' },
+                                  { id: 'app-docker' as const, label: 'Docker & Apps' },
                                 ] as const
                               ).map((tab) => {
                                 const active = computeOsTab === tab.id;
@@ -3169,59 +3170,88 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                           )}
 
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            {(isN8nCompute
-                              ? N8N_STACK_CATALOG
-                              : computeOsTab === 'all'
-                              ? VPS_OS_CATALOG
-                              : VPS_OS_CATALOG.filter((tpl) => tpl.category === computeOsTab)
-                            ).map((tpl) => {
-                              const selected = activeComputeTemplate.id === tpl.id;
+                            {groupComputeTemplatesByName(
+                              isN8nCompute
+                                ? N8N_STACK_CATALOG
+                                : computeOsTab === 'all'
+                                  ? VPS_OS_CATALOG
+                                  : VPS_OS_CATALOG.filter((tpl) => tpl.category === computeOsTab)
+                            ).map((family) => {
+                              const activeVersion =
+                                family.versions.find((v) => v.id === activeComputeTemplate.id) ??
+                                family.versions[0];
+                              const isFamilySelected = family.versions.some(
+                                (v) => v.id === activeComputeTemplate.id
+                              );
                               return (
-                                <button
-                                  key={tpl.id}
-                                  type="button"
+                                <div
+                                  key={family.familyKey}
+                                  role="button"
+                                  tabIndex={0}
                                   onClick={() => {
-                                    setSelectedOsId(tpl.id);
+                                    setSelectedOsId(activeVersion.id);
                                     setStep2Error('');
                                   }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                      e.preventDefault();
+                                      setSelectedOsId(activeVersion.id);
+                                      setStep2Error('');
+                                    }
+                                  }}
                                   className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
-                                    selected
+                                    isFamilySelected
                                       ? 'border-[#0E6B63] bg-[#F4FAF9] ring-1 ring-[#0E6B63]'
                                       : 'border-[#E2E8F0] bg-white hover:border-slate-300'
                                   }`}
                                 >
-                                  <div className="flex items-start gap-3">
-                                    <div
-                                      className={`w-10 h-10 rounded-lg border flex items-center justify-center font-mono text-xs font-extrabold shrink-0 ${
-                                        selected
-                                          ? 'bg-[#0E6B63] text-white border-[#0E6B63]'
-                                          : 'bg-[#F8FAFC] text-[#0F172A] border-[#E2E8F0]'
-                                      }`}
-                                    >
-                                      {tpl.badgeText}
+                                  <div className="flex items-center justify-between gap-2.5">
+                                    <div className="flex items-center gap-2.5 min-w-0">
+                                      <div
+                                        className={`w-9 h-9 rounded-lg border flex items-center justify-center font-mono text-xs font-extrabold shrink-0 ${
+                                          isFamilySelected
+                                            ? 'bg-[#0E6B63] text-white border-[#0E6B63]'
+                                            : 'bg-[#F8FAFC] text-[#0F172A] border-[#E2E8F0]'
+                                        }`}
+                                      >
+                                        {family.badgeText}
+                                      </div>
+                                      <span className="text-sm font-bold text-[#0F172A] truncate">
+                                        {family.name}
+                                      </span>
                                     </div>
-                                    <div className="min-w-0 flex-1">
-                                      <div className="flex items-center justify-between gap-2">
-                                        <span className="text-xs font-bold text-[#0F172A] truncate">
-                                          {tpl.name} · {tpl.version}
-                                        </span>
-                                        {selected && (
-                                          <CheckCircle2 className="w-4 h-4 text-[#0E6B63] shrink-0" aria-hidden="true" />
-                                        )}
-                                      </div>
-                                      <div className="text-[11px] font-semibold text-[#0E6B63] mt-0.5 truncate">
-                                        {tpl.controlPanelOrStack}
-                                      </div>
-                                      <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
-                                        {tpl.description}
-                                      </p>
-                                      <div className="mt-1.5 flex items-center justify-between gap-2 text-[10px] font-mono text-slate-500">
-                                        <span>{tpl.shortTag}</span>
-                                        <span className="text-[#0F172A] font-semibold">{tpl.licenseNote}</span>
-                                      </div>
-                                    </div>
+                                    {isFamilySelected && (
+                                      <CheckCircle2
+                                        className="w-4 h-4 text-[#0E6B63] shrink-0"
+                                        aria-hidden="true"
+                                      />
+                                    )}
                                   </div>
-                                </button>
+
+                                  <div
+                                    className="mt-2.5 flex items-center justify-between gap-2"
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    <span className="text-[11px] font-medium text-slate-500">
+                                      Version
+                                    </span>
+                                    <select
+                                      aria-label={`${family.name} version`}
+                                      value={activeVersion.id}
+                                      onChange={(e) => {
+                                        setSelectedOsId(e.target.value);
+                                        setStep2Error('');
+                                      }}
+                                      className="max-w-[190px] w-full px-2.5 py-1.5 text-xs font-semibold border border-[#CBD5E1] rounded-lg bg-white text-[#0F172A] focus:outline-none focus:border-[#0E6B63] cursor-pointer"
+                                    >
+                                      {family.versions.map((ver) => (
+                                        <option key={ver.id} value={ver.id}>
+                                          {ver.version}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                </div>
                               );
                             })}
                           </div>
