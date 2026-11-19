@@ -59,7 +59,7 @@ export const DomainVerifyPage: React.FC<DomainVerifyPageProps> = ({
   const tokenValid =
     Boolean(matchedOrder) &&
     (!matchedOrder?.domainVerificationToken ||
-      activeToken === matchedOrder.domainVerificationToken);
+      activeToken.toLowerCase() === matchedOrder.domainVerificationToken.toLowerCase());
 
   const handleApproveVerify = () => {
     if (!activeOrderId) {

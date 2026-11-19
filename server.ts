@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import http from 'node:http';
 import https from 'node:https';
@@ -15,6 +16,33 @@ import {
   generateLiveChatAiReply,
   generateTicketTriageAi,
 } from './server/geminiSupport';
+import {
+  createRateLimiter,
+  extractClientIp,
+  hashPassword,
+  isMaskedSecret,
+  securityHeadersMiddleware,
+} from './server/security';
+import {
+  adminSetIpBlockedStatus,
+  getBootstrapState,
+  getPool,
+  hasDatabaseConfigured,
+  initDatabaseSchema,
+  isDatabaseEmpty,
+  isIpBlocked,
+  issueSessionToken,
+  resolveSmtpCredentialsFromDb,
+  resolveWhmModuleConfigFromDb,
+  resolveWhmTokenFromDb,
+  runAutomatedTrialAndRenewalBilling,
+  syncFullPlatformState,
+  testDatabaseConnection,
+  updateUserPasswordInDb,
+  validateAndRecordFreeTrial,
+  verifySessionToken,
+  verifyUserLoginInDb,
+} from './server/db';
 import type { LiveChatAttachment, LiveChatSession } from './src/types/liveChat';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -139,10 +167,99 @@ function validateAttachments(raw: unknown): {
   return { ok: true, attachments: clean };
 }
 
+function parseCookieToken(req: express.Request): { id: string; email: string; role: string } | null {
+  const headerToken = req.headers['x-cpcloud-token'];
+  if (typeof headerToken === 'string' && headerToken.trim()) {
+    const parsed = verifySessionToken(headerToken.trim());
+    if (parsed) return parsed;
+  }
+  const cookieHeader = req.headers.cookie;
+  if (!cookieHeader) return null;
+  const parts = cookieHeader.split(';');
+  for (const part of parts) {
+    const eqIdx = part.indexOf('=');
+    if (eqIdx === -1) continue;
+    const key = part.slice(0, eqIdx).trim();
+    if (key === 'cpcloud_session') {
+      const val = decodeURIComponent(part.slice(eqIdx + 1).trim());
+      return verifySessionToken(val);
+    }
+  }
+  return null;
+}
+
+function setSessionCookie(res: express.Response, token: string): void {
+  const maxAge = 14 * 24 * 60 * 60;
+  res.setHeader(
+    'Set-Cookie',
+    `cpcloud_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`
+  );
+}
+
+function clearSessionCookie(res: express.Response): void {
+  res.setHeader(
+    'Set-Cookie',
+    'cpcloud_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'
+  );
+}
+
+async function resolveEffectiveSmtp(inputSmtp?: {
+  host?: string;
+  port?: number | string;
+  encryption?: 'ssl' | 'tls' | 'none';
+  username?: string;
+  password?: string;
+  fromName?: string;
+  fromEmail?: string;
+}) {
+  const dbSmtp = await resolveSmtpCredentialsFromDb().catch(() => null);
+  const host = (inputSmtp?.host || dbSmtp?.host || '').trim();
+  const port = Number(inputSmtp?.port || dbSmtp?.port || 465);
+  const encryption = inputSmtp?.encryption || dbSmtp?.encryption || 'ssl';
+  const username = (inputSmtp?.username || dbSmtp?.username || '').trim();
+  const rawPass = (inputSmtp?.password || '').trim();
+  const password =
+    !rawPass || isMaskedSecret(rawPass) ? (dbSmtp?.password || '') : rawPass;
+  const fromName = (inputSmtp?.fromName || dbSmtp?.fromName || 'CPCloudHost').trim();
+  const fromEmail = (inputSmtp?.fromEmail || dbSmtp?.fromEmail || username).trim();
+  return { host, port, encryption, username, password, fromName, fromEmail };
+}
+
 async function startServer() {
   const app = express();
   const httpServer = http.createServer(app);
+  app.set('trust proxy', 1);
+  app.use(securityHeadersMiddleware);
   app.use(express.json({ limit: '60mb' }));
+
+  const authRateLimiter = createRateLimiter({
+    windowMs: 15 * 60 * 1000,
+    maxRequests: 45,
+    message: 'Too many authentication attempts from your IP. Please wait a few minutes and try again.',
+  });
+  const securityRateLimiter = createRateLimiter({
+    windowMs: 10 * 60 * 1000,
+    maxRequests: 60,
+    message: 'Rate limit exceeded on security endpoint. Please wait before retrying.',
+  });
+  const systemRateLimiter = createRateLimiter({
+    windowMs: 5 * 60 * 1000,
+    maxRequests: 100,
+  });
+
+  app.use('/api/auth', authRateLimiter);
+  app.use('/api/security', securityRateLimiter);
+  app.use('/api/system', systemRateLimiter);
+  app.use('/api/modules', systemRateLimiter);
+
+  if (hasDatabaseConfigured()) {
+    await initDatabaseSchema().catch((err) => {
+      console.error('[DB] Initial schema check failed:', err instanceof Error ? err.message : err);
+    });
+    await liveChatStore.hydrateFromDatabase().catch((err) => {
+      console.error('[DB] LiveChat hydration failed:', err instanceof Error ? err.message : err);
+    });
+  }
 
   interface WsClientMeta {
     ws: WebSocket;
@@ -156,6 +273,19 @@ async function startServer() {
     path: '/ws/live-chat',
     maxPayload: 60 * 1024 * 1024,
   });
+
+  const broadcastPlatformUpdate = (reason = 'sync') => {
+    const payload = JSON.stringify({
+      type: 'platform:updated',
+      reason,
+      at: Date.now(),
+    });
+    for (const client of wsClients) {
+      if (client.ws.readyState === WebSocket.OPEN) {
+        client.ws.send(payload);
+      }
+    }
+  };
 
   const broadcastSessionUpdate = (
     session: LiveChatSession,
@@ -238,26 +368,68 @@ async function startServer() {
   }, 60 * 1000);
   autoCloseInterval.unref?.();
 
-  app.get('/api/health', (_req, res) => {
+  // Automated Trial-to-Monthly Billing & Renewal Scheduler
+  const sendAutomatedBillingEmail = async (opts: {
+    toEmail: string;
+    subject: string;
+    heading: string;
+    body: string;
+  }) => {
+    const smtp = await resolveSmtpCredentialsFromDb();
+    if (!smtp || !smtp.enabled || !smtp.host || !smtp.username || !smtp.password) return;
+    const useSsl =
+      smtp.encryption === 'ssl' ||
+      (smtp.encryption !== 'tls' && smtp.encryption !== 'none' && smtp.port === 465);
+    const transporter = nodemailer.createTransport({
+      host: smtp.host,
+      port: smtp.port,
+      secure: useSsl,
+      auth: { user: smtp.username, pass: smtp.password },
+      tls: { rejectUnauthorized: false },
+      connectionTimeout: 10000,
+    });
+    await transporter.sendMail({
+      from: `"${smtp.fromName.replace(/"/g, '')}" <${smtp.fromEmail}>`,
+      to: opts.toEmail,
+      subject: opts.subject,
+      text: `${opts.heading}\n\n${opts.body}`,
+      html: `<div style="font-family:Inter,sans-serif;max-width:560px;margin:0 auto;border:1px solid #E2E8F0;border-radius:12px;overflow:hidden;"><div style="background:#0F172A;padding:18px 24px;color:#FFF;"><h2 style="margin:0;font-size:17px;">${escapeHtmlText(opts.heading)}</h2></div><div style="padding:22px 24px;font-size:14px;line-height:1.6;color:#0F172A;">${escapeHtmlText(opts.body).replace(/\n/g, '<br/>')}</div></div>`,
+    });
+  };
+
+  if (hasDatabaseConfigured()) {
+    setTimeout(() => {
+      void runAutomatedTrialAndRenewalBilling(sendAutomatedBillingEmail)
+        .then((res) => {
+          if (res.convertedTrials > 0) broadcastPlatformUpdate('trial_conversion');
+        })
+        .catch(() => undefined);
+    }, 8000);
+
+    const billingInterval = setInterval(() => {
+      void runAutomatedTrialAndRenewalBilling(sendAutomatedBillingEmail)
+        .then((res) => {
+          if (res.convertedTrials > 0) broadcastPlatformUpdate('trial_conversion');
+        })
+        .catch(() => undefined);
+    }, 15 * 60 * 1000);
+    billingInterval.unref?.();
+  }
+
+  app.get('/api/health', async (_req, res) => {
+    const dbConnected = await testDatabaseConnection();
     res.json({
       ok: true,
       service: 'cpcloudhost-api',
+      dbConfigured: hasDatabaseConfigured(),
+      dbConnected,
       timeUtc: new Date().toISOString(),
     });
   });
 
   // Real StackMail / SMTP verification & test email dispatch
   app.post('/api/system/test-smtp', async (req, res) => {
-    const {
-      host,
-      port,
-      encryption,
-      username,
-      password,
-      fromName,
-      fromEmail,
-      testTo,
-    } = (req.body || {}) as {
+    const body = (req.body || {}) as {
       host?: string;
       port?: number | string;
       encryption?: 'ssl' | 'tls' | 'none';
@@ -268,12 +440,14 @@ async function startServer() {
       testTo?: string;
     };
 
-    const cleanHost = (host || '').trim();
-    const numericPort = Number(port || 465);
-    const cleanUser = (username || '').trim();
-    const cleanPass = password || '';
-    const cleanFromEmail = (fromEmail || cleanUser).trim();
-    const cleanTestTo = (testTo || cleanFromEmail).trim();
+    const resolved = await resolveEffectiveSmtp(body);
+    const cleanHost = resolved.host;
+    const numericPort = resolved.port;
+    const cleanUser = resolved.username;
+    const cleanPass = resolved.password;
+    const cleanFromEmail = resolved.fromEmail || cleanUser;
+    const cleanTestTo = (body.testTo || cleanFromEmail).trim();
+    const encryption = resolved.encryption;
 
     if (!cleanHost) {
       res.status(400).json({ ok: false, error: 'SMTP host is required (e.g. smtp.stackmail.com).' });
@@ -314,7 +488,7 @@ async function startServer() {
       await transporter.verify();
 
       const verifiedAtUtc = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
-      const senderLabel = (fromName || 'CPCloudHost').replace(/"/g, '').trim();
+      const senderLabel = (resolved.fromName || 'CPCloudHost').replace(/"/g, '').trim();
 
       const info = await transporter.sendMail({
         from: `"${senderLabel}" <${cleanFromEmail}>`,
@@ -409,10 +583,11 @@ async function startServer() {
       companyName?: string;
     };
 
-    const cleanHost = (smtp?.host || '').trim();
-    const cleanUser = (smtp?.username || '').trim();
-    const cleanPass = smtp?.password || '';
-    const numericPort = Number(smtp?.port || 465);
+    const resolvedSmtp = await resolveEffectiveSmtp(smtp);
+    const cleanHost = resolvedSmtp.host;
+    const cleanUser = resolvedSmtp.username;
+    const cleanPass = resolvedSmtp.password;
+    const numericPort = resolvedSmtp.port;
 
     if (!cleanHost || !cleanUser || !cleanPass || !toEmail) {
       res.status(400).json({ ok: false, error: 'SMTP credentials or recipient missing.' });
@@ -420,11 +595,11 @@ async function startServer() {
     }
 
     const useSsl =
-      smtp?.encryption === 'ssl' ||
-      (smtp?.encryption !== 'tls' && smtp?.encryption !== 'none' && numericPort === 465);
+      resolvedSmtp.encryption === 'ssl' ||
+      (resolvedSmtp.encryption !== 'tls' && resolvedSmtp.encryption !== 'none' && numericPort === 465);
     const brand = (companyName || 'CPCloudHost').trim();
-    const senderLabel = (smtp?.fromName || brand).replace(/"/g, '').trim();
-    const fromEmail = (smtp?.fromEmail || cleanUser).trim();
+    const senderLabel = (resolvedSmtp.fromName || brand).replace(/"/g, '').trim();
+    const fromEmail = (resolvedSmtp.fromEmail || cleanUser).trim();
 
     try {
       const transporter = nodemailer.createTransport({
@@ -489,7 +664,8 @@ async function startServer() {
 
   // Real WHM / cPanel JSON API Test Connection Ping + Package Sync
   app.post('/api/modules/whm/test-connection', async (req, res) => {
-    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors } = (req.body || {}) as {
+    const { moduleId, hostname, port, useSsl, username, apiToken, ignoreSslErrors } = (req.body || {}) as {
+      moduleId?: string;
       hostname?: string;
       port?: number | string;
       useSsl?: boolean;
@@ -501,7 +677,7 @@ async function startServer() {
     const cleanHost = (hostname || '').trim();
     const numericPort = Number(port || 2087);
     const cleanUser = (username || '').trim();
-    const cleanToken = (apiToken || '').trim();
+    const cleanToken = await resolveWhmTokenFromDb({ moduleId, hostname: cleanHost, apiToken });
 
     if (!cleanHost) {
       res.status(400).json({
@@ -703,6 +879,7 @@ async function startServer() {
   // Real WHM createacct provisioning endpoint
   app.post('/api/modules/whm/provision', async (req, res) => {
     const {
+      moduleId,
       hostname,
       port,
       useSsl,
@@ -716,6 +893,7 @@ async function startServer() {
       plan,
       contactEmail,
     } = (req.body || {}) as {
+      moduleId?: string;
       hostname?: string;
       port?: number | string;
       useSsl?: boolean;
@@ -730,8 +908,9 @@ async function startServer() {
       contactEmail?: string;
     };
 
+    const resolvedToken = await resolveWhmTokenFromDb({ moduleId, hostname, apiToken });
     const rawAcct = (acctUsername || cpanelUsername || '').trim();
-    if (!hostname || !username || !apiToken || !domain || !rawAcct || !plan) {
+    if (!hostname || !username || !resolvedToken || !domain || !rawAcct || !plan) {
       res.status(400).json({
         ok: false,
         error: 'Missing required WHM module or account provisioning parameters.',
@@ -757,7 +936,7 @@ async function startServer() {
         useSsl: useSsl !== false,
         path: `/json-api/createacct?${qs.toString()}`,
         username,
-        apiToken,
+        apiToken: resolvedToken,
         ignoreSslErrors: Boolean(ignoreSslErrors),
         timeoutMs: 25000,
       });
@@ -793,8 +972,9 @@ async function startServer() {
 
   // Real WHM change cPanel account password
   app.post('/api/modules/whm/passwd', async (req, res) => {
-    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, cpanelUsername, newPassword } =
+    const { moduleId, hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, cpanelUsername, newPassword } =
       (req.body || {}) as {
+        moduleId?: string;
         hostname?: string;
         port?: number | string;
         useSsl?: boolean;
@@ -805,8 +985,9 @@ async function startServer() {
         cpanelUsername?: string;
         newPassword?: string;
       };
+    const resolvedToken = await resolveWhmTokenFromDb({ moduleId, hostname, apiToken });
     const targetAcct = (acctUsername || cpanelUsername || '').trim();
-    if (!hostname || !username || !apiToken || !targetAcct || !newPassword) {
+    if (!hostname || !username || !resolvedToken || !targetAcct || !newPassword) {
       res.status(400).json({ ok: false, error: 'Missing required WHM parameters for password reset.' });
       return;
     }
@@ -822,7 +1003,7 @@ async function startServer() {
         useSsl: useSsl !== false,
         path: `/json-api/passwd?${qs.toString()}`,
         username,
-        apiToken,
+        apiToken: resolvedToken,
         ignoreSslErrors: Boolean(ignoreSslErrors),
       });
       const parsed = parseWhmJsonBody<{
@@ -845,8 +1026,9 @@ async function startServer() {
 
   // Real WHM suspend cPanel account
   app.post('/api/modules/whm/suspend', async (req, res) => {
-    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, cpanelUsername, reason } =
+    const { moduleId, hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, cpanelUsername, reason } =
       (req.body || {}) as {
+        moduleId?: string;
         hostname?: string;
         port?: number | string;
         useSsl?: boolean;
@@ -857,8 +1039,9 @@ async function startServer() {
         cpanelUsername?: string;
         reason?: string;
       };
+    const resolvedToken = await resolveWhmTokenFromDb({ moduleId, hostname, apiToken });
     const targetAcct = (acctUsername || cpanelUsername || '').trim();
-    if (!hostname || !username || !apiToken || !targetAcct) {
+    if (!hostname || !username || !resolvedToken || !targetAcct) {
       res.status(400).json({ ok: false, error: 'Missing required WHM parameters to suspend account.' });
       return;
     }
@@ -874,7 +1057,7 @@ async function startServer() {
         useSsl: useSsl !== false,
         path: `/json-api/suspendacct?${qs.toString()}`,
         username,
-        apiToken,
+        apiToken: resolvedToken,
         ignoreSslErrors: Boolean(ignoreSslErrors),
       });
       const parsed = parseWhmJsonBody<{
@@ -897,8 +1080,9 @@ async function startServer() {
 
   // Real WHM unsuspend cPanel account
   app.post('/api/modules/whm/unsuspend', async (req, res) => {
-    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, cpanelUsername } =
+    const { moduleId, hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, cpanelUsername } =
       (req.body || {}) as {
+        moduleId?: string;
         hostname?: string;
         port?: number | string;
         useSsl?: boolean;
@@ -908,8 +1092,9 @@ async function startServer() {
         acctUsername?: string;
         cpanelUsername?: string;
       };
+    const resolvedToken = await resolveWhmTokenFromDb({ moduleId, hostname, apiToken });
     const targetAcct = (acctUsername || cpanelUsername || '').trim();
-    if (!hostname || !username || !apiToken || !targetAcct) {
+    if (!hostname || !username || !resolvedToken || !targetAcct) {
       res.status(400).json({ ok: false, error: 'Missing required WHM parameters to unsuspend account.' });
       return;
     }
@@ -924,7 +1109,7 @@ async function startServer() {
         useSsl: useSsl !== false,
         path: `/json-api/unsuspendacct?${qs.toString()}`,
         username,
-        apiToken,
+        apiToken: resolvedToken,
         ignoreSslErrors: Boolean(ignoreSslErrors),
       });
       const parsed = parseWhmJsonBody<{
@@ -947,8 +1132,9 @@ async function startServer() {
 
   // Real WHM upgrade / downgrade package
   app.post('/api/modules/whm/changepackage', async (req, res) => {
-    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, cpanelUsername, pkg } =
+    const { moduleId, hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, cpanelUsername, pkg } =
       (req.body || {}) as {
+        moduleId?: string;
         hostname?: string;
         port?: number | string;
         useSsl?: boolean;
@@ -959,8 +1145,9 @@ async function startServer() {
         cpanelUsername?: string;
         pkg?: string;
       };
+    const resolvedToken = await resolveWhmTokenFromDb({ moduleId, hostname, apiToken });
     const targetAcct = (acctUsername || cpanelUsername || '').trim();
-    if (!hostname || !username || !apiToken || !targetAcct || !pkg) {
+    if (!hostname || !username || !resolvedToken || !targetAcct || !pkg) {
       res.status(400).json({ ok: false, error: 'Missing required WHM parameters for changepkg.' });
       return;
     }
@@ -976,7 +1163,7 @@ async function startServer() {
         useSsl: useSsl !== false,
         path: `/json-api/changepackage?${qs.toString()}`,
         username,
-        apiToken,
+        apiToken: resolvedToken,
         ignoreSslErrors: Boolean(ignoreSslErrors),
       });
       const parsed = parseWhmJsonBody<{
@@ -999,8 +1186,9 @@ async function startServer() {
 
   // Real WHM create_user_session SSO Direct Control Panel Login
   app.post('/api/modules/whm/sso-login', async (req, res) => {
-    const { hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, cpanelUsername, service } =
+    const { moduleId, hostname, port, useSsl, username, apiToken, ignoreSslErrors, acctUsername, cpanelUsername, service } =
       (req.body || {}) as {
+        moduleId?: string;
         hostname?: string;
         port?: number | string;
         useSsl?: boolean;
@@ -1011,8 +1199,15 @@ async function startServer() {
         cpanelUsername?: string;
         service?: string;
       };
+    const dbMod = await resolveWhmModuleConfigFromDb(moduleId).catch(() => null);
+    const resolvedHost = (hostname || dbMod?.hostname || '').trim();
+    const resolvedUser = (username || dbMod?.username || '').trim();
+    const resolvedPort = Number(port || dbMod?.port || 2087);
+    const resolvedSsl = useSsl !== undefined ? useSsl !== false : dbMod?.useSsl !== false;
+    const resolvedIgnoreSsl = ignoreSslErrors !== undefined ? Boolean(ignoreSslErrors) : Boolean(dbMod?.ignoreSslErrors);
+    const resolvedToken = await resolveWhmTokenFromDb({ moduleId: moduleId || dbMod?.id, hostname: resolvedHost, apiToken });
     const targetAcct = (acctUsername || cpanelUsername || '').trim();
-    if (!hostname || !username || !apiToken || !targetAcct) {
+    if (!resolvedHost || !resolvedUser || !resolvedToken || !targetAcct) {
       res.status(400).json({ ok: false, error: 'Missing required WHM parameters for SSO session.' });
       return;
     }
@@ -1023,13 +1218,13 @@ async function startServer() {
         service: service?.trim() || 'cpaneld',
       });
       const resp = await requestWhmJson({
-        hostname,
-        port: Number(port || 2087),
-        useSsl: useSsl !== false,
+        hostname: resolvedHost,
+        port: resolvedPort,
+        useSsl: resolvedSsl,
         path: `/json-api/create_user_session?${qs.toString()}`,
-        username,
-        apiToken,
-        ignoreSslErrors: Boolean(ignoreSslErrors),
+        username: resolvedUser,
+        apiToken: resolvedToken,
+        ignoreSslErrors: resolvedIgnoreSsl,
       });
       const parsed = parseWhmJsonBody<{
         metadata?: { result?: number; reason?: string };
@@ -1061,6 +1256,82 @@ async function startServer() {
       expectedClientId?: string;
     };
 
+    const clientIp = extractClientIp(req);
+    const ipBlock = await isIpBlocked(clientIp);
+    if (ipBlock.blocked) {
+      res.status(403).json({
+        ok: false,
+        error:
+          ipBlock.reason ||
+          'Access denied: Your IP address has been automatically blocked due to free-trial abuse.',
+      });
+      return;
+    }
+
+    const finalizeGoogleAuth = async (email: string, name: string, sub: string) => {
+      const cleanEmail = email.toLowerCase();
+      let token: string | undefined;
+      if (hasDatabaseConfigured()) {
+        await initDatabaseSchema();
+        const p = getPool();
+        const found = await p.query(
+          'SELECT id, email, role, status FROM platform_users WHERE LOWER(email) = $1 LIMIT 1',
+          [cleanEmail]
+        );
+        const row = found.rows[0];
+        if (row) {
+          if (row.status === 'suspended' || row.status === 'cancelled') {
+            res.status(403).json({
+              ok: false,
+              error: 'This account has been suspended or cancelled. Contact support@cpcloudhost.com.',
+            });
+            return;
+          }
+          token = issueSessionToken({
+            id: String(row.id),
+            email: String(row.email),
+            role: String(row.role),
+          });
+          setSessionCookie(res, token);
+        } else {
+          const newId = `USR-CL-${Math.floor(1000 + Math.random() * 9000)}`;
+          const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+          const username = cleanEmail.split('@')[0].replace(/[^a-z0-9._-]/g, '') || 'client';
+          const userRecord = {
+            id: newId,
+            name,
+            username,
+            email: cleanEmail,
+            role: 'client',
+            status: 'active',
+            kycVerified: false,
+            emailVerified: true,
+            freeTrialClaimed: false,
+            country: 'United States',
+            createdAt: nowUtc,
+            signupIp: clientIp,
+            lastIp: clientIp,
+            googleLinked: true,
+          };
+          await p.query(
+            `INSERT INTO platform_users (id, email, username, name, role, status, kyc_verified, email_verified, free_trial_claimed, signup_ip, last_ip, terms_accepted_at_utc, data, updated_at)
+             VALUES ($1,$2,$3,$4,'client','active',FALSE,TRUE,FALSE,$5,$5,$6,$7,NOW())`,
+            [newId, cleanEmail, username, name, clientIp, nowUtc, JSON.stringify(userRecord)]
+          );
+          token = issueSessionToken({ id: newId, email: cleanEmail, role: 'client' });
+          setSessionCookie(res, token);
+        }
+      }
+      res.json({
+        ok: true,
+        email: cleanEmail,
+        name,
+        sub,
+        token,
+        clientIp,
+      });
+    };
+
     try {
       if (idToken) {
         const gRes = await fetch(
@@ -1087,12 +1358,11 @@ async function startServer() {
           });
           return;
         }
-        res.json({
-          ok: true,
-          email: gData.email.toLowerCase(),
-          name: gData.name || gData.email.split('@')[0],
-          sub: gData.sub || '',
-        });
+        await finalizeGoogleAuth(
+          gData.email,
+          gData.name || gData.email.split('@')[0],
+          gData.sub || ''
+        );
         return;
       }
 
@@ -1112,12 +1382,11 @@ async function startServer() {
           });
           return;
         }
-        res.json({
-          ok: true,
-          email: uData.email.toLowerCase(),
-          name: uData.name || uData.email.split('@')[0],
-          sub: uData.sub || '',
-        });
+        await finalizeGoogleAuth(
+          uData.email,
+          uData.name || uData.email.split('@')[0],
+          uData.sub || ''
+        );
         return;
       }
 
@@ -1173,10 +1442,11 @@ async function startServer() {
       headerBadge?: string;
     };
 
-    const cleanHost = (smtp?.host || '').trim();
-    const cleanUser = (smtp?.username || '').trim();
-    const cleanPass = smtp?.password || '';
-    const numericPort = Number(smtp?.port || 465);
+    const resolvedSmtp = await resolveEffectiveSmtp(smtp);
+    const cleanHost = resolvedSmtp.host;
+    const cleanUser = resolvedSmtp.username;
+    const cleanPass = resolvedSmtp.password;
+    const numericPort = resolvedSmtp.port;
 
     if (!cleanHost || !cleanUser || !cleanPass || !toEmail || !subject || !body) {
       res.status(400).json({ ok: false, error: 'Missing SMTP credentials, recipient, or email body.' });
@@ -1184,11 +1454,11 @@ async function startServer() {
     }
 
     const useSsl =
-      smtp?.encryption === 'ssl' ||
-      (smtp?.encryption !== 'tls' && smtp?.encryption !== 'none' && numericPort === 465);
+      resolvedSmtp.encryption === 'ssl' ||
+      (resolvedSmtp.encryption !== 'tls' && resolvedSmtp.encryption !== 'none' && numericPort === 465);
     const brand = (companyName || 'CPCloudHost').trim();
-    const senderLabel = (smtp?.fromName || brand).replace(/"/g, '').trim();
-    const fromEmail = (smtp?.fromEmail || cleanUser).trim();
+    const senderLabel = (resolvedSmtp.fromName || brand).replace(/"/g, '').trim();
+    const fromEmail = (resolvedSmtp.fromEmail || cleanUser).trim();
     const primaryAccent = /^#[0-9a-fA-F]{3,8}$/.test(accentColor || '')
       ? accentColor!
       : '#0E6B63';
@@ -1257,6 +1527,394 @@ async function startServer() {
         ok: false,
         error: errorObj.message || 'SMTP templated email dispatch failed.',
       });
+    }
+  });
+
+  // =========================================================================
+  // SUPABASE POSTGRESQL PLATFORM BOOTSTRAP, SYNC, AUTH & ANTI-ABUSE APIs
+  // =========================================================================
+  app.get('/api/platform/bootstrap', async (req, res) => {
+    try {
+      if (!hasDatabaseConfigured()) {
+        res.json({ ok: true, isEmpty: true, state: null });
+        return;
+      }
+      const viewer = parseCookieToken(req);
+      const isEmpty = await isDatabaseEmpty();
+      const state = await getBootstrapState(viewer);
+      res.json({ ok: true, isEmpty, state });
+    } catch (err) {
+      console.error('[API] bootstrap failed:', err instanceof Error ? err.message : err);
+      res.status(500).json({ ok: false, error: 'Failed to load platform state from Supabase.' });
+    }
+  });
+
+  app.post('/api/platform/seed', async (req, res) => {
+    try {
+      if (!hasDatabaseConfigured()) {
+        res.status(400).json({ ok: false, error: 'DATABASE_URL not configured.' });
+        return;
+      }
+      const clientIp = extractClientIp(req);
+      const empty = await isDatabaseEmpty();
+      if (empty) {
+        await syncFullPlatformState(
+          { ...(req.body || {}), _seedIfEmpty: true },
+          { isAdmin: false, pruneMissing: false, clientIp }
+        );
+      }
+      const viewer = parseCookieToken(req);
+      const state = await getBootstrapState(viewer);
+      res.json({ ok: true, seeded: empty, state });
+    } catch (err) {
+      console.error('[API] seed failed:', err instanceof Error ? err.message : err);
+      res.status(500).json({ ok: false, error: 'Failed to seed initial platform data.' });
+    }
+  });
+
+  app.post('/api/platform/sync', async (req, res) => {
+    try {
+      if (!hasDatabaseConfigured()) {
+        res.json({ ok: true, skipped: true });
+        return;
+      }
+      const viewer = parseCookieToken(req);
+      const clientIp = extractClientIp(req);
+      const payload = (req.body || {}) as Record<string, unknown>;
+      const isAdmin = viewer?.role === 'admin';
+      await syncFullPlatformState(payload, {
+        isAdmin,
+        pruneMissing: Boolean(payload.pruneMissing && isAdmin),
+        clientIp,
+      });
+      broadcastPlatformUpdate('state_sync');
+      const state = await getBootstrapState(viewer);
+      res.json({ ok: true, state });
+    } catch (err) {
+      console.error('[API] sync failed:', err instanceof Error ? err.message : err);
+      res.status(500).json({ ok: false, error: 'Failed to sync platform state to database.' });
+    }
+  });
+
+  app.post('/api/auth/verify-login', async (req, res) => {
+    try {
+      const { identifier, password, portal } = (req.body || {}) as {
+        identifier?: string;
+        password?: string;
+        portal?: 'client' | 'admin';
+      };
+      if (!identifier?.trim() || !password) {
+        res.status(400).json({ ok: false, error: 'Please enter both username/email and password.' });
+        return;
+      }
+      const clientIp = extractClientIp(req);
+      const result = await verifyUserLoginInDb({
+        identifier,
+        password,
+        portal: portal === 'admin' ? 'admin' : 'client',
+        clientIp,
+      });
+      if (result.ok && result.token) {
+        setSessionCookie(res, result.token);
+      }
+      res.status(result.ok ? 200 : 401).json({ ...result, clientIp });
+    } catch (err) {
+      console.error('[AUTH] verify-login failed:', err instanceof Error ? err.message : err);
+      res.status(500).json({ ok: false, error: 'Authentication service error.' });
+    }
+  });
+
+  app.post('/api/auth/logout', (_req, res) => {
+    clearSessionCookie(res);
+    res.json({ ok: true });
+  });
+
+  app.post('/api/auth/register', async (req, res) => {
+    try {
+      const clientIp = extractClientIp(req);
+      const ipBlock = await isIpBlocked(clientIp);
+      if (ipBlock.blocked) {
+        res.status(403).json({
+          ok: false,
+          ipBlocked: true,
+          error:
+            ipBlock.reason ||
+            'Registration blocked: Multiple free trial abuse detected from your IP address.',
+        });
+        return;
+      }
+
+      const {
+        name,
+        email,
+        password,
+        company,
+        phone,
+        country,
+        termsAcceptedAtUtc,
+        emailVerified,
+        initialUser,
+      } = (req.body || {}) as {
+        name?: string;
+        email?: string;
+        password?: string;
+        company?: string;
+        phone?: string;
+        country?: string;
+        termsAcceptedAtUtc?: string;
+        emailVerified?: boolean;
+        initialUser?: Record<string, unknown>;
+      };
+
+      const cleanEmail = (email || '').trim().toLowerCase();
+      if (!cleanEmail || !password || password.trim().length < 8) {
+        res.status(400).json({
+          ok: false,
+          error: 'Valid email and password (minimum 8 characters) are required.',
+        });
+        return;
+      }
+      if (!termsAcceptedAtUtc) {
+        res.status(400).json({
+          ok: false,
+          error: 'You must accept the Terms & Conditions, Privacy Policy, and Abuse Policy.',
+        });
+        return;
+      }
+
+      if (hasDatabaseConfigured()) {
+        await initDatabaseSchema();
+        const p = getPool();
+        const dup = await p.query('SELECT id FROM platform_users WHERE LOWER(email) = $1 LIMIT 1', [
+          cleanEmail,
+        ]);
+        if (dup.rows.length > 0) {
+          res.status(409).json({ ok: false, error: 'An account with this email already exists.' });
+          return;
+        }
+
+        const cleanName = (name || cleanEmail.split('@')[0]).trim();
+        const cleanUsername = cleanEmail.split('@')[0].toLowerCase().replace(/[^a-z0-9._-]/g, '') || 'client';
+        const id = String(initialUser?.id || `USR-CL-${Math.floor(1000 + Math.random() * 9000)}`);
+        const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+        const hashed = hashPassword(password.trim());
+
+        const userRecord = {
+          ...(initialUser || {}),
+          id,
+          name: cleanName,
+          username: cleanUsername,
+          email: cleanEmail,
+          role: 'client',
+          status: 'active',
+          kycVerified: false,
+          emailVerified: Boolean(emailVerified),
+          freeTrialClaimed: false,
+          company: (company || '').trim() || undefined,
+          phone: (phone || '').trim() || undefined,
+          country: (country || 'United States').trim(),
+          createdAt: String(initialUser?.createdAt || nowUtc),
+          signupIp: clientIp,
+          lastIp: clientIp,
+          termsAcceptedAtUtc,
+          passwordSecret: hashed,
+        };
+
+        await p.query(
+          `INSERT INTO platform_users (id, email, username, name, role, status, kyc_verified, email_verified, free_trial_claimed, signup_ip, last_ip, terms_accepted_at_utc, data, updated_at)
+           VALUES ($1,$2,$3,$4,'client','active',FALSE,$5,FALSE,$6,$6,$7,$8,NOW())`,
+          [
+            id,
+            cleanEmail,
+            cleanUsername,
+            cleanName,
+            Boolean(emailVerified),
+            clientIp,
+            termsAcceptedAtUtc,
+            JSON.stringify(userRecord),
+          ]
+        );
+
+        const clientSafeUser = { ...userRecord };
+        delete (clientSafeUser as { passwordSecret?: string }).passwordSecret;
+
+        let token: string | undefined;
+        if (Boolean(emailVerified)) {
+          token = issueSessionToken({ id, email: cleanEmail, role: 'client' });
+          setSessionCookie(res, token);
+        }
+
+        broadcastPlatformUpdate('user_registered');
+        res.json({ ok: true, user: clientSafeUser, token, clientIp });
+        return;
+      }
+
+      res.json({ ok: true, clientIp });
+    } catch (err) {
+      console.error('[AUTH] register failed:', err instanceof Error ? err.message : err);
+      res.status(500).json({ ok: false, error: 'Registration failed. Please try again.' });
+    }
+  });
+
+  app.post('/api/auth/verify-otp-session', async (req, res) => {
+    try {
+      const { email } = (req.body || {}) as { email?: string };
+      const cleanEmail = (email || '').trim().toLowerCase();
+      if (!cleanEmail || !hasDatabaseConfigured()) {
+        res.status(400).json({ ok: false, error: 'Email is required.' });
+        return;
+      }
+      await initDatabaseSchema();
+      const p = getPool();
+      const resDb = await p.query(
+        'SELECT id, email, role, status, data FROM platform_users WHERE LOWER(email) = $1 LIMIT 1',
+        [cleanEmail]
+      );
+      const row = resDb.rows[0];
+      if (!row) {
+        res.status(404).json({ ok: false, error: 'User account not found.' });
+        return;
+      }
+      if (row.status === 'suspended' || row.status === 'cancelled') {
+        res.status(403).json({ ok: false, error: 'This account has been suspended or cancelled.' });
+        return;
+      }
+      const nextData = { ...(row.data as Record<string, unknown>), emailVerified: true };
+      await p.query(
+        'UPDATE platform_users SET email_verified = TRUE, data = $2, updated_at = NOW() WHERE id = $1',
+        [row.id, JSON.stringify(nextData)]
+      );
+      const token = issueSessionToken({
+        id: String(row.id),
+        email: String(row.email),
+        role: String(row.role),
+      });
+      setSessionCookie(res, token);
+      broadcastPlatformUpdate('email_verified');
+      res.json({ ok: true, token });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Session error.' });
+    }
+  });
+
+  app.post('/api/auth/update-password', async (req, res) => {
+    try {
+      const viewer = parseCookieToken(req);
+      const { emailOrId, currentPassword, newPassword } = (req.body || {}) as {
+        emailOrId?: string;
+        currentPassword?: string;
+        newPassword?: string;
+      };
+      const target = (viewer?.email || emailOrId || '').trim();
+      if (!target || !newPassword) {
+        res.status(400).json({ ok: false, error: 'Account and new password are required.' });
+        return;
+      }
+      const result = await updateUserPasswordInDb({
+        emailOrId: target,
+        currentPassword,
+        newPassword,
+        requireCurrentPassword: true,
+      });
+      res.status(result.ok ? 200 : 400).json(result);
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Password update failed.' });
+    }
+  });
+
+  app.post('/api/auth/admin-set-password', async (req, res) => {
+    try {
+      const viewer = parseCookieToken(req);
+      if (!viewer || viewer.role !== 'admin') {
+        res.status(403).json({ ok: false, error: 'Admin authorization required.' });
+        return;
+      }
+      const { emailOrId, newPassword } = (req.body || {}) as {
+        emailOrId?: string;
+        newPassword?: string;
+      };
+      if (!emailOrId || !newPassword) {
+        res.status(400).json({ ok: false, error: 'Target account and new password are required.' });
+        return;
+      }
+      const result = await updateUserPasswordInDb({
+        emailOrId,
+        newPassword,
+        requireCurrentPassword: false,
+      });
+      res.status(result.ok ? 200 : 400).json(result);
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Admin password update failed.' });
+    }
+  });
+
+  app.post('/api/security/validate-trial', async (req, res) => {
+    try {
+      const { email, orderId, commitTrialClaim } = (req.body || {}) as {
+        email?: string;
+        orderId?: string;
+        commitTrialClaim?: boolean;
+      };
+      if (!email?.trim()) {
+        res.status(400).json({ ok: false, allowed: false, error: 'Client email is required.' });
+        return;
+      }
+      const clientIp = extractClientIp(req);
+      const result = await validateAndRecordFreeTrial({
+        email: email.trim().toLowerCase(),
+        clientIp,
+        orderId,
+        commitTrialClaim: Boolean(commitTrialClaim),
+      });
+      if (result.ipBlocked || result.accountSuspended || commitTrialClaim) {
+        broadcastPlatformUpdate('trial_security');
+      }
+      res.status(result.allowed ? 200 : 403).json({ ...result, clientIp });
+    } catch (err) {
+      res.status(500).json({ ok: false, allowed: false, error: err instanceof Error ? err.message : 'Trial validation error.' });
+    }
+  });
+
+  app.post('/api/security/admin-ip-block', async (req, res) => {
+    try {
+      const viewer = parseCookieToken(req);
+      if (!viewer || viewer.role !== 'admin') {
+        res.status(403).json({ ok: false, error: 'Admin authorization required.' });
+        return;
+      }
+      const { ipAddress, blocked, reason } = (req.body || {}) as {
+        ipAddress?: string;
+        blocked?: boolean;
+        reason?: string;
+      };
+      if (!ipAddress?.trim()) {
+        res.status(400).json({ ok: false, error: 'IP address is required.' });
+        return;
+      }
+      await adminSetIpBlockedStatus(ipAddress.trim(), Boolean(blocked), reason);
+      broadcastPlatformUpdate('ip_security_updated');
+      const state = await getBootstrapState(viewer);
+      res.json({ ok: true, ipSecurityRecords: state.ipSecurityRecords });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'IP block update failed.' });
+    }
+  });
+
+  app.post('/api/billing/run-cycle', async (req, res) => {
+    try {
+      const viewer = parseCookieToken(req);
+      if (!viewer || viewer.role !== 'admin') {
+        res.status(403).json({ ok: false, error: 'Admin authorization required.' });
+        return;
+      }
+      const result = await runAutomatedTrialAndRenewalBilling(sendAutomatedBillingEmail);
+      if (result.convertedTrials > 0 || result.generatedInvoices > 0) {
+        broadcastPlatformUpdate('billing_cycle');
+      }
+      const state = await getBootstrapState(viewer);
+      res.json({ ok: true, ...result, state });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Billing cycle execution failed.' });
     }
   });
 
@@ -1342,7 +2000,7 @@ async function startServer() {
 
     const appended = liveChatStore.appendMessage(sess.id, {
       senderRole: role,
-      senderName: (senderName || '').trim() || (role === 'admin' ? 'Support Engineer' : sess.clientName),
+      senderName: role === 'admin' ? 'Support cpcloudhost' : (senderName || '').trim() || sess.clientName,
       body: textBody || 'Sent file attachment(s) for review.',
       attachments: attCheck.attachments,
       markAdminRead: role === 'admin',
@@ -1456,13 +2114,13 @@ async function startServer() {
   });
 
   app.post('/api/live-chat/sessions/:id/join', (req, res) => {
-    const { adminName, adminEmail } = (req.body || {}) as {
+    const { adminEmail } = (req.body || {}) as {
       adminName?: string;
       adminEmail?: string;
     };
     const updated = liveChatStore.joinAsAdmin(
       req.params.id,
-      (adminName || '').trim() || 'Senior Support Engineer',
+      'Support cpcloudhost',
       adminEmail
     );
     if (!updated) {
@@ -1474,10 +2132,9 @@ async function startServer() {
   });
 
   app.post('/api/live-chat/sessions/:id/return-ai', (req, res) => {
-    const { adminName } = (req.body || {}) as { adminName?: string };
     const updated = liveChatStore.returnToAi(
       req.params.id,
-      (adminName || '').trim() || 'Support Staff'
+      'Support cpcloudhost'
     );
     if (!updated) {
       res.status(404).json({ ok: false, error: 'Active chat session not found.' });
@@ -1488,14 +2145,14 @@ async function startServer() {
   });
 
   app.post('/api/live-chat/sessions/:id/close', (req, res) => {
-    const { closedBy, actorName } = (req.body || {}) as {
+    const { closedBy } = (req.body || {}) as {
       closedBy?: 'client' | 'admin';
       actorName?: string;
     };
     const updated = liveChatStore.closeSession(
       req.params.id,
       closedBy === 'admin' ? 'admin' : 'client',
-      actorName
+      closedBy === 'admin' ? 'Support cpcloudhost' : undefined
     );
     if (!updated) {
       res.status(404).json({ ok: false, error: 'Live chat session not found.' });

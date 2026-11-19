@@ -16,11 +16,11 @@ export const SwitchCreditsBanner: React.FC<SwitchCreditsBannerProps> = ({
   const sectionCms = homeCms?.sections?.find((s) => s.id === 'switch-credits');
 
   const heading =
-    sectionCms?.heading?.trim() ||
-    "Switch to CP Cloud Hosting and we'll credit your unused time from your current provider.";
+    sectionCms?.heading?.trim().replace(/cpcloudhosting\.com/gi, 'cpcloudhost.com').replace(/CP Cloud Hosting/gi, 'cpcloudhost.com') ||
+    "Switch to cpcloudhost.com and we'll credit your unused time from your current provider.";
   const body =
-    sectionCms?.body?.trim() ||
-    'Are you locked in with your current web host? Our Switch Credits give you money back on any time you have left on your plan, so you can join CP Cloud Hosting sooner. Switch your cPanel or StackCP Web Hosting Now!';
+    sectionCms?.body?.trim().replace(/cpcloudhosting\.com/gi, 'cpcloudhost.com').replace(/CP Cloud Hosting/gi, 'cpcloudhost.com') ||
+    'Are you locked in with your current web host? Our Switch Credits give you money back on any time you have left on your plan, so you can join cpcloudhost.com sooner. Switch your cPanel or StackCP Web Hosting Now!';
   const ctaText = sectionCms?.ctaText?.trim() || 'Switch Now';
 
   return (

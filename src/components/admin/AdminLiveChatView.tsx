@@ -252,7 +252,7 @@ export const AdminLiveChatView: React.FC<AdminLiveChatViewProps> = ({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            adminName: currentUser?.name || 'Senior Support Engineer',
+            adminName: 'Support cpcloudhost',
             adminEmail: currentUser?.email,
           }),
         }
@@ -284,7 +284,7 @@ export const AdminLiveChatView: React.FC<AdminLiveChatViewProps> = ({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            adminName: currentUser?.name || 'Support Staff',
+            adminName: 'Support cpcloudhost',
           }),
         }
       );
@@ -311,7 +311,7 @@ export const AdminLiveChatView: React.FC<AdminLiveChatViewProps> = ({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             closedBy: 'admin',
-            actorName: currentUser?.name || 'Support Staff',
+            actorName: 'Support cpcloudhost',
           }),
         }
       );
@@ -368,7 +368,7 @@ export const AdminLiveChatView: React.FC<AdminLiveChatViewProps> = ({
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              adminName: currentUser?.name || 'Senior Support Engineer',
+              adminName: 'Support cpcloudhost',
               adminEmail: currentUser?.email,
             }),
           }
@@ -382,7 +382,7 @@ export const AdminLiveChatView: React.FC<AdminLiveChatViewProps> = ({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             senderRole: 'admin',
-            senderName: `${currentUser?.name || 'Support Admin'} · Live Engineer`,
+            senderName: 'Support cpcloudhost',
             body: replyDraft.trim(),
             attachments: replyAttachments,
           }),

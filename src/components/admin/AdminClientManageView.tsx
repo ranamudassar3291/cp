@@ -84,6 +84,7 @@ const TICKET_DEPARTMENTS: TicketDepartment[] = [
   'Billing',
   'Account',
   'Support',
+  'Abuse',
 ];
 
 const DATACENTERS = [

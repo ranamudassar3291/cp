@@ -6,6 +6,10 @@ import type {
   LiveChatSenderRole,
   LiveChatSession,
 } from '../src/types/liveChat';
+import {
+  loadLiveChatSessionsFromDb,
+  upsertLiveChatSessionInDb,
+} from './db';
 
 const DATA_DIR = path.resolve(process.cwd(), '.data');
 const STORE_FILE = path.join(DATA_DIR, 'live-chat-sessions.json');
@@ -31,6 +35,23 @@ class LiveChatStore {
     this.sweepExpiredSessions();
   }
 
+  public async hydrateFromDatabase(): Promise<void> {
+    const dbSessions = await loadLiveChatSessionsFromDb();
+    for (const sess of dbSessions) {
+      if (!sess?.id) continue;
+      const existing = this.sessions.get(sess.id);
+      if (!existing || sess.updatedAtMs >= existing.updatedAtMs) {
+        this.sessions.set(sess.id, sess);
+      }
+    }
+    if (this.sessions.size > 0 && dbSessions.length === 0) {
+      for (const sess of this.sessions.values()) {
+        void upsertLiveChatSessionInDb(sess);
+      }
+    }
+    this.sweepExpiredSessions();
+  }
+
   private loadFromDisk() {
     try {
       if (!fs.existsSync(STORE_FILE)) return;
@@ -48,7 +69,7 @@ class LiveChatStore {
     }
   }
 
-  private persistToDisk() {
+  private persistToDisk(changedSession?: LiveChatSession) {
     try {
       fs.mkdirSync(DATA_DIR, { recursive: true });
       const arr = Array.from(this.sessions.values()).sort(
@@ -57,6 +78,9 @@ class LiveChatStore {
       fs.writeFileSync(STORE_FILE, JSON.stringify(arr), 'utf8');
     } catch {
       // Non-fatal if disk write fails in restricted container
+    }
+    if (changedSession) {
+      void upsertLiveChatSessionInDb(changedSession);
     }
   }
 
@@ -91,7 +115,10 @@ class LiveChatStore {
     }
 
     if (expiredChanged.length > 0) {
-      this.persistToDisk();
+      this.persistToDisk(expiredChanged[expiredChanged.length - 1]);
+      for (const expSess of expiredChanged.slice(0, -1)) {
+        void upsertLiveChatSessionInDb(expSess);
+      }
     }
     return expiredChanged;
   }
@@ -140,7 +167,7 @@ class LiveChatStore {
         }
         if (changed) {
           this.sessions.set(existing.id, next);
-          this.persistToDisk();
+          this.persistToDisk(next);
         }
         return next;
       }
@@ -181,7 +208,7 @@ class LiveChatStore {
     };
 
     this.sessions.set(id, session);
-    this.persistToDisk();
+    this.persistToDisk(session);
     return session;
   }
 
@@ -242,7 +269,7 @@ class LiveChatStore {
     };
 
     this.sessions.set(sessionId, updated);
-    this.persistToDisk();
+    this.persistToDisk(updated);
     return { session: updated, message };
   }
 
@@ -285,25 +312,26 @@ class LiveChatStore {
     };
 
     this.sessions.set(sessionId, updated);
-    this.persistToDisk();
+    this.persistToDisk(updated);
     return updated;
   }
 
   public joinAsAdmin(
     sessionId: string,
-    adminName: string,
+    _adminName: string,
     adminEmail?: string
   ): LiveChatSession | null {
     this.sweepExpiredSessions();
     const existing = this.sessions.get(sessionId);
     if (!existing || existing.status === 'closed') return null;
 
+    const unifiedAdminName = 'Support cpcloudhost';
     const nowMs = Date.now();
     const nowUtc = nowUtcLabel(nowMs);
     const expiresAtMs = nowMs + CHAT_AUTO_CLOSE_MS;
 
     const alreadyJoined =
-      existing.status === 'admin_active' && existing.assignedAdminName === adminName;
+      existing.status === 'admin_active' && existing.assignedAdminName === unifiedAdminName;
 
     const joinMsg: LiveChatMessage | null = alreadyJoined
       ? null
@@ -311,7 +339,7 @@ class LiveChatStore {
           id: makeMessageId('SYS'),
           senderRole: 'system',
           senderName: 'Live Agent Connected',
-          body: `${adminName} has joined the live chat and is reviewing your request.`,
+          body: `${unifiedAdminName} has joined the live chat and is reviewing your request.`,
           timestampUtc: nowUtc,
           timestampMs: nowMs,
         };
@@ -319,7 +347,7 @@ class LiveChatStore {
     const updated: LiveChatSession = {
       ...existing,
       status: 'admin_active',
-      assignedAdminName: adminName,
+      assignedAdminName: unifiedAdminName,
       assignedAdminEmail: adminEmail,
       updatedAtUtc: nowUtc,
       updatedAtMs: nowMs,
@@ -330,7 +358,7 @@ class LiveChatStore {
     };
 
     this.sessions.set(sessionId, updated);
-    this.persistToDisk();
+    this.persistToDisk(updated);
     return updated;
   }
 
@@ -343,15 +371,16 @@ class LiveChatStore {
       unreadForAdmin: 0,
     };
     this.sessions.set(sessionId, updated);
-    this.persistToDisk();
+    this.persistToDisk(updated);
     return updated;
   }
 
-  public returnToAi(sessionId: string, adminName: string): LiveChatSession | null {
+  public returnToAi(sessionId: string, _adminName: string): LiveChatSession | null {
     this.sweepExpiredSessions();
     const existing = this.sessions.get(sessionId);
     if (!existing || existing.status === 'closed') return null;
 
+    const unifiedAdminName = 'Support cpcloudhost';
     const nowMs = Date.now();
     const nowUtc = nowUtcLabel(nowMs);
     const expiresAtMs = nowMs + CHAT_AUTO_CLOSE_MS;
@@ -360,7 +389,7 @@ class LiveChatStore {
       id: makeMessageId('SYS'),
       senderRole: 'system',
       senderName: 'Support Routing',
-      body: `${adminName} handed this conversation back to CPCloudHost AI Assistant for ongoing troubleshooting.`,
+      body: `${unifiedAdminName} handed this conversation back to CPCloudHost AI Assistant for ongoing troubleshooting.`,
       timestampUtc: nowUtc,
       timestampMs: nowMs,
     };
@@ -377,20 +406,21 @@ class LiveChatStore {
     };
 
     this.sessions.set(sessionId, updated);
-    this.persistToDisk();
+    this.persistToDisk(updated);
     return updated;
   }
 
   public closeSession(
     sessionId: string,
     closedBy: 'client' | 'admin',
-    actorName?: string
+    _actorName?: string
   ): LiveChatSession | null {
     this.sweepExpiredSessions();
     const existing = this.sessions.get(sessionId);
     if (!existing) return null;
     if (existing.status === 'closed') return existing;
 
+    const unifiedAdminName = 'Support cpcloudhost';
     const nowMs = Date.now();
     const nowUtc = nowUtcLabel(nowMs);
 
@@ -401,7 +431,7 @@ class LiveChatStore {
       body:
         closedBy === 'client'
           ? 'You closed this live support session. You can start a new chat anytime.'
-          : `This live support session was closed by ${actorName || 'Support Staff'}. Start a new chat anytime if you need more help.`,
+          : `This live support session was closed by ${unifiedAdminName}. Start a new chat anytime if you need more help.`,
       timestampUtc: nowUtc,
       timestampMs: nowMs,
     };
@@ -413,13 +443,13 @@ class LiveChatStore {
       updatedAtMs: nowMs,
       closedAtUtc: nowUtc,
       closedBy,
-      closeReason: closedBy === 'client' ? 'Closed by client' : `Closed by ${actorName || 'Admin'}`,
+      closeReason: closedBy === 'client' ? 'Closed by client' : `Closed by ${unifiedAdminName}`,
       unreadForAdmin: 0,
       messages: [...existing.messages, sysMsg],
     };
 
     this.sessions.set(sessionId, updated);
-    this.persistToDisk();
+    this.persistToDisk(updated);
     return updated;
   }
 }

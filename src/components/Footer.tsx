@@ -442,6 +442,18 @@ export const Footer: React.FC<FooterProps> = ({
             <span aria-hidden="true">·</span>
             <span>30-Day Money-Back Guarantee</span>
             <span aria-hidden="true">·</span>
+            <button
+              type="button"
+              onClick={() => {
+                if (typeof window !== 'undefined') {
+                  window.dispatchEvent(new CustomEvent('cpcloud:open-cookie-settings'));
+                }
+              }}
+              className="hover:text-[#10B981] transition-colors cursor-pointer whitespace-nowrap"
+            >
+              Cookie Settings
+            </button>
+            <span aria-hidden="true">·</span>
             <span>{cmsSiteSettings.supportEmail || 'support@cpcloudhost.com'}</span>
           </div>
         </div>

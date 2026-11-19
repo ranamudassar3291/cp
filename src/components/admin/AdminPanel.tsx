@@ -30,6 +30,7 @@ import {
   Paperclip,
   Plus,
   Receipt,
+  RefreshCw,
   RotateCcw,
   Save,
   Search,
@@ -70,6 +71,7 @@ import {
 } from '../../context/PlatformContext';
 import { downloadInvoicePdf } from '../../utils/invoicePdfGenerator';
 import { useCurrency } from '../../context/CurrencyContext';
+import { evaluateDomainLifecycle } from '../../utils/domainLifecycle';
 import { applyPageSeoMetadata } from '../../utils/seoManager';
 import { AdminClientManageView } from './AdminClientManageView';
 import { AdminPaymentMethodsView } from './AdminPaymentMethodsView';
@@ -142,12 +144,46 @@ const TICKET_DEPARTMENTS: TicketDepartment[] = [
   'Billing',
   'Account',
   'Support',
+  'Abuse',
 ];
 
 const MAX_ATTACHMENT_COUNT = 5;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const ACCEPTED_ATTACHMENT_TYPES =
   'image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/csv,application/zip,.log,.txt,.json';
+
+function generateRandomCpanelUsernameFromDomain(domain: string): string {
+  const clean = domain
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .split('/')[0]
+    .replace(/[^a-z0-9]/g, '');
+  let base = clean.replace(/^[0-9]+/, '').slice(0, 5);
+  if (!base) base = 'cpusr';
+  const suffix = String(Math.floor(100 + Math.random() * 900));
+  return `${base}${suffix}`.slice(0, 8);
+}
+
+function generateStrongControlPassword(): string {
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const lower = 'abcdefghijkmnpqrstuvwxyz';
+  const digits = '23456789';
+  const symbols = '!@#$%^&*';
+  const all = upper + lower + digits + symbols;
+  let out =
+    upper[Math.floor(Math.random() * upper.length)] +
+    lower[Math.floor(Math.random() * lower.length)] +
+    digits[Math.floor(Math.random() * digits.length)] +
+    symbols[Math.floor(Math.random() * symbols.length)];
+  for (let i = 0; i < 10; i += 1) {
+    out += all[Math.floor(Math.random() * all.length)];
+  }
+  return out
+    .split('')
+    .sort(() => Math.random() - 0.5)
+    .join('');
+}
 
 function parseAdminRoute(rawPath?: string): {
   section: AdminSection;
@@ -488,12 +524,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     addOrder,
     updateOrderStatus,
     approveOrderWithServer,
+    approveSharedHostingOrder,
+    approveDomainRegistrationAndSendVerify,
+    adminStartDomainTransfer,
+    adminCompleteDomainTransfer,
     generateInvoiceForOrder,
     adminUpdateOrderDetails,
     adminHandleCancellation,
     adminProcessRefund,
     replyTicketAsAdmin,
     updateTicketByAdmin,
+    adminCreateAbuseTicketAndNotify,
     saveCmsPage,
     createCmsPage,
     deleteCmsPage,
@@ -659,6 +700,96 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [expandedImageIds, setExpandedImageIds] = useState<Record<string, boolean>>({});
   const replyFileInputRef = useRef<HTMLInputElement | null>(null);
 
+  // =========================================================================
+  // ABUSE TICKET & CLIENT SPAMMING NOTICE MODAL STATE
+  // =========================================================================
+  const [showAbuseTicketModal, setShowAbuseTicketModal] = useState(false);
+  const [abuseTargetUserId, setAbuseTargetUserId] = useState('');
+  const [abuseTargetEmail, setAbuseTargetEmail] = useState('');
+  const [abuseTargetService, setAbuseTargetService] = useState('');
+  const [abuseTargetSubject, setAbuseTargetSubject] = useState('');
+  const [abuseTargetMessage, setAbuseTargetMessage] = useState('');
+  const [abuseTargetPriority, setAbuseTargetPriority] = useState<TicketPriority>('High');
+  const [abuseSuspendService, setAbuseSuspendService] = useState(false);
+  const [abuseRelatedCaseId, setAbuseRelatedCaseId] = useState('');
+  const [abuseSubmitting, setAbuseSubmitting] = useState(false);
+  const [abuseFormError, setAbuseFormError] = useState('');
+
+  const openAbuseTicketModal = (prefill?: {
+    targetResource?: string;
+    categoryLabel?: string;
+    evidenceDetails?: string;
+    caseId?: string;
+  }) => {
+    const resource = (prefill?.targetResource || '').trim();
+    const matchedOrder = resource
+      ? orders.find((o) =>
+          resource.toLowerCase().includes(o.domainOrHost.toLowerCase())
+        )
+      : undefined;
+    const clientList = users.filter((u) => u.role !== 'admin');
+    const matchedUser = matchedOrder
+      ? clientList.find(
+          (u) => u.email.toLowerCase() === matchedOrder.clientEmail.toLowerCase()
+        )
+      : clientList[0];
+
+    setAbuseTargetUserId(matchedUser?.id || '');
+    setAbuseTargetEmail(matchedUser?.email || '');
+    setAbuseTargetService(matchedOrder?.domainOrHost || resource);
+    setAbuseRelatedCaseId(prefill?.caseId || '');
+    setAbuseTargetSubject(
+      prefill?.categoryLabel
+        ? `Abuse Notice: ${prefill.categoryLabel}${matchedOrder ? ` (${matchedOrder.domainOrHost})` : ''}`
+        : 'Abuse Department Compliance Notice — Outbound Spamming / AUP Alert'
+    );
+    setAbuseTargetMessage(
+      prefill?.evidenceDetails
+        ? `Our Abuse & Network Compliance team detected policy-violating activity associated with ${matchedOrder?.domainOrHost || resource || 'your hosting service'}.\n\nIncident Summary:\n${prefill.evidenceDetails}\n\nRequired Action: Please stop any outbound spamming scripts, compromised mailers, or unauthorized workloads within 24 hours and reply to this Abuse ticket with remediation confirmation to avoid service suspension.`
+        : 'Our Abuse & Network Compliance desk detected outbound spamming / suspicious mail or malware activity originating from your service.\n\nRequired Action: Audit your mail queues, reset compromised credentials, remove unauthorized scripts, and reply to this Abuse ticket within 24 hours.'
+    );
+    setAbuseTargetPriority('Urgent');
+    setAbuseSuspendService(false);
+    setAbuseFormError('');
+    setShowAbuseTicketModal(true);
+  };
+
+  const handleSubmitAbuseTicket = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (abuseSubmitting) return;
+    if (!abuseTargetUserId && !abuseTargetEmail.trim()) {
+      setAbuseFormError('Select a client account to notify.');
+      return;
+    }
+    if (!abuseTargetSubject.trim() || !abuseTargetMessage.trim()) {
+      setAbuseFormError('Enter both a subject and compliance notice message.');
+      return;
+    }
+    setAbuseFormError('');
+    setAbuseSubmitting(true);
+    const res = await adminCreateAbuseTicketAndNotify({
+      userId: abuseTargetUserId || undefined,
+      clientEmail: abuseTargetEmail.trim() || undefined,
+      relatedService: abuseTargetService.trim() || undefined,
+      subject: abuseTargetSubject.trim(),
+      message: abuseTargetMessage.trim(),
+      priority: abuseTargetPriority,
+      suspendMatchingService: abuseSuspendService,
+      abuseCaseTicketId: abuseRelatedCaseId || undefined,
+    });
+    setAbuseSubmitting(false);
+    if (!res.ok) {
+      setAbuseFormError(res.error || 'Could not issue Abuse ticket.');
+      return;
+    }
+    setShowAbuseTicketModal(false);
+    showToast(
+      res.emailSent
+        ? `Abuse ticket ${res.ticket?.id} opened & compliance notice emailed to client`
+        : `Abuse ticket ${res.ticket?.id} opened for client (enable SMTP for email delivery)`
+    );
+  };
+
   const selectedSupportTicket: SupportTicketRecord | null = useMemo(() => {
     if (!activeTicketId) return null;
     return tickets.find((t) => t.id === activeTicketId) ?? null;
@@ -730,7 +861,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           department: selectedSupportTicket.department,
           relatedService: selectedSupportTicket.relatedService,
           history: selectedSupportTicket.messages.map((m) => ({
-            sender: `${m.authorRole.toUpperCase()} (${m.authorName})`,
+            sender: `${m.authorRole.toUpperCase()} (${m.authorRole === 'support' ? 'Support cpcloudhost' : m.authorName})`,
             body: m.body,
             attachments: m.attachments,
           })),
@@ -1038,6 +1169,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [approveModuleId, setApproveModuleId] = useState('');
   const [approvePackageName, setApprovePackageName] = useState('');
   const [approveServerIp, setApproveServerIp] = useState('');
+  const [approveCpanelUser, setApproveCpanelUser] = useState('');
+  const [approveControlPassword, setApproveControlPassword] = useState('');
+  const [showApprovePassword, setShowApprovePassword] = useState(true);
   const [approveNotes, setApproveNotes] = useState('');
   const [approveLiveWhm, setApproveLiveWhm] = useState(false);
   const [approveSubmitting, setApproveSubmitting] = useState(false);
@@ -1275,7 +1409,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setApprovingOrder(ord);
     setApproveModuleId(defaultMod?.id || '');
     setApprovePackageName(defaultPkg);
-    setApproveServerIp(ord.serverIp || '');
+    setApproveServerIp(ord.serverIp || defaultMod?.hostname || '');
+    setApproveCpanelUser(
+      ord.productType === 'Shared Cloud'
+        ? ord.domainOrHost
+        : ord.cpanelUsername || generateRandomCpanelUsernameFromDomain(ord.domainOrHost)
+    );
+    setApproveControlPassword(
+      ord.controlPanelPassword || generateStrongControlPassword()
+    );
+    setShowApprovePassword(true);
     setApproveNotes('');
     setApproveLiveWhm(
       Boolean(defaultMod?.moduleType === 'whm' && defaultMod.apiToken.trim())
@@ -1286,6 +1429,78 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const handleConfirmApproveOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!approvingOrder || approveSubmitting) return;
+
+    // 1. Shared Cloud -> StackCP dedicated flow
+    if (approvingOrder.productType === 'Shared Cloud') {
+      if (!approveControlPassword.trim()) {
+        setApproveError('Enter a StackCP password to issue to the client.');
+        return;
+      }
+      const res = approveSharedHostingOrder({
+        orderId: approvingOrder.id,
+        password: approveControlPassword.trim(),
+        notes: approveNotes.trim() || undefined,
+      });
+      if (!res.ok) {
+        setApproveError(res.error ?? 'Could not approve Shared Cloud order.');
+        return;
+      }
+      const snapshot = approvingOrder;
+      setApprovingOrder(null);
+      if (res.invoice) {
+        setLastApprovedInvoiceNotice({
+          orderId: snapshot.id,
+          invoice: res.invoice,
+          createdNew: false,
+          serverName: 'stackcp.com (Shared Cloud)',
+        });
+      }
+      showToast(
+        `Shared Cloud ${snapshot.domainOrHost} approved · StackCP credentials emailed & Invoice marked PAID`
+      );
+      return;
+    }
+
+    // 2. Domain Registration -> Activate w/ attached nameservers, mark invoice PAID, send verification link
+    if (approvingOrder.productType === 'Domain Registration') {
+      const res = approveDomainRegistrationAndSendVerify(approvingOrder.id);
+      if (!res.ok) {
+        setApproveError(res.error ?? 'Could not approve domain registration.');
+        return;
+      }
+      const snapshot = approvingOrder;
+      setApprovingOrder(null);
+      showToast(
+        `Domain ${snapshot.domainOrHost} approved · Invoice PAID & WHOIS verification dispatched`
+      );
+      return;
+    }
+
+    // 3. Domain Transfer -> Start 7-day transfer OR complete transfer
+    if (approvingOrder.productType === 'Domain Transfer') {
+      const lc = evaluateDomainLifecycle(approvingOrder);
+      const res =
+        lc.transferStatus === 'pending_admin'
+          ? adminStartDomainTransfer(approvingOrder.id)
+          : adminCompleteDomainTransfer(
+              approvingOrder.id,
+              lc.transferCanAdminAllowManage
+            );
+      if (!res.ok) {
+        setApproveError(res.error ?? 'Could not update domain transfer.');
+        return;
+      }
+      const snapshot = approvingOrder;
+      setApprovingOrder(null);
+      showToast(
+        lc.transferStatus === 'pending_admin'
+          ? `7-day transfer started for ${snapshot.domainOrHost}`
+          : `Domain transfer ${snapshot.domainOrHost} completed · Invoice marked PAID`
+      );
+      return;
+    }
+
+    // 4. cPanel Hosting & other server-provisioned hosting
     if (!approveModuleId) {
       setApproveError('Select a provisioning server module before approving.');
       return;
@@ -1293,7 +1508,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
     const selectedMod = provisioningModules.find((m) => m.id === approveModuleId);
     let extraNote = approveNotes.trim();
-    let provisionedCpanelUser = approvingOrder.cpanelUsername || '';
+    let provisionedCpanelUser =
+      approveCpanelUser.trim() ||
+      approvingOrder.cpanelUsername ||
+      generateRandomCpanelUsernameFromDomain(approvingOrder.domainOrHost);
+    const provisionedControlPassword =
+      approveControlPassword.trim() || generateStrongControlPassword();
     let provisionedServerIp = approveServerIp.trim();
 
     if (
@@ -1305,14 +1525,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setApproveSubmitting(true);
       setApproveError('');
       try {
-        const cleanUser =
-          approvingOrder.cpanelUsername?.trim() ||
-          approvingOrder.domainOrHost
-            .replace(/[^a-z0-9]/gi, '')
-            .toLowerCase()
-            .replace(/^[0-9]+/, '')
-            .slice(0, 8) ||
-          'cpuser01';
+        const cleanUser = provisionedCpanelUser
+          .replace(/[^a-z0-9]/gi, '')
+          .toLowerCase()
+          .replace(/^[0-9]+/, '')
+          .slice(0, 8) || 'cpuser01';
         const res = await fetch('/api/modules/whm/provision', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1326,6 +1543,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             domain: approvingOrder.domainOrHost,
             acctUsername: cleanUser,
             cpanelUsername: cleanUser,
+            password: provisionedControlPassword,
             plan: approvePackageName.trim() || selectedMod.packages[0] || 'default',
             contactEmail: approvingOrder.clientEmail,
           }),
@@ -1367,12 +1585,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setApproveSubmitting(false);
     }
 
+    const resolvedNameservers =
+      selectedMod?.nameservers?.filter(Boolean).length
+        ? selectedMod.nameservers
+        : approvingOrder.nameservers;
+    const resolvedCpUrl = selectedMod?.hostname
+      ? `https://${selectedMod.hostname}:${approvingOrder.productType === 'Reseller Hosting' ? 2087 : 2083}`
+      : approvingOrder.controlPanelUrl;
+
     const result = approveOrderWithServer({
       orderId: approvingOrder.id,
       serverModuleId: approveModuleId,
       serverPackageName: approvePackageName.trim(),
       serverIp: provisionedServerIp || undefined,
       cpanelUsername: provisionedCpanelUser || undefined,
+      controlPanelUrl: resolvedCpUrl,
+      controlPanelPassword: provisionedControlPassword,
+      nameservers: resolvedNameservers,
       notes: extraNote || undefined,
     });
 
@@ -2076,6 +2305,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </button>
                     ))}
                   </div>
+
+                  <button
+                    type="button"
+                    onClick={() => openAbuseTicketModal()}
+                    className="min-h-[34px] inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#DC2626] hover:bg-red-700 text-white text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
+                  >
+                    <ShieldAlert className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Issue Abuse Notice</span>
+                  </button>
                 </div>
               </div>
 
@@ -2240,7 +2478,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             <div className="flex flex-wrap items-center justify-between gap-2 text-xs pb-2.5 border-b border-slate-200/70">
                               <div className="flex items-center gap-2">
                                 <span className="font-semibold text-[#0F172A]">
-                                  {msg.authorName}
+                                  {isStaff ? 'Support cpcloudhost' : msg.authorName}
                                 </span>
                                 <span className="text-slate-300">·</span>
                                 <span
@@ -4361,10 +4599,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           )}
                           {selectedOrder.cpanelUsername && (
                             <div className="flex justify-between">
-                              <span className="text-slate-500">cPanel Username</span>
+                              <span className="text-slate-500">Control Username</span>
                               <span className="font-mono font-semibold text-[#0F172A]">
                                 {selectedOrder.cpanelUsername}
                               </span>
+                            </div>
+                          )}
+                          {selectedOrder.controlPanelUrl && (
+                            <div className="flex justify-between gap-2">
+                              <span className="text-slate-500">Panel URL</span>
+                              <a
+                                href={selectedOrder.controlPanelUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="font-mono font-semibold text-[#0E6B63] hover:underline truncate"
+                              >
+                                {selectedOrder.controlPanelUrl}
+                              </a>
                             </div>
                           )}
                           {selectedOrder.serverIp && (
@@ -4372,6 +4623,30 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               <span className="text-slate-500">Server IP</span>
                               <span className="font-mono text-[#0F172A]">
                                 {selectedOrder.serverIp}
+                              </span>
+                            </div>
+                          )}
+                          {selectedOrder.nameservers && selectedOrder.nameservers.length > 0 && (
+                            <div className="flex justify-between gap-2">
+                              <span className="text-slate-500 shrink-0">Nameservers</span>
+                              <span className="font-mono text-right text-[#0F172A] break-all">
+                                {selectedOrder.nameservers.join(', ')}
+                              </span>
+                            </div>
+                          )}
+                          {selectedOrder.eppCode && (
+                            <div className="flex justify-between gap-2">
+                              <span className="text-slate-500">EPP Auth Code</span>
+                              <span className="font-mono font-bold text-[#0E6B63]">
+                                {selectedOrder.eppCode}
+                              </span>
+                            </div>
+                          )}
+                          {selectedOrder.linkedFreeDomainOrderId && (
+                            <div className="flex justify-between gap-2">
+                              <span className="text-slate-500">Free 1-Yr .com</span>
+                              <span className="font-mono font-semibold text-[#16A34A]">
+                                Linked ({selectedOrder.linkedFreeDomainOrderId})
                               </span>
                             </div>
                           )}
@@ -4416,7 +4691,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             onClick={() => openApproveModal(selectedOrder)}
                             className="w-full py-2 px-4 rounded-lg bg-[#16A34A] hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer"
                           >
-                            Approve &amp; Assign Provisioning Server
+                            {selectedOrder.productType === 'Shared Cloud'
+                              ? 'Approve & Issue StackCP Password'
+                              : selectedOrder.productType === 'Domain Registration'
+                                ? 'Approve Domain & Dispatch Verification'
+                                : selectedOrder.productType === 'Domain Transfer'
+                                  ? 'Review & Approve Domain Transfer'
+                                  : 'Approve & Provision Hosting Server'}
                           </button>
                         )}
                         {selectedOrder.status === 'active' && (
@@ -5042,12 +5323,29 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </span>
                       </label>
 
-                      <button
-                        type="submit"
-                        className="w-full py-2.5 px-4 text-xs font-semibold text-white bg-[#0E6B63] hover:bg-[#0A534D] rounded-lg transition-colors cursor-pointer"
-                      >
-                        Apply Moderation Decision
-                      </button>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <button
+                          type="submit"
+                          className="w-full py-2.5 px-4 text-xs font-semibold text-white bg-[#0E6B63] hover:bg-[#0A534D] rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                        >
+                          Apply Moderation Decision
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openAbuseTicketModal({
+                              targetResource: selectedAbuseTicket.targetResource,
+                              categoryLabel: selectedAbuseTicket.categoryLabel,
+                              evidenceDetails: selectedAbuseTicket.evidenceDetails,
+                              caseId: selectedAbuseTicket.ticketId,
+                            })
+                          }
+                          className="w-full inline-flex items-center justify-center gap-1.5 py-2.5 px-4 text-xs font-semibold text-white bg-[#DC2626] hover:bg-red-700 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                        >
+                          <ShieldAlert className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>Issue Abuse Ticket &amp; Email</span>
+                        </button>
+                      </div>
                     </form>
                   </div>
                 )}
@@ -5163,20 +5461,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         </main>
       </div>
 
-      {/* ==================== APPROVE ORDER & SERVER SELECTION MODAL ==================== */}
+      {/* ==================== APPROVE ORDER & PROVISIONING POPUP MODAL ==================== */}
       {approvingOrder && (
         <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
           <form
             onSubmit={handleConfirmApproveOrder}
-            className="w-full max-w-lg bg-white border border-[#E2E8F0] rounded-2xl shadow-xl overflow-hidden"
+            className="w-full max-w-lg bg-white border border-[#E2E8F0] rounded-2xl shadow-xl overflow-hidden max-h-[92vh] overflow-y-auto"
           >
             <div className="px-6 py-4 border-b border-[#E2E8F0] flex items-center justify-between">
               <div>
                 <p className="font-mono text-[11px] font-bold text-[#0E6B63]">
-                  {approvingOrder.id} · {approvingOrder.billingCycle}
+                  {approvingOrder.id} · {approvingOrder.productType} · {approvingOrder.billingCycle}
                 </p>
                 <h3 className="font-display text-base font-bold text-[#0F172A]">
-                  Approve &amp; Provision Order
+                  {approvingOrder.productType === 'Shared Cloud'
+                    ? 'Approve Shared Cloud (StackCP)'
+                    : approvingOrder.productType === 'Domain Registration'
+                      ? 'Approve Domain Registration'
+                      : approvingOrder.productType === 'Domain Transfer'
+                        ? 'Approve Domain Transfer (7-Day Workflow)'
+                        : 'Approve & Provision Hosting Server'}
                 </h3>
               </div>
               <button
@@ -5191,29 +5495,29 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
             <div className="p-6 space-y-4 text-xs">
               <div className="rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] p-3.5 space-y-1.5">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <span className="text-slate-500">Client</span>
-                  <span className="font-semibold text-[#0F172A]">
+                  <span className="font-semibold text-[#0F172A] text-right">
                     {approvingOrder.clientName} ({approvingOrder.clientEmail})
                   </span>
                 </div>
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <span className="text-slate-500">Service / Domain</span>
-                  <span className="font-semibold text-[#0F172A]">
+                  <span className="font-semibold text-[#0F172A] text-right">
                     {approvingOrder.planName} ·{' '}
                     <span className="font-mono text-[#0E6B63]">
                       {approvingOrder.domainOrHost}
                     </span>
                   </span>
                 </div>
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <span className="text-slate-500">Selected Datacenter</span>
                   <span className="inline-flex items-center gap-1 font-semibold text-[#0F172A]">
                     <MapPin className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
                     {approvingOrder.datacenter}
                   </span>
                 </div>
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <span className="text-slate-500">Amount &amp; Payment</span>
                   <span className="font-mono tabular-nums font-bold text-[#0F172A]">
                     {formatPrice(approvingOrder.amountUsd)} ({approvingOrder.paymentMethod})
@@ -5221,123 +5525,342 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
               </div>
 
-              <div>
-                <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
-                  Select Provisioning Server *
-                </label>
-                <select
-                  value={approveModuleId}
-                  onChange={(e) => {
-                    const nextId = e.target.value;
-                    setApproveModuleId(nextId);
-                    const nextMod = provisioningModules.find((m) => m.id === nextId);
-                    if (nextMod) {
-                      if (nextMod.packages.length > 0 && !approvePackageName) {
-                        setApprovePackageName(nextMod.packages[0]);
-                      }
-                      setApproveLiveWhm(
-                        nextMod.moduleType === 'whm' && Boolean(nextMod.apiToken.trim())
-                      );
-                    }
-                    setApproveError('');
-                  }}
-                  className="w-full min-h-[42px] px-3 py-2 border border-[#CBD5E1] rounded-xl bg-white font-medium text-[#0F172A]"
-                >
-                  <option value="">Select server module...</option>
-                  {provisioningModules.map((mod) => (
-                    <option key={mod.id} value={mod.id}>
-                      {mod.name} ({mod.moduleType.toUpperCase()} · {mod.hostname})
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {approvingOrder.productType === 'Shared Cloud' ? (
+                <div className="space-y-3.5">
+                  <div className="rounded-xl bg-[#F2FAF8] border border-[#0E6B63]/20 p-3.5 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-600 font-medium">Control Panel Link</span>
+                      <a
+                        href="https://stackcp.com"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 font-mono font-bold text-[#0E6B63] hover:underline"
+                      >
+                        <span>stackcp.com</span>
+                        <ExternalLink className="w-3 h-3" aria-hidden="true" />
+                      </a>
+                    </div>
+                    <div className="text-[11px] text-slate-600">
+                      <span className="font-semibold text-[#0F172A]">StackDNS Nameservers (4):</span>{' '}
+                      <span className="font-mono">
+                        ns1.stackdns.com, ns2.stackdns.com, ns3.stackdns.com, ns4.stackdns.com
+                      </span>
+                    </div>
+                  </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
-                    Server Package Name
-                  </label>
-                  <input
-                    type="text"
-                    list="approve-package-suggestions"
-                    value={approvePackageName}
-                    onChange={(e) => setApprovePackageName(e.target.value)}
-                    placeholder="e.g. stackcp_cloud_velocity"
-                    className="w-full min-h-[40px] px-3 py-2 font-mono border border-[#CBD5E1] rounded-xl"
-                  />
-                  <datalist id="approve-package-suggestions">
-                    {(
-                      provisioningModules.find((m) => m.id === approveModuleId)
-                        ?.packages || []
-                    ).map((pkg) => (
-                      <option key={pkg} value={pkg} />
-                    ))}
-                  </datalist>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
+                      StackCP Username (Auto-filled Domain)
+                    </label>
+                    <input
+                      type="text"
+                      readOnly
+                      value={approvingOrder.domainOrHost}
+                      className="w-full min-h-[40px] px-3 py-2 font-mono font-semibold bg-slate-100 border border-[#CBD5E1] rounded-xl text-[#0F172A]"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-[11px] font-semibold text-[#0F172A]">
+                        Set StackCP Password (Emailed &amp; Shown in Client Dashboard) *
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setApproveControlPassword(generateStrongControlPassword())}
+                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0E6B63] hover:underline cursor-pointer"
+                      >
+                        <RefreshCw className="w-3 h-3" aria-hidden="true" />
+                        <span>Generate</span>
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <input
+                        type={showApprovePassword ? 'text' : 'password'}
+                        required
+                        value={approveControlPassword}
+                        onChange={(e) => setApproveControlPassword(e.target.value)}
+                        placeholder="Enter StackCP control panel password..."
+                        className="w-full min-h-[40px] pl-3 pr-10 py-2 font-mono border border-[#CBD5E1] rounded-xl bg-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowApprovePassword((v) => !v)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-[#0F172A] cursor-pointer"
+                        aria-label={showApprovePassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showApprovePassword ? (
+                          <EyeOff className="w-4 h-4" aria-hidden="true" />
+                        ) : (
+                          <Eye className="w-4 h-4" aria-hidden="true" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
+                      Provisioning Notes (Optional)
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={approveNotes}
+                      onChange={(e) => setApproveNotes(e.target.value)}
+                      placeholder="Optional onboarding notes..."
+                      className="w-full px-3 py-2 border border-[#CBD5E1] rounded-xl"
+                    />
+                  </div>
                 </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
-                    Assigned Server IP (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    value={approveServerIp}
-                    onChange={(e) => setApproveServerIp(e.target.value)}
-                    placeholder="185.199.110.42"
-                    className="w-full min-h-[40px] px-3 py-2 font-mono border border-[#CBD5E1] rounded-xl"
-                  />
+              ) : approvingOrder.productType === 'Domain Registration' ? (
+                <div className="space-y-3">
+                  <div className="rounded-xl bg-[#F2FAF8] border border-[#0E6B63]/20 p-3.5 space-y-1.5">
+                    <p className="font-semibold text-[#0F172A]">
+                      Attached Client Nameservers
+                    </p>
+                    <p className="font-mono text-[11px] text-[#0E6B63] break-all">
+                      {(approvingOrder.nameservers && approvingOrder.nameservers.length > 0
+                        ? approvingOrder.nameservers
+                        : ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']
+                      ).join(' · ')}
+                    </p>
+                    <p className="text-[11px] text-slate-600 pt-1">
+                      Approving automatically marks the invoice <strong>PAID</strong>, sets the due date, attaches the nameservers above, and emails the registration confirmation &amp; WHOIS contact verification link.
+                    </p>
+                  </div>
                 </div>
-              </div>
+              ) : approvingOrder.productType === 'Domain Transfer' ? (
+                <div className="space-y-3">
+                  {(() => {
+                    const lc = evaluateDomainLifecycle(approvingOrder);
+                    return (
+                      <div className="rounded-xl bg-[#F2FAF8] border border-[#0E6B63]/20 p-3.5 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-600 font-medium">EPP Auth Code</span>
+                          <span className="font-mono font-bold text-[#0E6B63]">
+                            {approvingOrder.eppCode || 'Not provided'}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-600 font-medium">Transfer Stage</span>
+                          <span className="font-mono font-bold text-[#0F172A]">
+                            {lc.transferStatus === 'pending_admin'
+                              ? 'Pending Admin Start'
+                              : lc.transferStatus === 'client_notified'
+                                ? `Client Notified · Day ${lc.transferDaysElapsed}/7`
+                                : `In Progress · Day ${lc.transferDaysElapsed}/7 (${lc.transferDaysRemaining}d left)`}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-600">
+                          {lc.transferStatus === 'pending_admin'
+                            ? 'Clicking Approve starts the 7-day transfer tracker and notifies the client to approve at their losing registrar.'
+                            : 'Completes domain transfer immediately, sets a +1 year due date, marks the invoice PAID, unlocks Manage, and sends the transfer success email.'}
+                        </p>
+                      </div>
+                    );
+                  })()}
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
+                      Select Provisioning Server *
+                    </label>
+                    <select
+                      value={approveModuleId}
+                      onChange={(e) => {
+                        const nextId = e.target.value;
+                        setApproveModuleId(nextId);
+                        const nextMod = provisioningModules.find((m) => m.id === nextId);
+                        if (nextMod) {
+                          if (nextMod.packages.length > 0 && !approvePackageName) {
+                            setApprovePackageName(nextMod.packages[0]);
+                          }
+                          if (!approveServerIp && nextMod.hostname) {
+                            setApproveServerIp(nextMod.hostname);
+                          }
+                          setApproveLiveWhm(
+                            nextMod.moduleType === 'whm' && Boolean(nextMod.apiToken.trim())
+                          );
+                        }
+                        setApproveError('');
+                      }}
+                      className="w-full min-h-[42px] px-3 py-2 border border-[#CBD5E1] rounded-xl bg-white font-medium text-[#0F172A]"
+                    >
+                      <option value="">Select server module...</option>
+                      {provisioningModules.map((mod) => (
+                        <option key={mod.id} value={mod.id}>
+                          {mod.name} ({mod.moduleType.toUpperCase()} · {mod.hostname})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-              {provisioningModules.find((m) => m.id === approveModuleId)?.moduleType ===
-                'whm' && (
-                <label className="flex items-start gap-2.5 p-3 rounded-xl bg-[#F2FAF8] border border-[#0E6B63]/20 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={approveLiveWhm}
-                    onChange={(e) => setApproveLiveWhm(e.target.checked)}
-                    className="mt-0.5 rounded border-slate-300 text-[#0E6B63]"
-                  />
-                  <span className="text-[11px] text-slate-700 leading-relaxed">
-                    <strong className="text-[#0F172A] block">
-                      Run Live WHM Account Provisioning (createacct)
-                    </strong>
-                    Sends a real API call to your configured WHM server to provision the cPanel account immediately upon approval.
-                  </span>
-                </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
+                        Server Package Name
+                      </label>
+                      <input
+                        type="text"
+                        list="approve-package-suggestions"
+                        value={approvePackageName}
+                        onChange={(e) => setApprovePackageName(e.target.value)}
+                        placeholder="e.g. cpcloud_ignite"
+                        className="w-full min-h-[40px] px-3 py-2 font-mono border border-[#CBD5E1] rounded-xl"
+                      />
+                      <datalist id="approve-package-suggestions">
+                        {(
+                          provisioningModules.find((m) => m.id === approveModuleId)
+                            ?.packages || []
+                        ).map((pkg) => (
+                          <option key={pkg} value={pkg} />
+                        ))}
+                      </datalist>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
+                        Assigned Server IP / Host
+                      </label>
+                      <input
+                        type="text"
+                        value={approveServerIp}
+                        onChange={(e) => setApproveServerIp(e.target.value)}
+                        placeholder="185.199.110.42"
+                        className="w-full min-h-[40px] px-3 py-2 font-mono border border-[#CBD5E1] rounded-xl"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-[11px] font-semibold text-[#0F172A]">
+                          cPanel Username (Domain-based)
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setApproveCpanelUser(
+                              generateRandomCpanelUsernameFromDomain(approvingOrder.domainOrHost)
+                            )
+                          }
+                          className="text-[11px] font-semibold text-[#0E6B63] hover:underline cursor-pointer"
+                        >
+                          Randomize
+                        </button>
+                      </div>
+                      <input
+                        type="text"
+                        value={approveCpanelUser}
+                        onChange={(e) => setApproveCpanelUser(e.target.value)}
+                        className="w-full min-h-[40px] px-3 py-2 font-mono border border-[#CBD5E1] rounded-xl bg-white"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-[11px] font-semibold text-[#0F172A]">
+                          cPanel Password
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setApproveControlPassword(generateStrongControlPassword())
+                          }
+                          className="text-[11px] font-semibold text-[#0E6B63] hover:underline cursor-pointer"
+                        >
+                          Generate
+                        </button>
+                      </div>
+                      <div className="relative">
+                        <input
+                          type={showApprovePassword ? 'text' : 'password'}
+                          value={approveControlPassword}
+                          onChange={(e) => setApproveControlPassword(e.target.value)}
+                          className="w-full min-h-[40px] pl-3 pr-9 py-2 font-mono border border-[#CBD5E1] rounded-xl bg-white"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowApprovePassword((v) => !v)}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-[#0F172A] cursor-pointer"
+                          aria-label={showApprovePassword ? 'Hide password' : 'Show password'}
+                        >
+                          {showApprovePassword ? (
+                            <EyeOff className="w-4 h-4" aria-hidden="true" />
+                          ) : (
+                            <Eye className="w-4 h-4" aria-hidden="true" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {(() => {
+                    const modNs =
+                      provisioningModules.find((m) => m.id === approveModuleId)?.nameservers || [];
+                    const displayNs = modNs.filter(Boolean).length
+                      ? modNs
+                      : approvingOrder.nameservers || ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com'];
+                    return (
+                      <div className="rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] px-3 py-2 text-[11px] text-slate-600">
+                        <span className="font-semibold text-[#0F172A]">Server Nameservers:</span>{' '}
+                        <span className="font-mono text-[#0E6B63]">{displayNs.join(', ')}</span>
+                      </div>
+                    );
+                  })()}
+
+                  {provisioningModules.find((m) => m.id === approveModuleId)?.moduleType ===
+                    'whm' && (
+                    <label className="flex items-start gap-2.5 p-3 rounded-xl bg-[#F2FAF8] border border-[#0E6B63]/20 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={approveLiveWhm}
+                        onChange={(e) => setApproveLiveWhm(e.target.checked)}
+                        className="mt-0.5 rounded border-slate-300 text-[#0E6B63]"
+                      />
+                      <span className="text-[11px] text-slate-700 leading-relaxed">
+                        <strong className="text-[#0F172A] block">
+                          Run Live WHM Account Provisioning (createacct)
+                        </strong>
+                        Automatically creates the cPanel account on WHM with the username &amp; password above and emails login &amp; nameservers to the client.
+                      </span>
+                    </label>
+                  )}
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
+                      Provisioning Notes (Optional)
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={approveNotes}
+                      onChange={(e) => setApproveNotes(e.target.value)}
+                      placeholder="Optional onboarding or nameserver notes..."
+                      className="w-full px-3 py-2 border border-[#CBD5E1] rounded-xl"
+                    />
+                  </div>
+                </>
               )}
-
-              <div>
-                <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
-                  Provisioning Notes (Optional)
-                </label>
-                <textarea
-                  rows={2}
-                  value={approveNotes}
-                  onChange={(e) => setApproveNotes(e.target.value)}
-                  placeholder="Optional onboarding or nameserver notes..."
-                  className="w-full px-3 py-2 border border-[#CBD5E1] rounded-xl"
-                />
-              </div>
 
               {invoiceTemplateConfig.autoGenerateOnApproval !== false && (
                 <div className="flex items-start gap-2.5 p-3 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] text-[11px] text-slate-600">
                   <Receipt className="w-4 h-4 text-[#0E6B63] shrink-0 mt-0.5" aria-hidden="true" />
                   <div>
                     <strong className="text-[#0F172A] block">
-                      Automated Invoice Generation Enabled
+                      Automated Billing &amp; Email Dispatch Enabled
                     </strong>
-                    Upon approval, invoice{' '}
+                    Invoice{' '}
                     <span className="font-mono font-bold text-[#0E6B63]">
                       {approvingOrder.id.startsWith('ORD-')
                         ? `${invoiceTemplateConfig.invoicePrefix || 'INV-'}${approvingOrder.id.slice(4)}`
                         : `${invoiceTemplateConfig.invoicePrefix || 'INV-'}${approvingOrder.id}`}
                     </span>{' '}
-                    is automatically generated{' '}
+                    is automatically{' '}
                     {invoiceTemplateConfig.autoMarkPaidOnApproval !== false
-                      ? 'and stamped PAID'
-                      : 'for billing'}
-                    , with instant PDF download ready for the client.
+                      ? 'stamped PAID'
+                      : 'generated'}
+                    , due date calculated, and service credentials emailed to the client.
                   </div>
                 </div>
               )}
@@ -5369,7 +5892,184 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   ) : (
                     <>
                       <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
-                      <span>Approve &amp; Activate Service</span>
+                      <span>
+                        {approvingOrder.productType === 'Shared Cloud'
+                          ? 'Approve & Send StackCP Credentials'
+                          : approvingOrder.productType === 'Domain Registration'
+                            ? 'Approve Domain & Mark Paid'
+                            : approvingOrder.productType === 'Domain Transfer'
+                              ? evaluateDomainLifecycle(approvingOrder).transferStatus === 'pending_admin'
+                                ? 'Approve & Start 7-Day Transfer'
+                                : 'Accept & Complete Transfer'
+                              : 'Approve & Provision Server'}
+                      </span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
+      {showAbuseTicketModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Issue Abuse Department Ticket and Client Notice"
+          className="fixed inset-0 z-50 bg-[#0F172A]/60 backdrop-blur-xs flex items-center justify-center p-4"
+        >
+          <form
+            onSubmit={handleSubmitAbuseTicket}
+            className="w-full max-w-xl bg-white rounded-2xl border border-[#E2E8F0] shadow-2xl overflow-hidden max-h-[92vh] flex flex-col"
+          >
+            <div className="px-6 py-4 bg-[#FEF2F2] border-b border-red-200 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <ShieldAlert className="w-5 h-5 text-[#DC2626] shrink-0" aria-hidden="true" />
+                <div className="min-w-0">
+                  <h3 className="font-display text-sm font-bold text-[#0F172A] truncate">
+                    Issue Abuse Department Ticket &amp; Email Client
+                  </h3>
+                  <p className="text-[11px] text-slate-600 truncate">
+                    Dispatched as <span className="font-semibold">Support cpcloudhost</span> · Auto-triggers{' '}
+                    <span className="font-mono">abuse-ticket-alert</span> template
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAbuseTicketModal(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 cursor-pointer shrink-0"
+                aria-label="Close modal"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 overflow-y-auto text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
+                    Client Account
+                  </label>
+                  <select
+                    value={abuseTargetUserId}
+                    onChange={(e) => {
+                      const uid = e.target.value;
+                      setAbuseTargetUserId(uid);
+                      const matched = users.find((u) => u.id === uid);
+                      if (matched) setAbuseTargetEmail(matched.email);
+                    }}
+                    className="w-full px-3 py-2 border border-[#CBD5E1] rounded-lg bg-white text-xs cursor-pointer"
+                  >
+                    <option value="">Select client...</option>
+                    {users
+                      .filter((u) => u.role !== 'admin')
+                      .map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.name} ({u.email})
+                        </option>
+                      ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
+                    Priority Level
+                  </label>
+                  <select
+                    value={abuseTargetPriority}
+                    onChange={(e) =>
+                      setAbuseTargetPriority(e.target.value as TicketPriority)
+                    }
+                    className="w-full px-3 py-2 border border-[#CBD5E1] rounded-lg bg-white text-xs cursor-pointer"
+                  >
+                    <option value="Normal">Normal</option>
+                    <option value="High">High</option>
+                    <option value="Urgent">Urgent</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
+                  Affected Domain / Hosting Service
+                </label>
+                <input
+                  type="text"
+                  value={abuseTargetService}
+                  onChange={(e) => setAbuseTargetService(e.target.value)}
+                  placeholder="e.g. example.com or srv-node-02.cpcloudhost.com"
+                  className="w-full px-3 py-2 border border-[#CBD5E1] rounded-lg font-mono text-xs focus:outline-none focus:border-[#0E6B63]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
+                  Ticket &amp; Email Subject <span className="text-[#DC2626]">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={abuseTargetSubject}
+                  onChange={(e) => setAbuseTargetSubject(e.target.value)}
+                  className="w-full px-3 py-2 border border-[#CBD5E1] rounded-lg text-xs focus:outline-none focus:border-[#0E6B63]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-[#0F172A] mb-1">
+                  Abuse Notice Details (Spamming / Malware / AUP Warning){' '}
+                  <span className="text-[#DC2626]">*</span>
+                </label>
+                <textarea
+                  rows={5}
+                  required
+                  value={abuseTargetMessage}
+                  onChange={(e) => setAbuseTargetMessage(e.target.value)}
+                  className="w-full px-3 py-2 border border-[#CBD5E1] rounded-lg text-xs leading-relaxed focus:outline-none focus:border-[#0E6B63]"
+                />
+              </div>
+
+              <label className="flex items-start gap-2 text-xs text-slate-700 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={abuseSuspendService}
+                  onChange={(e) => setAbuseSuspendService(e.target.checked)}
+                  className="mt-0.5 rounded border-slate-300 text-[#DC2626]"
+                />
+                <span>
+                  Immediately suspend matching active service/domain for this client until remediated
+                </span>
+              </label>
+
+              {abuseFormError && (
+                <p className="text-xs font-semibold text-[#DC2626] bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                  {abuseFormError}
+                </p>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-[#E2E8F0]">
+                <button
+                  type="button"
+                  onClick={() => setShowAbuseTicketModal(false)}
+                  className="min-h-[40px] px-4 py-2 rounded-lg border border-[#E2E8F0] text-xs font-semibold text-slate-600 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={abuseSubmitting}
+                  className="min-h-[40px] inline-flex items-center gap-1.5 px-5 py-2 rounded-lg bg-[#DC2626] hover:bg-red-700 disabled:opacity-60 text-white text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  {abuseSubmitting ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                      <span>Dispatching...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Open Abuse Ticket &amp; Send Mail</span>
                     </>
                   )}
                 </button>

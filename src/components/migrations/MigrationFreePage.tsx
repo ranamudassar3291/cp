@@ -724,9 +724,9 @@ export const MigrationFreePage: React.FC<MigrationFreePageProps> = ({
               Request Your Free Migration Window
             </h2>
             <p className="text-sm text-slate-600 mt-3 leading-relaxed">
-              Submit your domain and destination tier below. Irfan and our
-              migration engineers coordinate a convenient sync window and send
-              your encrypted credential drop link.
+              Submit your domain and destination tier below. Support cpcloudhost
+              and our migration engineers coordinate a convenient sync window and
+              send your encrypted credential drop link.
             </p>
 
             <div className="mt-6 border-t border-[#E2E8F0] pt-5 space-y-3 text-xs sm:text-sm text-slate-700">

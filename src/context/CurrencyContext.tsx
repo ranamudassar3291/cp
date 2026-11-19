@@ -400,6 +400,7 @@ interface CurrencyContextValue {
   detectionSource: 'ip' | 'manual' | 'locale';
   fxSource: 'live' | 'baseline';
   isDetecting: boolean;
+  getCurrencyRate: (currencyCode: string) => number;
   convertUsd: (usdAmount: number) => number;
   formatPrice: (
     usdAmount: number,
@@ -644,6 +645,15 @@ export const CurrencyProvider: React.FC<{ children: React.ReactNode }> = ({
     return typeof r === 'number' && r > 0 ? r : 1;
   }, [ratesMap, currency.code]);
 
+  const getCurrencyRate = useCallback(
+    (currencyCode: string) => {
+      const upper = currencyCode.trim().toUpperCase();
+      const val = ratesMap[upper] ?? BASELINE_USD_RATES[upper];
+      return typeof val === 'number' && val > 0 ? val : 1;
+    },
+    [ratesMap]
+  );
+
   const convertUsd = useCallback(
     (usdAmount: number) => {
       if (!Number.isFinite(usdAmount)) return 0;
@@ -734,6 +744,7 @@ export const CurrencyProvider: React.FC<{ children: React.ReactNode }> = ({
       detectionSource,
       fxSource,
       isDetecting,
+      getCurrencyRate,
       convertUsd,
       formatPrice,
       formatPriceString,
@@ -748,6 +759,7 @@ export const CurrencyProvider: React.FC<{ children: React.ReactNode }> = ({
       detectionSource,
       fxSource,
       isDetecting,
+      getCurrencyRate,
       convertUsd,
       formatPrice,
       formatPriceString,

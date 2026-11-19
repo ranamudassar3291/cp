@@ -168,7 +168,8 @@ function computePlanCyclePrice(
   }
   if (cycle === '2 Years') {
     const annualBase = plan.yearlyPrice || fullMonthRate * 12;
-    const twoYear = Number((annualBase * 2 * 0.9).toFixed(2));
+    const configuredTwoYr = plan.twoYearPrice && plan.twoYearPrice > 0 ? plan.twoYearPrice : annualBase * 2 * 0.9;
+    const twoYear = Number(configuredTwoYr.toFixed(2));
     const baseline = Number((fullMonthRate * 24).toFixed(2));
     return {
       priceUsd: twoYear,
@@ -177,7 +178,8 @@ function computePlanCyclePrice(
     };
   }
   const annualBase = plan.yearlyPrice || fullMonthRate * 12;
-  const fourYear = Number((annualBase * 4 * 0.8).toFixed(2));
+  const configuredFourYr = plan.fourYearPrice && plan.fourYearPrice > 0 ? plan.fourYearPrice : annualBase * 4 * 0.8;
+  const fourYear = Number(configuredFourYr.toFixed(2));
   const baseline = Number((fullMonthRate * 48).toFixed(2));
   return {
     priceUsd: fourYear,
@@ -842,11 +844,32 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
     ? detectedTransferTld.transferUsd || detectedTransferTld.year1Usd
     : getPricingForTld('.com').transferPrice;
 
+  const isSharedOrCpanelPlan =
+    !isDomainOnly &&
+    (activeCategory === 'shared-hosting' || activeCategory === 'cpanel-hosting');
+
+  const qualifiesPlanForFreeCom =
+    isSharedOrCpanelPlan &&
+    (billingCycle === '1 Year' || billingCycle === '2 Years' || billingCycle === '4 Years');
+
+  const isComCandidateSelected =
+    qualifiesPlanForFreeCom &&
+    domainOption === 'register' &&
+    Boolean(selectedNewDomain) &&
+    selectedNewDomain!.tld.toLowerCase() === '.com';
+
+  const effectiveRegisterDomainPriceUsd =
+    domainOption === 'register' && selectedNewDomain
+      ? isComCandidateSelected
+        ? 0
+        : selectedNewDomain.priceUsd
+      : 0;
+
   const domainPriceUsd =
     isCompute
       ? 0
       : domainOption === 'register' && selectedNewDomain
-      ? selectedNewDomain.priceUsd
+      ? effectiveRegisterDomainPriceUsd
       : domainOption === 'transfer' && transferDomainInput.trim()
       ? transferPriceUsd
       : 0;
@@ -1003,7 +1026,9 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
       nameserversType,
       nameservers:
         nameserversType === 'default'
-          ? ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']
+          ? activeCategory === 'shared-hosting'
+            ? ['ns1.stackdns.com', 'ns2.stackdns.com', 'ns3.stackdns.com', 'ns4.stackdns.com']
+            : ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']
           : [customNs1.trim() || 'ns1.cpcloudhost.com', customNs2.trim() || 'ns2.cpcloudhost.com'],
       whoisPrivacy: whoisPrivacyEnabled,
       whoisContactId: selectedWhoisContact?.id,
@@ -1446,6 +1471,8 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
             : [customNs1.trim() || 'ns1.cpcloudhost.com', customNs2.trim() || 'ns2.cpcloudhost.com'],
         whoisPrivacy: whoisPrivacyEnabled,
         whoisContact: selectedWhoisContact || undefined,
+        eppCode: isTransfer ? eppAuthCode.trim() : undefined,
+        transferStatus: isTransfer ? 'pending_admin' : undefined,
         registrarLock: true,
         autoRenew: true,
         promoCode: appliedPromo?.code,
@@ -1495,7 +1522,28 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
         Number((hostingPricing.priceUsd - hostingDiscount).toFixed(2))
       );
       const isTrialSettled = isFreeTrialMode && netHostingAmount === 0;
+      const defaultHostingNameservers =
+        resolvedProductType === 'Shared Cloud'
+          ? ['ns1.stackdns.com', 'ns2.stackdns.com', 'ns3.stackdns.com', 'ns4.stackdns.com']
+          : ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com'];
+      const effectiveHostingNameservers =
+        nameserversType === 'default'
+          ? defaultHostingNameservers
+          : [customNs1.trim() || defaultHostingNameservers[0], customNs2.trim() || defaultHostingNameservers[1]];
+
+      const preHostingOrderId = `ORD-${Math.floor(905000 + Math.random() * 94000)}`;
+      const preBundledDomainOrderId =
+        domainOption === 'register' && selectedNewDomain
+          ? `ORD-${Math.floor(905000 + Math.random() * 94000)}`
+          : undefined;
+      const safeBundledDomainOrderId =
+        preBundledDomainOrderId === preHostingOrderId && preBundledDomainOrderId
+          ? `${preBundledDomainOrderId}D`
+          : preBundledDomainOrderId;
+
       const { order: hostingOrder, invoice: hostingInvoice } = addOrder({
+        customRef: preHostingOrderId,
+        linkedFreeDomainOrderId: isComCandidateSelected ? safeBundledDomainOrderId : undefined,
         clientEmail: currentUser.email,
         clientName: currentUser.name,
         country: currentUser.country,
@@ -1514,48 +1562,57 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
         discountUsd: hostingDiscount || undefined,
         isFreeTrial: isFreeTrialMode || undefined,
         trialDays: isFreeTrialMode ? 30 : undefined,
-        nameservers:
-          nameserversType === 'default'
-            ? ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']
-            : [customNs1.trim() || 'ns1.cpcloudhost.com', customNs2.trim() || 'ns2.cpcloudhost.com'],
+        nameservers: effectiveHostingNameservers,
         notes: isFreeTrialMode
           ? `30-Day Free Trial activated (${appliedPromo?.code || 'STARTFREE'}). Renewal applies on Day 31.`
           : `Order placed via ${selectedGateway.name}${
               domainOption === 'later' ? ' · Staging container assigned' : ''
+            }${
+              isComCandidateSelected
+                ? ` · Includes Free 1-Year .com Domain (${selectedNewDomain?.domain}) while hosting runs ${billingCycle}`
+                : ''
             }`,
       });
       primaryOrderId = hostingOrder.id;
       primaryInvoiceId = hostingInvoice?.id || hostingOrder.id.replace('ORD-', 'INV-');
 
       if (domainOption === 'register' && selectedNewDomain) {
-        const netDomainAmount = Math.max(
-          0,
-          Number((selectedNewDomain.priceUsd - domainDiscount).toFixed(2))
-        );
+        const netDomainAmount = isComCandidateSelected
+          ? 0
+          : Math.max(0, Number((selectedNewDomain.priceUsd - domainDiscount).toFixed(2)));
         const { order: domOrder, invoice: domInv } = addOrder({
+          customRef: safeBundledDomainOrderId,
+          linkedHostingOrderId: isComCandidateSelected ? hostingOrder.id : undefined,
           clientEmail: currentUser.email,
           clientName: currentUser.name,
           country: currentUser.country,
           productType: 'Domain Registration',
-          planName: `${selectedNewDomain.tld} Domain Registration`,
+          planName: isComCandidateSelected
+            ? '.com Domain Registration (Free 1-Year Promo w/ Hosting)'
+            : `${selectedNewDomain.tld} Domain Registration`,
           domainOrHost: selectedNewDomain.domain,
-          billingCycle: selectedNewDomain.minYears === 2 ? '2 Years' : '1 Year',
+          billingCycle: isComCandidateSelected
+            ? '1 Year'
+            : selectedNewDomain.minYears === 2
+            ? '2 Years'
+            : '1 Year',
           amountUsd: netDomainAmount,
-          paymentMethod: selectedGateway.name,
+          paymentMethod: isComCandidateSelected
+            ? `Free 1-Yr Domain Promo (${hostingOrder.id})`
+            : selectedGateway.name,
           datacenter: activeDatacenter.city,
           status: 'pending',
-          invoicePaid: false,
-          nameservers:
-            nameserversType === 'default'
-              ? ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']
-              : [customNs1.trim() || 'ns1.cpcloudhost.com', customNs2.trim() || 'ns2.cpcloudhost.com'],
+          invoicePaid: isComCandidateSelected,
+          nameservers: effectiveHostingNameservers,
           whoisPrivacy: whoisPrivacyEnabled,
           whoisContact: selectedWhoisContact || undefined,
           registrarLock: true,
           autoRenew: true,
           promoCode: appliedPromo?.scope === 'domain' ? appliedPromo.code : undefined,
-          discountUsd: domainDiscount || undefined,
-          notes: `Bundled with ${resolvedProductType} order ${hostingOrder.id}`,
+          discountUsd: isComCandidateSelected ? undefined : domainDiscount || undefined,
+          notes: isComCandidateSelected
+            ? `1-Year Free .com Domain included with ${billingCycle} ${resolvedProductType} order ${hostingOrder.id}. Domain renews after Year 1.`
+            : `Bundled with ${resolvedProductType} order ${hostingOrder.id}`,
         });
         secondaryOrderId = domOrder.id;
         secondaryInvoiceId = domInv?.id;
@@ -1564,6 +1621,12 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
           0,
           Number((transferPriceUsd - domainDiscount).toFixed(2))
         );
+        const transferNs =
+          transferStrategy === 'cloud'
+            ? resolvedProductType === 'Shared Cloud'
+              ? ['ns1.stackdns.com', 'ns2.stackdns.com', 'ns3.stackdns.com', 'ns4.stackdns.com']
+              : ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']
+            : ['ns1.current-registrar.com', 'ns2.current-registrar.com'];
         const { order: transOrder, invoice: transInv } = addOrder({
           clientEmail: currentUser.email,
           clientName: currentUser.name,
@@ -1577,12 +1640,11 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
           datacenter: activeDatacenter.city,
           status: 'pending',
           invoicePaid: false,
-          nameservers:
-            transferStrategy === 'cloud'
-              ? ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']
-              : ['ns1.current-registrar.com', 'ns2.current-registrar.com'],
+          nameservers: transferNs,
           whoisPrivacy: whoisPrivacyEnabled,
           whoisContact: selectedWhoisContact || undefined,
+          eppCode: eppAuthCode.trim(),
+          transferStatus: 'pending_admin',
           registrarLock: true,
           autoRenew: true,
           promoCode: appliedPromo?.scope === 'domain' ? appliedPromo.code : undefined,
@@ -2883,6 +2945,9 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                           {BILLING_PERIODS.map((period) => {
                             const calc = computePlanCyclePrice(activePlan, period.id);
                             const isSelected = billingCycle === period.id;
+                            const hasFreeComWithPeriod =
+                              isSharedOrCpanelPlan &&
+                              (period.id === '1 Year' || period.id === '2 Years' || period.id === '4 Years');
                             return (
                               <button
                                 key={period.id}
@@ -2926,10 +2991,20 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                                     </span>
                                   )}
                                 </div>
+                                {hasFreeComWithPeriod && (
+                                  <p className="mt-1.5 text-[11px] font-semibold text-[#0E6B63]">
+                                    + 1 Free .com Domain (Year 1 only · Hosting runs {period.label})
+                                  </p>
+                                )}
                               </button>
                             );
                           })}
                         </div>
+                        {isSharedOrCpanelPlan && (
+                          <p className="mt-2.5 text-xs text-[#0E6B63] font-medium">
+                            Includes 1 Free .com Domain (1 Year only) on 1Y, 2Y &amp; 4Y plans — hosting remains active for your full selected cycle while the free .com domain covers Year 1.
+                          </p>
+                        )}
                       </div>
                     )}
 
@@ -3596,7 +3671,12 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                     {/* ================= REGISTER NEW DOMAIN WORKFLOW ================= */}
                     {domainOption === 'register' && (
                       <div className="space-y-4">
-                        {/* If domain was already searched/selected on site, show locked confirmation & skip search bar */}
+                        {qualifiesPlanForFreeCom && (
+                          <div className="p-3.5 rounded-xl bg-[#F2FAF8] border border-[#0E6B63]/30 text-xs text-[#0F172A]">
+                            <strong>Free 1-Year .com Domain Promo Active:</strong> Your <strong>{billingCycle}</strong> hosting order includes <strong>1 Free .com Domain for Year 1</strong> ($0.00 today · renews annually after Year 1 while hosting stays active for {billingCycle}).
+                          </div>
+                        )}
+
                         {selectedNewDomain && (
                           <div className="p-4 sm:p-5 rounded-xl bg-[#F2FAF8] border border-[#0E6B63]/35 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
                             <div className="flex items-start gap-3">
@@ -3606,21 +3686,33 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                               />
                               <div>
                                 <span className="text-[11px] font-semibold text-[#0E6B63] block">
-                                  Domain Locked from Your Search · Available
+                                  {isComCandidateSelected
+                                    ? `Free 1-Year .com Promo Qualified · Available`
+                                    : `Domain Locked from Your Search · Available`}
                                 </span>
                                 <span className="font-bold text-[#0F172A] block font-mono text-base mt-0.5">
                                   {selectedNewDomain.domain}
                                 </span>
                                 <span className="text-slate-600">
-                                  {selectedNewDomain.minYears === 2 ? '2-Year Term' : '1-Year Term'} · Renews at{' '}
-                                  {formatPrice(selectedNewDomain.renewalUsd)}/yr
+                                  {isComCandidateSelected
+                                    ? `1 Year Free w/ ${billingCycle} Hosting · Renews at ${formatPrice(selectedNewDomain.renewalUsd)}/yr`
+                                    : `${selectedNewDomain.minYears === 2 ? '2-Year Term' : '1-Year Term'} · Renews at ${formatPrice(selectedNewDomain.renewalUsd)}/yr`}
                                 </span>
                               </div>
                             </div>
 
                             <div className="flex sm:flex-col items-center sm:items-end justify-between gap-2 shrink-0">
                               <span className="font-mono tabular-nums font-bold text-lg text-[#0E6B63]">
-                                {formatPrice(selectedNewDomain.priceUsd)}
+                                {isComCandidateSelected ? (
+                                  <>
+                                    {formatPrice(0)}{' '}
+                                    <span className="text-xs line-through text-slate-400 font-normal">
+                                      {formatPrice(selectedNewDomain.priceUsd)}
+                                    </span>
+                                  </>
+                                ) : (
+                                  formatPrice(selectedNewDomain.priceUsd)
+                                )}
                               </span>
                               <button
                                 type="button"
@@ -3719,7 +3811,13 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
 
                                       <div className="flex items-center gap-3">
                                         <span className="font-mono tabular-nums text-sm font-extrabold text-[#0F172A]">
-                                          {formatPrice(item.priceUsd)}
+                                          {qualifiesPlanForFreeCom && item.tld.toLowerCase() === '.com' ? (
+                                            <span className="text-[#16A34A]">
+                                              {formatPrice(0)} · Free Year 1
+                                            </span>
+                                          ) : (
+                                            formatPrice(item.priceUsd)
+                                          )}
                                         </span>
                                         {item.available ? (
                                           <button
@@ -3795,14 +3893,27 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                                 />
                                 <div className="space-y-1">
                                   <span className="text-xs font-bold text-[#0F172A] block">
-                                    Use CPCloudHost Anycast Cloud Nameservers (Recommended)
+                                    {activeCategory === 'shared-hosting'
+                                      ? 'Use StackCP Cloud Nameservers (Default for Shared Hosting)'
+                                      : 'Use CPCloudHost Anycast Cloud Nameservers (Recommended)'}
                                   </span>
                                   <p className="text-[11px] text-slate-500">
                                     Instant DNS propagation and automatic DNS zone synchronization for web and email.
                                   </p>
                                   <div className="pt-1 flex flex-wrap gap-3 text-[11px] font-mono text-[#0E6B63]">
-                                    <span>ns1.cpcloudhost.com</span>
-                                    <span>ns2.cpcloudhost.com</span>
+                                    {activeCategory === 'shared-hosting' ? (
+                                      <>
+                                        <span>ns1.stackdns.com</span>
+                                        <span>ns2.stackdns.com</span>
+                                        <span>ns3.stackdns.com</span>
+                                        <span>ns4.stackdns.com</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <span>ns1.cpcloudhost.com</span>
+                                        <span>ns2.cpcloudhost.com</span>
+                                      </>
+                                    )}
                                   </div>
                                 </div>
                               </div>
@@ -4307,8 +4418,12 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                             </div>
                             <div className="text-slate-500 mt-0.5">
                               {domainOption === 'register' && selectedNewDomain
-                                ? `${selectedNewDomain.minYears === 2 ? '2 Years' : '1 Year'} Term · Nameservers: ${
-                                    nameserversType === 'default' ? 'CPCloudHost Anycast' : 'Custom'
+                                ? `${isComCandidateSelected ? '1 Year Free (.com Promo)' : selectedNewDomain.minYears === 2 ? '2 Years Term' : '1 Year Term'} · Nameservers: ${
+                                    nameserversType === 'default'
+                                      ? activeCategory === 'shared-hosting'
+                                        ? 'ns1..ns4.stackdns.com'
+                                        : 'CPCloudHost Anycast'
+                                      : 'Custom'
                                   } · WHOIS Privacy Included`
                                 : domainOption === 'transfer'
                                 ? `Includes 1-Year Extension · Nameservers: ${
@@ -4327,7 +4442,7 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                                       detectedTransferTld?.renewalUsd ||
                                       getPricingForTld('.com').renewalPrice
                                   )}{' '}
-                                  / year
+                                  / year {isComCandidateSelected ? `(Free Year 1 · Hosting runs ${billingCycle})` : ''}
                                 </div>
                                 {selectedWhoisContact && (
                                   <div className="text-slate-600">
@@ -4355,7 +4470,11 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                             )}
                           </div>
                           <div className="text-right font-mono tabular-nums font-bold text-sm text-[#0F172A]">
-                            {domainPriceUsd > 0 ? formatPrice(domainPriceUsd) : 'Included'}
+                            {isComCandidateSelected
+                              ? `${formatPrice(0)} (Free 1-Yr)`
+                              : domainPriceUsd > 0
+                              ? formatPrice(domainPriceUsd)
+                              : 'Included'}
                           </div>
                         </div>
                       )}
@@ -4744,7 +4863,9 @@ export const ServiceOrderPage: React.FC<ServiceOrderPageProps> = ({
                         )}
                       </div>
                       <span className="font-mono tabular-nums font-bold text-[#0F172A] shrink-0">
-                        {domainPriceUsd > 0
+                        {isComCandidateSelected
+                          ? `${formatPrice(0)} (Free 1-Yr)`
+                          : domainPriceUsd > 0
                           ? formatPrice(domainPriceUsd)
                           : formatPrice(0, { compactZero: true })}
                       </span>

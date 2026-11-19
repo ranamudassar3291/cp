@@ -383,6 +383,9 @@ export const SharedHostingPage: React.FC<SharedHostingPageProps> = ({
                       <p className="font-mono-num text-xs text-slate-500 mt-1">
                         Billed annually at {formatPrice(plan.annualPrice)}/yr
                       </p>
+                      <p className="text-xs font-semibold text-[#0E6B63] mt-1.5">
+                        Includes 1 Free .com Domain (1 Year only) with 1Y, 2Y &amp; 4Y plans
+                      </p>
                     </div>
 
                     {/* Get Started Action */}
@@ -399,7 +402,7 @@ export const SharedHostingPage: React.FC<SharedHostingPageProps> = ({
                         Order {plan.name}
                       </button>
                       <p className="text-[11px] text-center text-slate-500 mt-2">
-                        1M / 1Y / 2Y / 4Y cycles &middot; {activeDatacenter.city}
+                        Hosting runs 1Y / 2Y / 4Y · Free .com is 1 Year only · {activeDatacenter.city}
                       </p>
                     </div>
 

@@ -1,10 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import {
+  AlertCircle,
   ArrowLeft,
+  ArrowLeftRight,
   CheckCircle2,
   Clock,
   Copy,
   Globe,
+  KeyRound,
+  Loader2,
   MailCheck,
   Plus,
   Search,
@@ -13,6 +17,7 @@ import {
   Sparkles,
   Tag,
   Trash2,
+  UserPlus,
   X,
 } from 'lucide-react';
 import {
@@ -24,7 +29,10 @@ import {
   usePlatform,
 } from '../../context/PlatformContext';
 import { useCurrency } from '../../context/CurrencyContext';
+import { evaluateDomainLifecycle } from '../../utils/domainLifecycle';
+import { inspectDomainLive } from '../../utils/domainLookup';
 import { SearchableClientSelect } from './SearchableClientSelect';
+import { QuickAddClientModal } from './QuickAddClientModal';
 
 interface AdminDomainsViewProps {
   onShowToast: (msg: string) => void;
@@ -73,19 +81,32 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
     addOrder,
     adminUpdateOrderDetails,
     approveDomainRegistrationAndSendVerify,
+    resendDomainVerificationEmail,
     adminApplyNameserverChange,
+    adminStartDomainTransfer,
+    adminCompleteDomainTransfer,
     saveTldExtension,
     createTldExtension,
     deleteTldExtension,
   } = usePlatform();
-  const { formatPrice } = useCurrency();
+  const { formatPrice, getCurrencyRate } = useCurrency();
+  const pkrRate = useMemo(() => {
+    const r = getCurrencyRate('PKR');
+    return Number.isFinite(r) && r > 0 ? r : 278.5;
+  }, [getCurrencyRate]);
 
-  const [subTab, setSubTab] = useState<'domains' | 'tlds'>('domains');
+  const toPkrString = (usdVal: number) =>
+    Math.round(Math.max(0, usdVal) * pkrRate).toString();
+
+  const [subTab, setSubTab] = useState<'domains' | 'nameservers' | 'transfers' | 'tlds'>(
+    'domains'
+  );
 
   // Registered / Ordered Domains State
   const [domainSearch, setDomainSearch] = useState('');
   const [domainStatusFilter, setDomainStatusFilter] = useState<'all' | OrderStatus>('all');
   const [showAddDomain, setShowAddDomain] = useState(false);
+  const [showQuickAddClient, setShowQuickAddClient] = useState(false);
   const firstClientUser = users.find((u) => u.role !== 'admin');
   const [newDomainClientEmail, setNewDomainClientEmail] = useState(
     firstClientUser?.email ?? ''
@@ -101,7 +122,19 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
     'Domain Registration' | 'Domain Transfer'
   >('Domain Registration');
   const [newDomainYears, setNewDomainYears] = useState<1 | 2 | 5>(1);
-  const [newDomainPriceUsd, setNewDomainPriceUsd] = useState('9.99');
+  const [newDomainPricePkr, setNewDomainPricePkr] = useState(() =>
+    Math.round(9.99 * (getCurrencyRate('PKR') || 278.5)).toString()
+  );
+  const [newDomainEppCode, setNewDomainEppCode] = useState('');
+  const [newDomainNameserversText, setNewDomainNameserversText] = useState(
+    'ns1.cpcloudhost.com, ns2.cpcloudhost.com'
+  );
+  const [domainCheckLoading, setDomainCheckLoading] = useState(false);
+  const [domainCheckResult, setDomainCheckResult] = useState<{
+    domain: string;
+    available: boolean;
+    registrar?: string;
+  } | null>(null);
   const [newDomainStartDate, setNewDomainStartDate] = useState(
     new Date().toISOString().slice(0, 10)
   );
@@ -125,8 +158,9 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
   const [editOrdCreatedAt, setEditOrdCreatedAt] = useState('');
   const [editOrdDueDate, setEditOrdDueDate] = useState('');
   const [editOrdAmount, setEditOrdAmount] = useState('');
-  const [editOrdNs1, setEditOrdNs1] = useState('ns1.cpcloudhost.com');
-  const [editOrdNs2, setEditOrdNs2] = useState('ns2.cpcloudhost.com');
+  const [editOrdNsText, setEditOrdNsText] = useState(
+    'ns1.cpcloudhost.com, ns2.cpcloudhost.com'
+  );
 
   // TLD Extensions State
   const [tldSearch, setTldSearch] = useState('');
@@ -145,6 +179,12 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
   const [tldEnabled, setTldEnabled] = useState(true);
   const [tldRegistrarId, setTldRegistrarId] = useState('');
   const [tldFormError, setTldFormError] = useState('');
+
+  const parsedNewDomainPkr = parseFloat(newDomainPricePkr);
+  const newDomainUsdComputed =
+    Number.isFinite(parsedNewDomainPkr) && parsedNewDomainPkr >= 0
+      ? Number((parsedNewDomainPkr / pkrRate).toFixed(2))
+      : 0;
 
   const domainOrders = useMemo(
     () =>
@@ -172,6 +212,11 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
     });
   }, [domainOrders, domainSearch, domainStatusFilter]);
 
+  const transferOrders = useMemo(
+    () => domainOrders.filter((o) => o.productType === 'Domain Transfer'),
+    [domainOrders]
+  );
+
   const filteredTlds = useMemo(() => {
     const q = tldSearch.trim().toLowerCase();
     return tldExtensions.filter((t) => {
@@ -189,7 +234,7 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
         (o) =>
           o.nameserverUpdateStatus === 'pending_update' &&
           Array.isArray(o.pendingNameservers) &&
-          o.pendingNameservers.length === 2
+          o.pendingNameservers.length >= 2
       ),
     [domainOrders]
   );
@@ -199,12 +244,11 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
       total: domainOrders.length,
       active: domainOrders.filter((d) => d.status === 'active').length,
       pending: domainOrders.filter((d) => d.status === 'pending').length,
-      expiredOrSuspended: domainOrders.filter(
-        (d) => d.status === 'expired' || d.status === 'suspended'
-      ).length,
+      nsRequests: pendingNameserverOrders.length,
+      transfers: transferOrders.length,
       enabledTlds: tldExtensions.filter((t) => t.enabled).length,
     };
-  }, [domainOrders, tldExtensions]);
+  }, [domainOrders, pendingNameserverOrders.length, transferOrders.length, tldExtensions]);
 
   const detectTldForDomain = (domainInput: string): TldExtensionRecord | undefined => {
     const clean = domainInput.trim().toLowerCase();
@@ -221,6 +265,7 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
 
   const handleDomainHostChange = (val: string) => {
     setNewDomainHost(val);
+    setDomainCheckResult(null);
     const matched = detectTldForDomain(val);
     if (matched) {
       const yrs: 1 | 2 | 5 = matched.minYears === 2 ? 2 : 1;
@@ -232,10 +277,10 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
         setNewDomainServerId(matched.registrarModuleId);
       }
       if (newDomainType === 'Domain Transfer') {
-        setNewDomainPriceUsd(matched.transferUsd.toFixed(2));
+        setNewDomainPricePkr(toPkrString(matched.transferUsd));
       } else {
-        setNewDomainPriceUsd(
-          (yrs === 2 ? matched.year2Usd : matched.year1Usd).toFixed(2)
+        setNewDomainPricePkr(
+          toPkrString(yrs === 2 ? matched.year2Usd : matched.year1Usd)
         );
       }
     }
@@ -249,41 +294,82 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
     const matched = detectTldForDomain(newDomainHost);
     if (matched) {
       if (newDomainType === 'Domain Transfer') {
-        setNewDomainPriceUsd(matched.transferUsd.toFixed(2));
+        setNewDomainPricePkr(toPkrString(matched.transferUsd));
       } else if (yrs === 5) {
-        setNewDomainPriceUsd((matched.year1Usd + matched.renewalUsd * 4).toFixed(2));
+        setNewDomainPricePkr(
+          toPkrString(matched.year1Usd + matched.renewalUsd * 4)
+        );
       } else {
-        setNewDomainPriceUsd(
-          (yrs === 2 ? matched.year2Usd : matched.year1Usd).toFixed(2)
+        setNewDomainPricePkr(
+          toPkrString(yrs === 2 ? matched.year2Usd : matched.year1Usd)
         );
       }
+    }
+  };
+
+  const handleCheckDomainAvailability = async () => {
+    const cleanDomain = newDomainHost
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .split('/')[0];
+    if (!cleanDomain || !cleanDomain.includes('.')) {
+      setAddDomainError('Enter a domain name with extension first (e.g. brand.com).');
+      return;
+    }
+    setAddDomainError('');
+    setDomainCheckLoading(true);
+    try {
+      const res = await inspectDomainLive(cleanDomain, true);
+      setDomainCheckResult({
+        domain: cleanDomain,
+        available: res.available,
+        registrar: res.whois?.registrar,
+      });
+    } catch {
+      setDomainCheckResult({ domain: cleanDomain, available: true });
+    } finally {
+      setDomainCheckLoading(false);
     }
   };
 
   const handleAddDomainSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const cleanEmail = newDomainClientEmail.trim().toLowerCase();
-    const cleanDomain = newDomainHost.trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
-    const price = parseFloat(newDomainPriceUsd);
+    const cleanDomain = newDomainHost
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .split('/')[0];
 
     if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      setAddDomainError('Select a client by name/email or enter a valid client email.');
+      setAddDomainError('Select a client by name/email or add a new client first.');
       return;
     }
     if (!cleanDomain || !cleanDomain.includes('.')) {
       setAddDomainError('Paste or enter a valid domain name (e.g. brandname.com or company.pk).');
       return;
     }
-    if (!Number.isFinite(price) || price < 0) {
-      setAddDomainError('Enter a valid non-negative USD price.');
+    if (!Number.isFinite(parsedNewDomainPkr) || parsedNewDomainPkr < 0) {
+      setAddDomainError('Enter a valid non-negative PKR price.');
       return;
     }
 
     const matchedTld = detectTldForDomain(cleanDomain);
-    if (matchedTld?.minYears === 2 && newDomainYears < 2 && newDomainType === 'Domain Registration') {
+    if (
+      matchedTld?.minYears === 2 &&
+      newDomainYears < 2 &&
+      newDomainType === 'Domain Registration'
+    ) {
       setAddDomainError(`${matchedTld.tld} requires a minimum 2-year registration term.`);
       return;
     }
+
+    const parsedNs = newDomainNameserversText
+      .split(/[,\s]+/)
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean)
+      .slice(0, 4);
 
     const cycle = getCycleForYears(newDomainYears);
     const clientUser = users.find((u) => u.email.toLowerCase() === cleanEmail);
@@ -295,18 +381,25 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
       planName: `${newDomainType} (${newDomainYears}-Yr${matchedTld ? ` ${matchedTld.tld}` : ''})`,
       domainOrHost: cleanDomain,
       billingCycle: cycle,
-      amountUsd: price,
+      amountUsd: newDomainUsdComputed,
       status: 'pending',
       createdAt: newDomainStartDate || undefined,
       nextDueDate:
-        newDomainDueDate ||
-        computeDefaultNextDueDate(newDomainStartDate, cycle),
+        newDomainDueDate || computeDefaultNextDueDate(newDomainStartDate, cycle),
       serverModuleId: newDomainServerId || undefined,
       paymentMethod: 'Invoice Pending',
       invoicePaid: false,
+      nameservers:
+        parsedNs.length >= 2 ? parsedNs : ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com'],
+      eppCode:
+        newDomainType === 'Domain Transfer'
+          ? newDomainEppCode.trim() || undefined
+          : undefined,
+      transferStatus:
+        newDomainType === 'Domain Transfer' ? 'pending_admin' : undefined,
       notes:
         newDomainNotes.trim() ||
-        `Pending ${newDomainType} added with unpaid invoice; awaiting approval.`,
+        `Pending ${newDomainType} (${Math.round(parsedNewDomainPkr).toLocaleString()} PKR) added with unpaid invoice; awaiting admin approval.`,
       generateInvoice: true,
     });
 
@@ -327,23 +420,30 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
     setEditOrdCreatedAt(ord.createdAt.slice(0, 10));
     setEditOrdDueDate((ord.nextDueDate || getDefaultDueDate(1)).slice(0, 10));
     setEditOrdAmount(ord.amountUsd.toFixed(2));
-    setEditOrdNs1(ord.nameservers?.[0] || 'ns1.cpcloudhost.com');
-    setEditOrdNs2(ord.nameservers?.[1] || 'ns2.cpcloudhost.com');
+    setEditOrdNsText(
+      (ord.nameservers && ord.nameservers.length > 0
+        ? ord.nameservers
+        : ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']
+      ).join(', ')
+    );
   };
 
   const handleSaveDomainEdit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingDomainOrder) return;
     const amt = parseFloat(editOrdAmount);
+    const nsList = editOrdNsText
+      .split(/[,\s]+/)
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean)
+      .slice(0, 4);
     adminUpdateOrderDetails(editingDomainOrder.id, {
       status: editOrdStatus,
       createdAt: editOrdCreatedAt || editingDomainOrder.createdAt,
       nextDueDate: editOrdDueDate || editingDomainOrder.nextDueDate,
       amountUsd: Number.isFinite(amt) && amt >= 0 ? amt : editingDomainOrder.amountUsd,
-      nameservers: [
-        editOrdNs1.trim() || 'ns1.cpcloudhost.com',
-        editOrdNs2.trim() || 'ns2.cpcloudhost.com',
-      ],
+      nameservers:
+        nsList.length >= 2 ? nsList : ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com'],
     });
     onShowToast(`Updated domain ${editingDomainOrder.domainOrHost}`);
     setEditingDomainOrder(null);
@@ -437,7 +537,7 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
   return (
     <div className="space-y-5">
       {/* Top KPI Summary Strip */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
         <div className="bg-white border border-[#E2E8F0] rounded-xl p-4">
           <p className="text-[11px] font-medium text-slate-500">Total Domains</p>
           <p className="font-mono tabular-nums text-xl font-bold text-[#0F172A] mt-1">
@@ -451,18 +551,24 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
           </p>
         </div>
         <div className="bg-white border border-[#E2E8F0] rounded-xl p-4">
-          <p className="text-[11px] font-medium text-slate-500">Pending Approval</p>
+          <p className="text-[11px] font-medium text-slate-500">Pending Review</p>
           <p className="font-mono tabular-nums text-xl font-bold text-[#D97706] mt-1">
             {domainMetrics.pending}
           </p>
         </div>
         <div className="bg-white border border-[#E2E8F0] rounded-xl p-4">
-          <p className="text-[11px] font-medium text-slate-500">Expired / Suspended</p>
-          <p className="font-mono tabular-nums text-xl font-bold text-[#DC2626] mt-1">
-            {domainMetrics.expiredOrSuspended}
+          <p className="text-[11px] font-medium text-slate-500">NS Requests</p>
+          <p className="font-mono tabular-nums text-xl font-bold text-[#0E6B63] mt-1">
+            {domainMetrics.nsRequests}
           </p>
         </div>
-        <div className="bg-white border border-[#E2E8F0] rounded-xl p-4 col-span-2 lg:col-span-1">
+        <div className="bg-white border border-[#E2E8F0] rounded-xl p-4">
+          <p className="text-[11px] font-medium text-slate-500">Domain Transfers</p>
+          <p className="font-mono tabular-nums text-xl font-bold text-[#0F172A] mt-1">
+            {domainMetrics.transfers}
+          </p>
+        </div>
+        <div className="bg-white border border-[#E2E8F0] rounded-xl p-4">
           <p className="text-[11px] font-medium text-slate-500">Live TLD Extensions</p>
           <p className="font-mono tabular-nums text-xl font-bold text-[#0E6B63] mt-1">
             {domainMetrics.enabledTlds} / {tldExtensions.length}
@@ -470,47 +576,78 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
         </div>
       </div>
 
-      {/* Sub-Tabs + Primary Action */}
+      {/* Always-Visible Sub-Tabs + Primary Action */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E2E8F0] pb-px">
-        <div className="flex items-center gap-1.5 overflow-x-auto">
+        <div className="flex items-center gap-1 overflow-x-auto">
           <button
             type="button"
-            onClick={() => setSubTab('domains')}
-            className={`inline-flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold border-b-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            onClick={() => {
+              setSubTab('domains');
+              setShowAddDomain(false);
+            }}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold border-b-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
               subTab === 'domains'
                 ? 'border-[#0E6B63] text-[#0E6B63]'
                 : 'border-transparent text-slate-500 hover:text-[#0F172A]'
             }`}
           >
             <Globe className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>Registered &amp; Ordered Domains ({domainOrders.length})</span>
+            <span>All Domains ({domainOrders.length})</span>
           </button>
 
           <button
             type="button"
-            onClick={() => setSubTab('tlds')}
-            className={`inline-flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold border-b-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            onClick={() => {
+              setSubTab('nameservers');
+              setShowAddDomain(false);
+            }}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold border-b-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              subTab === 'nameservers'
+                ? 'border-[#0E6B63] text-[#0E6B63]'
+                : 'border-transparent text-slate-500 hover:text-[#0F172A]'
+            }`}
+          >
+            <Send className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>
+              Nameserver Notify ({pendingNameserverOrders.length})
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setSubTab('transfers');
+              setShowAddDomain(false);
+            }}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold border-b-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              subTab === 'transfers'
+                ? 'border-[#0E6B63] text-[#0E6B63]'
+                : 'border-transparent text-slate-500 hover:text-[#0F172A]'
+            }`}
+          >
+            <ArrowLeftRight className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Domain Transfers ({transferOrders.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setSubTab('tlds');
+              setShowAddDomain(false);
+            }}
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold border-b-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
               subTab === 'tlds'
                 ? 'border-[#0E6B63] text-[#0E6B63]'
                 : 'border-transparent text-slate-500 hover:text-[#0F172A]'
             }`}
           >
             <Tag className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>TLD Extensions &amp; Pricing ({tldExtensions.length})</span>
+            <span>TLD Pricing ({tldExtensions.length})</span>
           </button>
         </div>
 
         <div className="pb-2">
-          {subTab === 'domains' ? (
-            <button
-              type="button"
-              onClick={() => setShowAddDomain((v) => !v)}
-              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#0E6B63] hover:bg-[#0A534D] rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>{showAddDomain ? 'Close Add Domain' : 'Add Domain'}</span>
-            </button>
-          ) : (
+          {subTab === 'tlds' ? (
             <button
               type="button"
               onClick={() => (showAddTld ? setShowAddTld(false) : openTldEditor())}
@@ -518,6 +655,18 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
             >
               <Plus className="w-3.5 h-3.5" aria-hidden="true" />
               <span>{showAddTld ? 'Close Add TLD' : 'Add TLD'}</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setSubTab('domains');
+                setShowAddDomain((v) => !v);
+              }}
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#0E6B63] hover:bg-[#0A534D] rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>{showAddDomain ? 'Close Add Domain' : 'Add Domain'}</span>
             </button>
           )}
         </div>
@@ -546,7 +695,7 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
                       Add &amp; Provision Client Domain
                     </h2>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Search client by name or email, paste domain, set pricing/dates, generate pending order + unpaid invoice, and approve to activate.
+                      Select or add client, check domain availability (even if already registered), auto-detect PKR pricing, and create a pending order + unpaid invoice.
                     </p>
                   </div>
                 </div>
@@ -558,31 +707,80 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
                   className="xl:col-span-8 bg-white border border-[#E2E8F0] rounded-xl p-6 space-y-5"
                 >
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div className="sm:col-span-2">
-                      <SearchableClientSelect
-                        label="Search Client (Name or Email) *"
-                        users={users}
-                        valueEmail={newDomainClientEmail}
-                        onChange={(sel) => {
-                          setNewDomainClientEmail(sel.email);
-                          setNewDomainClientName(sel.name);
-                          setNewDomainClientCountry(sel.country || 'Pakistan');
-                          setAddDomainError('');
-                        }}
-                      />
+                    <div className="sm:col-span-2 flex flex-col sm:flex-row sm:items-end gap-2.5">
+                      <div className="flex-1">
+                        <SearchableClientSelect
+                          label="Search Client (Name or Email) *"
+                          users={users}
+                          valueEmail={newDomainClientEmail}
+                          onChange={(sel) => {
+                            setNewDomainClientEmail(sel.email);
+                            setNewDomainClientName(sel.name);
+                            setNewDomainClientCountry(sel.country || 'Pakistan');
+                            setAddDomainError('');
+                          }}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowQuickAddClient(true)}
+                        className="min-h-[38px] inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg border border-[#0E6B63]/40 bg-[#F2FAF8] hover:bg-[#0E6B63] hover:text-white text-[#0E6B63] text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                      >
+                        <UserPlus className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>+ Add Client</span>
+                      </button>
                     </div>
 
                     <div className="sm:col-span-2">
                       <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                        Domain Name (Paste Here) *
+                        Domain Name *
                       </label>
-                      <input
-                        type="text"
-                        value={newDomainHost}
-                        onChange={(e) => handleDomainHostChange(e.target.value)}
-                        placeholder="e.g. acme.com or brand.pk"
-                        className="w-full px-3 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
-                      />
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={newDomainHost}
+                          onChange={(e) => handleDomainHostChange(e.target.value)}
+                          placeholder="e.g. acme.com or brand.pk"
+                          className="flex-1 px-3 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleCheckDomainAvailability}
+                          disabled={domainCheckLoading}
+                          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-[#0E6B63]/40 bg-[#F2FAF8] hover:bg-[#0E6B63] hover:text-white text-[#0E6B63] text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors disabled:opacity-60"
+                        >
+                          {domainCheckLoading ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                          ) : (
+                            <Search className="w-3.5 h-3.5" aria-hidden="true" />
+                          )}
+                          <span>Check Availability</span>
+                        </button>
+                      </div>
+                      {domainCheckResult && (
+                        <p
+                          className={`mt-1.5 text-[11px] font-medium flex items-center gap-1.5 ${
+                            domainCheckResult.available ? 'text-[#16A34A]' : 'text-[#D97706]'
+                          }`}
+                        >
+                          {domainCheckResult.available ? (
+                            <>
+                              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                              <span>
+                                <strong className="font-mono">{domainCheckResult.domain}</strong> is Available for registration.
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              <AlertCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                              <span>
+                                <strong className="font-mono">{domainCheckResult.domain}</strong> is Already Registered
+                                {domainCheckResult.registrar ? ` (${domainCheckResult.registrar})` : ''} — still permitted to add in admin panel.
+                              </span>
+                            </>
+                          )}
+                        </p>
+                      )}
                     </div>
 
                     <div>
@@ -599,13 +797,12 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
                           const matched = detectTldForDomain(newDomainHost);
                           if (matched) {
                             if (nextType === 'Domain Transfer') {
-                              setNewDomainPriceUsd(matched.transferUsd.toFixed(2));
+                              setNewDomainPricePkr(toPkrString(matched.transferUsd));
                             } else {
-                              setNewDomainPriceUsd(
-                                (newDomainYears === 2
-                                  ? matched.year2Usd
-                                  : matched.year1Usd
-                                ).toFixed(2)
+                              setNewDomainPricePkr(
+                                toPkrString(
+                                  newDomainYears === 2 ? matched.year2Usd : matched.year1Usd
+                                )
                               );
                             }
                           }
@@ -636,16 +833,19 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
 
                     <div>
                       <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                        Price (USD) *
+                        Auto Price (PKR) *
                       </label>
                       <input
                         type="number"
-                        step="0.01"
+                        step="1"
                         min="0"
-                        value={newDomainPriceUsd}
-                        onChange={(e) => setNewDomainPriceUsd(e.target.value)}
+                        value={newDomainPricePkr}
+                        onChange={(e) => setNewDomainPricePkr(e.target.value)}
                         className="w-full px-3 py-2 text-xs font-mono font-semibold border border-[#CBD5E1] rounded-lg"
                       />
+                      <span className="block mt-1 font-mono text-[10px] text-slate-500">
+                        USD Sync: ${newDomainUsdComputed.toFixed(2)} USD (1 USD = {pkrRate.toFixed(1)} PKR)
+                      </span>
                     </div>
 
                     <div>
@@ -665,6 +865,34 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
                         ))}
                       </select>
                     </div>
+
+                    <div className="sm:col-span-2">
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                        Nameservers (Comma-separated, 2 or 4 NS)
+                      </label>
+                      <input
+                        type="text"
+                        value={newDomainNameserversText}
+                        onChange={(e) => setNewDomainNameserversText(e.target.value)}
+                        placeholder="ns1.cpcloudhost.com, ns2.cpcloudhost.com"
+                        className="w-full px-3 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg"
+                      />
+                    </div>
+
+                    {newDomainType === 'Domain Transfer' && (
+                      <div className="sm:col-span-2">
+                        <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                          EPP / Authorization Code (Transfer Key)
+                        </label>
+                        <input
+                          type="text"
+                          value={newDomainEppCode}
+                          onChange={(e) => setNewDomainEppCode(e.target.value)}
+                          placeholder="Paste EPP code provided by current registrar"
+                          className="w-full px-3 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg"
+                        />
+                      </div>
+                    )}
 
                     <div>
                       <label className="block text-[11px] font-semibold text-slate-600 mb-1">
@@ -759,11 +987,16 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
                           <span className="text-slate-500">Due Date</span>
                           <span className="font-mono font-semibold text-[#0F172A]">{newDomainDueDate}</span>
                         </div>
-                        <div className="flex justify-between pt-2 border-t border-slate-100">
+                        <div className="flex justify-between pt-2 border-t border-slate-100 items-baseline">
                           <span className="text-slate-600 font-semibold">Invoice Amount</span>
-                          <span className="font-mono font-bold text-[#0F172A]">
-                            {formatPrice(parseFloat(newDomainPriceUsd) || 0)}
-                          </span>
+                          <div className="text-right">
+                            <span className="font-mono font-bold text-[#0F172A] block">
+                              PKR {Math.round(parsedNewDomainPkr || 0).toLocaleString()}
+                            </span>
+                            <span className="font-mono text-[10px] text-slate-500">
+                              ${newDomainUsdComputed.toFixed(2)} USD
+                            </span>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -777,7 +1010,7 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
                               : 'bg-amber-50 text-[#D97706]'
                           }`}
                         >
-                          {createdDomainRecord.approved ? 'ACTIVE · PAID' : 'PENDING · UNPAID'}
+                          {createdDomainRecord.approved ? 'PROCESSED' : 'PENDING · UNPAID'}
                         </span>
                         <h3 className="font-display text-base font-bold text-[#0F172A] mt-1">
                           {createdDomainRecord.order.domainOrHost}
@@ -792,9 +1025,12 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
                         <button
                           type="button"
                           onClick={() => {
-                            const res = approveDomainRegistrationAndSendVerify(
-                              createdDomainRecord.order.id
-                            );
+                            const res =
+                              createdDomainRecord.order.productType === 'Domain Transfer'
+                                ? adminStartDomainTransfer(createdDomainRecord.order.id)
+                                : approveDomainRegistrationAndSendVerify(
+                                    createdDomainRecord.order.id
+                                  );
                             if (!res.ok) {
                               onShowToast(res.error || 'Could not approve domain');
                               return;
@@ -803,18 +1039,28 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
                               prev ? { ...prev, approved: true } : prev
                             );
                             onShowToast(
-                              `Approved ${createdDomainRecord.order.domainOrHost} · Invoice marked PAID`
+                              createdDomainRecord.order.productType === 'Domain Transfer'
+                                ? `Started 7-day transfer for ${createdDomainRecord.order.domainOrHost}`
+                                : `Approved ${createdDomainRecord.order.domainOrHost} · Invoice marked PAID & verify email sent`
                             );
                           }}
                           className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg bg-[#16A34A] hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer"
                         >
                           <ShieldCheck className="w-4 h-4" aria-hidden="true" />
-                          <span>Approve Domain &amp; Mark Paid</span>
+                          <span>
+                            {createdDomainRecord.order.productType === 'Domain Transfer'
+                              ? 'Approve & Start 7-Day Transfer'
+                              : 'Approve Domain, Mark Paid & Verify'}
+                          </span>
                         </button>
                       ) : (
                         <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 font-semibold flex items-center gap-2">
                           <CheckCircle2 className="w-4 h-4 text-[#16A34A] shrink-0" aria-hidden="true" />
-                          <span>Domain Active &amp; Invoice Paid</span>
+                          <span>
+                            {createdDomainRecord.order.productType === 'Domain Transfer'
+                              ? '7-Day Transfer Initiated & Emailed'
+                              : 'Domain Active, Invoice Paid & Verify Sent'}
+                          </span>
                         </div>
                       )}
 
@@ -823,6 +1069,8 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
                           type="button"
                           onClick={() => {
                             setNewDomainHost('');
+                            setNewDomainEppCode('');
+                            setDomainCheckResult(null);
                             setNewDomainNotes('');
                             setCreatedDomainRecord(null);
                           }}
@@ -1028,9 +1276,14 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
                             {ord.nameserverUpdateStatus === 'pending_update' &&
                               ord.pendingNameservers && (
                                 <span className="block font-mono text-[11px] text-[#D97706] mt-0.5">
-                                  NS Request: {ord.pendingNameservers[0]}, {ord.pendingNameservers[1]}
+                                  NS Request: {ord.pendingNameservers.join(', ')}
                                 </span>
                               )}
+                            {Array.isArray(ord.nameservers) && ord.nameservers.length > 0 && (
+                              <span className="block font-mono text-[10px] text-slate-400 mt-0.5">
+                                NS: {ord.nameservers.join(', ')}
+                              </span>
+                            )}
                           </td>
                           <td className="py-3 px-4">
                             <span className="font-semibold text-[#0F172A] block">
@@ -1063,10 +1316,13 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
                                   nextSt === 'active' &&
                                   ord.status === 'pending'
                                 ) {
-                                  const res = approveDomainRegistrationAndSendVerify(ord.id);
+                                  const res =
+                                    ord.productType === 'Domain Transfer'
+                                      ? adminCompleteDomainTransfer(ord.id)
+                                      : approveDomainRegistrationAndSendVerify(ord.id);
                                   if (res.ok) {
                                     onShowToast(
-                                      `Approved ${ord.domainOrHost} · Invoice marked PAID & verification sent`
+                                      `Approved ${ord.domainOrHost} · Invoice marked PAID & email sent`
                                     );
                                     return;
                                   }
@@ -1093,30 +1349,50 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
                           </td>
                           <td className="py-3 px-4 text-right whitespace-nowrap">
                             <div className="inline-flex items-center justify-end gap-1.5">
-                              {(isPendingRegApproval || isPendingClientVerify) && (
+                              {ord.productType === 'Domain Transfer' &&
+                              ord.status === 'pending' ? (
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    const res = approveDomainRegistrationAndSendVerify(ord.id);
-                                    if (!res.ok) {
-                                      onShowToast(res.error || 'Could not dispatch verification');
-                                      return;
-                                    }
-                                    onShowToast(
-                                      isPendingRegApproval
-                                        ? `Approved ${ord.domainOrHost} & sent WHOIS verification link to ${ord.clientEmail}`
-                                        : `Resent WHOIS verification link to ${ord.clientEmail}`
-                                    );
-                                  }}
-                                  className="px-3 py-1.5 text-[11px] font-semibold text-white bg-[#16A34A] hover:bg-emerald-700 rounded-lg whitespace-nowrap shrink-0 inline-flex items-center gap-1 cursor-pointer"
+                                  onClick={() => setSubTab('transfers')}
+                                  className="px-3 py-1.5 text-[11px] font-semibold text-[#0E6B63] border border-[#0E6B63]/40 bg-[#F2FAF8] hover:bg-[#0E6B63] hover:text-white rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
                                 >
-                                  <MailCheck className="w-3 h-3" aria-hidden="true" />
-                                  <span>
-                                    {isPendingRegApproval
-                                      ? 'Approve'
-                                      : 'Resend Verify'}
-                                  </span>
+                                  Manage Transfer
                                 </button>
+                              ) : (
+                                (isPendingRegApproval || isPendingClientVerify) && (
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      if (isPendingRegApproval) {
+                                        const res = approveDomainRegistrationAndSendVerify(ord.id);
+                                        if (!res.ok) {
+                                          onShowToast(res.error || 'Could not dispatch verification');
+                                          return;
+                                        }
+                                        onShowToast(
+                                          `Approved ${ord.domainOrHost} & sent WHOIS verification link to ${ord.clientEmail}`
+                                        );
+                                        return;
+                                      }
+                                      const resent = await resendDomainVerificationEmail(ord.id);
+                                      if (!resent.ok) {
+                                        onShowToast(resent.error || 'Could not resend verification email');
+                                        return;
+                                      }
+                                      onShowToast(
+                                        resent.emailSent
+                                          ? `WHOIS verification email resent to ${ord.clientEmail}`
+                                          : `Verification link refreshed for ${ord.domainOrHost} (enable SMTP for inbox email)`
+                                      );
+                                    }}
+                                    className="px-3 py-1.5 text-[11px] font-semibold text-white bg-[#16A34A] hover:bg-emerald-700 rounded-lg whitespace-nowrap shrink-0 inline-flex items-center gap-1 cursor-pointer"
+                                  >
+                                    <MailCheck className="w-3 h-3" aria-hidden="true" />
+                                    <span>
+                                      {isPendingRegApproval ? 'Approve' : 'Resend Verify'}
+                                    </span>
+                                  </button>
+                                )
                               )}
                               {ord.nameserverUpdateStatus === 'pending_update' && (
                                 <button
@@ -1227,25 +1503,15 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
                     className="w-full px-3 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg"
                   />
                 </div>
-                <div>
+                <div className="sm:col-span-2">
                   <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                    Primary Nameserver (NS1)
+                    Authoritative Nameservers (2 or 4 comma-separated)
                   </label>
                   <input
                     type="text"
-                    value={editOrdNs1}
-                    onChange={(e) => setEditOrdNs1(e.target.value)}
-                    className="w-full px-3 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                    Secondary Nameserver (NS2)
-                  </label>
-                  <input
-                    type="text"
-                    value={editOrdNs2}
-                    onChange={(e) => setEditOrdNs2(e.target.value)}
+                    value={editOrdNsText}
+                    onChange={(e) => setEditOrdNsText(e.target.value)}
+                    placeholder="ns1.stackdns.com, ns2.stackdns.com, ns3.stackdns.com, ns4.stackdns.com"
                     className="w-full px-3 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg"
                   />
                 </div>
@@ -1267,6 +1533,261 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
                 </button>
               </div>
             </form>
+          )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ==================== TAB 2: NAMESERVER REQUESTS & NOTIFY ==================== */}
+      {subTab === 'nameservers' && (
+        <div className="bg-white border border-[#E2E8F0] rounded-xl p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+            <div className="flex items-center gap-2.5">
+              <Send className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+              <div>
+                <h2 className="font-display text-sm font-bold text-[#0F172A]">
+                  Nameserver Change Requests &amp; Client Notify Desk
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Review custom or StackDNS nameservers submitted by clients, apply delegation live, and dispatch confirmation emails.
+                </p>
+              </div>
+            </div>
+            <span className="font-mono text-xs font-semibold text-[#D97706]">
+              {pendingNameserverOrders.length} Pending Request(s)
+            </span>
+          </div>
+
+          {pendingNameserverOrders.length === 0 ? (
+            <div className="py-10 text-center space-y-2 text-xs">
+              <CheckCircle2 className="w-8 h-8 text-[#16A34A] mx-auto" aria-hidden="true" />
+              <p className="font-semibold text-[#0F172A]">
+                All nameserver change requests are synced and up to date
+              </p>
+              <p className="text-slate-500 max-w-md mx-auto">
+                When a client requests custom or StackDNS nameservers from their portal, it appears here for one-click push and client notification.
+              </p>
+            </div>
+          ) : (
+            <div className="divide-y divide-[#E2E8F0]">
+              {pendingNameserverOrders.map((ord) => (
+                <div
+                  key={`ns-tab-${ord.id}`}
+                  className="py-4 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs"
+                >
+                  <div className="space-y-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono font-bold text-sm text-[#0F172A]">
+                        {ord.domainOrHost}
+                      </span>
+                      <span className="font-mono text-[11px] text-slate-500">{ord.id}</span>
+                      <span className="text-slate-600">
+                        · {ord.clientName} ({ord.clientEmail})
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] font-mono">
+                      <span className="text-slate-500">
+                        Current: {(ord.nameservers || ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']).join(', ')}
+                      </span>
+                      <span className="font-semibold text-[#0E6B63]">
+                        Requested: {(ord.pendingNameservers || []).join(', ')}
+                      </span>
+                      {ord.nameserverRequestedAt && (
+                        <span className="text-slate-400">
+                          Requested: {ord.nameserverRequestedAt}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const res = adminApplyNameserverChange(ord.id);
+                      if (!res.ok) {
+                        onShowToast(res.error || 'Failed to apply nameserver change');
+                        return;
+                      }
+                      onShowToast(
+                        `Updated nameservers for ${ord.domainOrHost} & emailed confirmation to ${ord.clientEmail}`
+                      );
+                    }}
+                    className="min-h-[38px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <Send className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Apply NS &amp; Notify Client</span>
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ==================== TAB 3: DOMAIN TRANSFERS (7-DAY WORKFLOW) ==================== */}
+      {subTab === 'transfers' && (
+        <div className="bg-white border border-[#E2E8F0] rounded-xl p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+            <div className="flex items-center gap-2.5">
+              <ArrowLeftRight className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
+              <div>
+                <h2 className="font-display text-sm font-bold text-[#0F172A]">
+                  Incoming Domain Transfers &amp; 7-Day Approval Desk
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Verify EPP authorization codes, initiate the 7-day transfer window, accept client-notified approvals, or Allow Manage once 7+ days elapse.
+                </p>
+              </div>
+            </div>
+            <span className="font-mono text-xs font-semibold text-[#0E6B63]">
+              {transferOrders.length} Transfer Order(s)
+            </span>
+          </div>
+
+          {transferOrders.length === 0 ? (
+            <div className="py-10 text-center space-y-2 text-xs">
+              <ArrowLeftRight className="w-8 h-8 text-slate-300 mx-auto" aria-hidden="true" />
+              <p className="font-semibold text-[#0F172A]">No domain transfer orders yet</p>
+              <p className="text-slate-500 max-w-md mx-auto">
+                Transfers ordered from the storefront or added via Add Domain appear here with their EPP code and daily 7-day countdown.
+              </p>
+            </div>
+          ) : (
+            <div className="divide-y divide-[#E2E8F0]">
+              {transferOrders.map((ord) => {
+                const lc = evaluateDomainLifecycle(ord);
+                const tStatus = lc.transferStatus;
+                return (
+                  <div
+                    key={`trn-${ord.id}`}
+                    className="py-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4 text-xs"
+                  >
+                    <div className="space-y-1.5 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2.5">
+                        <span className="font-mono font-bold text-sm text-[#0F172A]">
+                          {ord.domainOrHost}
+                        </span>
+                        <span className="font-mono text-[11px] text-slate-500">{ord.id}</span>
+                        <span
+                          className={`text-[11px] font-bold uppercase ${
+                            tStatus === 'completed'
+                              ? 'text-[#16A34A]'
+                              : tStatus === 'client_notified'
+                                ? 'text-[#0E6B63]'
+                                : 'text-[#D97706]'
+                          }`}
+                        >
+                          {tStatus === 'pending_admin'
+                            ? 'Awaiting Admin Start'
+                            : tStatus === 'in_progress'
+                              ? `In Progress · Day ${lc.transferDaysElapsed} of 7 (${lc.transferDaysRemaining}d left)`
+                              : tStatus === 'client_notified'
+                                ? 'Client Confirmed Registrar Approval'
+                                : 'Transfer Completed & Active'}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-slate-600">
+                        <span>
+                          Client: <strong className="text-[#0F172A]">{ord.clientName}</strong> ({ord.clientEmail})
+                        </span>
+                        <span className="inline-flex items-center gap-1 font-mono text-[#0F172A]">
+                          <KeyRound className="w-3 h-3 text-[#0E6B63]" aria-hidden="true" />
+                          EPP: <strong>{ord.eppCode || 'Not Provided'}</strong>
+                        </span>
+                        <span className="font-mono">
+                          NS: {(ord.nameservers || []).join(', ') || 'ns1.cpcloudhost.com, ns2.cpcloudhost.com'}
+                        </span>
+                      </div>
+
+                      {ord.transferStartedAt && (
+                        <p className="text-[11px] font-mono text-slate-500">
+                          Started: {ord.transferStartedAt} · {formatPrice(ord.amountUsd)}
+                          {ord.transferClientNotifiedAt
+                            ? ` · Client Notified: ${ord.transferClientNotifiedAt}`
+                            : ''}
+                          {ord.transferCompletedAt
+                            ? ` · Completed: ${ord.transferCompletedAt}`
+                            : ''}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      {tStatus === 'pending_admin' && ord.status === 'pending' && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const res = adminStartDomainTransfer(ord.id);
+                            if (res.ok) {
+                              onShowToast(
+                                `Started 7-day transfer for ${ord.domainOrHost} & emailed ${ord.clientEmail}`
+                              );
+                            } else {
+                              onShowToast(res.error || 'Could not start transfer');
+                            }
+                          }}
+                          className="min-h-[36px] inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold whitespace-nowrap cursor-pointer"
+                        >
+                          <ShieldCheck className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>Approve &amp; Start 7-Day Transfer</span>
+                        </button>
+                      )}
+
+                      {tStatus === 'client_notified' && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const res = adminCompleteDomainTransfer(ord.id, false);
+                            if (res.ok) {
+                              onShowToast(
+                                `Accepted transfer for ${ord.domainOrHost} · Success email sent & Manage unlocked`
+                              );
+                            } else {
+                              onShowToast(res.error || 'Could not complete transfer');
+                            }
+                          }}
+                          className="min-h-[36px] inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-[#16A34A] hover:bg-emerald-700 text-white text-xs font-semibold whitespace-nowrap cursor-pointer"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>Accept &amp; Complete Transfer</span>
+                        </button>
+                      )}
+
+                      {tStatus === 'in_progress' && lc.transferCanAdminAllowManage && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const res = adminCompleteDomainTransfer(ord.id, true);
+                            if (res.ok) {
+                              onShowToast(
+                                `7+ days elapsed — Manage unlocked & transfer completed for ${ord.domainOrHost}`
+                              );
+                            }
+                          }}
+                          className="min-h-[36px] inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold whitespace-nowrap cursor-pointer"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>Allow Manage (7+ Days Elapsed)</span>
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSubTab('domains');
+                          openEditDomainModal(ord);
+                        }}
+                        className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[#CBD5E1] text-xs font-semibold text-[#0F172A] hover:border-[#0E6B63] cursor-pointer"
+                      >
+                        Edit Dates &amp; DNS
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
       )}
@@ -1583,6 +2104,17 @@ export const AdminDomainsView: React.FC<AdminDomainsViewProps> = ({
           </div>
         </div>
       )}
+
+      <QuickAddClientModal
+        open={showQuickAddClient}
+        onClose={() => setShowQuickAddClient(false)}
+        onCreated={(user) => {
+          setNewDomainClientEmail(user.email);
+          setNewDomainClientName(user.name);
+          setNewDomainClientCountry(user.country || 'Pakistan');
+          onShowToast(`Client ${user.name} created and selected`);
+        }}
+      />
     </div>
   );
 };

@@ -79,6 +79,7 @@ export const SHARED_PLANS: SharedHostingPlan[] = [
       { key: 'ssd', label: '10GB SSD Space' },
     ],
     features: [
+      '1 Free .com Domain (1-Yr w/ 1Y/2Y/4Y Plan)',
       'Free SSL',
       '80+ App Installer',
       'Free Malware Scanning',
@@ -102,6 +103,7 @@ export const SHARED_PLANS: SharedHostingPlan[] = [
       { key: 'ssd', label: '20GB SSD Space' },
     ],
     features: [
+      '1 Free .com Domain (1-Yr w/ 1Y/2Y/4Y Plan)',
       'Free SSL',
       '80+ App Installer',
       'Free Malware Scanning',
@@ -125,6 +127,7 @@ export const SHARED_PLANS: SharedHostingPlan[] = [
       { key: 'ssd', label: 'Unlimited SSD Space' },
     ],
     features: [
+      '1 Free .com Domain (1-Yr w/ 1Y/2Y/4Y Plan)',
       'Free SSL',
       '80+ App Installer',
       'Free Malware Scanning',

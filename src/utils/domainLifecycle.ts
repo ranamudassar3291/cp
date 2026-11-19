@@ -1,6 +1,7 @@
 import type { PlatformOrder } from '../context/PlatformContext';
 
 export const ICANN_TRANSFER_LOCK_DAYS = 60;
+export const TRANSFER_WINDOW_DAYS = 7;
 
 export function getTodayIsoUtc(): string {
   return new Date().toISOString().slice(0, 10);
@@ -65,6 +66,7 @@ export function generateFreshEppCode(orderId: string): string {
 
 export interface DomainLifecycleSummary {
   isStandaloneDomain: boolean;
+  isTransferOrder: boolean;
   registeredDateIso: string;
   dueDateIso: string;
   todayIso: string;
@@ -81,6 +83,10 @@ export interface DomainLifecycleSummary {
   isContactVerified: boolean;
   isManageLocked: boolean;
   effectiveRegistrarLocked: boolean;
+  transferStatus: 'pending_admin' | 'in_progress' | 'client_notified' | 'completed';
+  transferDaysElapsed: number;
+  transferDaysRemaining: number;
+  transferCanAdminAllowManage: boolean;
 }
 
 export function isDomainOrderRecord(ord: PlatformOrder): boolean {
@@ -96,38 +102,43 @@ export function evaluateDomainLifecycle(
   todayOverride?: string
 ): DomainLifecycleSummary {
   const todayIso = todayOverride || getTodayIsoUtc();
+  const isTransferOrder = ord.productType === 'Domain Transfer';
   const isStandaloneDomain =
-    ord.productType === 'Domain Registration' || ord.productType === 'Domain Transfer';
+    ord.productType === 'Domain Registration' || isTransferOrder;
 
   const registeredDateIso = parseIsoDateOnly(ord.createdAt);
   const dueDateIso = ord.nextDueDate
     ? parseIsoDateOnly(ord.nextDueDate)
-    : addYearsToIso(registeredDateIso, ord.billingCycle === '2 Years' ? 2 : 1);
+    : addYearsToIso(
+        registeredDateIso,
+        ord.billingCycle === '2 Years' ? 2 : ord.billingCycle === '4 Years' ? 4 : 1
+      );
 
   const daysSinceRegistration = Math.max(0, diffDaysIso(registeredDateIso, todayIso));
   const daysRemainingUntilDue = diffDaysIso(todayIso, dueDateIso);
 
-  const icann60DayLockActive = daysSinceRegistration < ICANN_TRANSFER_LOCK_DAYS;
+  const icann60DayLockActive = !isTransferOrder && daysSinceRegistration < ICANN_TRANSFER_LOCK_DAYS;
   const icannUnlockDateIso = addDaysToIso(registeredDateIso, ICANN_TRANSFER_LOCK_DAYS);
-  const daysUntilIcannUnlock = Math.max(
-    0,
-    ICANN_TRANSFER_LOCK_DAYS - daysSinceRegistration
-  );
-  const icannProgressPercent = Math.min(
-    100,
-    Math.round((daysSinceRegistration / ICANN_TRANSFER_LOCK_DAYS) * 100)
-  );
+  const daysUntilIcannUnlock = isTransferOrder
+    ? 0
+    : Math.max(0, ICANN_TRANSFER_LOCK_DAYS - daysSinceRegistration);
+  const icannProgressPercent = isTransferOrder
+    ? 100
+    : Math.min(100, Math.round((daysSinceRegistration / ICANN_TRANSFER_LOCK_DAYS) * 100));
 
   const isDueDatePassed = daysRemainingUntilDue < 0;
   const isExpired =
     ord.status === 'expired' ||
-    (isDueDatePassed && ord.status !== 'cancelled' && ord.status !== 'refunded');
+    (!isTransferOrder &&
+      isDueDatePassed &&
+      ord.status !== 'cancelled' &&
+      ord.status !== 'refunded');
 
   const isPendingAdminApproval =
     ord.status === 'pending' &&
     (ord.domainVerificationStatus === 'pending_admin_approval' ||
       ord.productType === 'Domain Registration' ||
-      ord.productType === 'Domain Transfer');
+      isTransferOrder);
 
   const isPendingContactVerification =
     ord.productType === 'Domain Registration' &&
@@ -138,6 +149,30 @@ export function evaluateDomainLifecycle(
   const isContactVerified =
     ord.domainVerificationStatus === 'verified' ||
     (ord.status === 'active' && !ord.domainVerificationStatus);
+
+  const transferStatus: DomainLifecycleSummary['transferStatus'] = isTransferOrder
+    ? ord.status === 'active' || ord.transferStatus === 'completed'
+      ? 'completed'
+      : ord.transferStatus === 'client_notified'
+        ? 'client_notified'
+        : ord.transferStatus === 'in_progress'
+          ? 'in_progress'
+          : 'pending_admin'
+    : 'completed';
+
+  const transferStartedIso = ord.transferStartedAt
+    ? parseIsoDateOnly(ord.transferStartedAt)
+    : registeredDateIso;
+  const transferDaysElapsed =
+    isTransferOrder && (transferStatus === 'in_progress' || transferStatus === 'client_notified')
+      ? Math.max(0, diffDaysIso(transferStartedIso, todayIso))
+      : 0;
+  const transferDaysRemaining = Math.max(0, TRANSFER_WINDOW_DAYS - transferDaysElapsed);
+  const transferCanAdminAllowManage =
+    isTransferOrder &&
+    ord.status === 'pending' &&
+    (transferStatus === 'in_progress' || transferStatus === 'client_notified') &&
+    transferDaysElapsed >= TRANSFER_WINDOW_DAYS;
 
   const isManageLocked =
     isExpired ||
@@ -152,6 +187,7 @@ export function evaluateDomainLifecycle(
 
   return {
     isStandaloneDomain,
+    isTransferOrder,
     registeredDateIso,
     dueDateIso,
     todayIso,
@@ -168,5 +204,9 @@ export function evaluateDomainLifecycle(
     isContactVerified,
     isManageLocked,
     effectiveRegistrarLocked,
+    transferStatus,
+    transferDaysElapsed,
+    transferDaysRemaining,
+    transferCanAdminAllowManage,
   };
 }

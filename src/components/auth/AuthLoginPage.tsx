@@ -11,6 +11,8 @@ import {
   Loader2,
   Lock,
   LogOut,
+  MailCheck,
+  RefreshCw,
   ShieldCheck,
   User,
 } from 'lucide-react';
@@ -58,6 +60,8 @@ export const AuthLoginPage: React.FC<AuthLoginPageProps> = ({
     loginWithCredentials,
     verifyTwoFactorChallenge,
     cancelTwoFactorChallenge,
+    verifyRegistrationOtp,
+    resendRegistrationOtp,
     logout,
   } = usePlatform();
   const { formatPrice } = useCurrency();
@@ -68,6 +72,13 @@ export const AuthLoginPage: React.FC<AuthLoginPageProps> = ({
   const [rememberLogin, setRememberLogin] = useState(Boolean(rememberedIdentifier));
   const [showHelpNote, setShowHelpNote] = useState(false);
   const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [pendingEmailVerify, setPendingEmailVerify] = useState<{
+    email: string;
+    code: string;
+    resending: boolean;
+    cooldown: number;
+    infoMsg: string;
+  } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [justSignedIn, setJustSignedIn] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
@@ -91,6 +102,16 @@ export const AuthLoginPage: React.FC<AuthLoginPageProps> = ({
     }, 1000);
     return () => window.clearInterval(timer);
   }, [lockCountdown]);
+
+  useEffect(() => {
+    if (!pendingEmailVerify || pendingEmailVerify.cooldown <= 0) return;
+    const timer = window.setInterval(() => {
+      setPendingEmailVerify((prev) =>
+        prev ? { ...prev, cooldown: prev.cooldown <= 1 ? 0 : prev.cooldown - 1 } : null
+      );
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [pendingEmailVerify?.cooldown]);
 
   const userOrders = useMemo(() => {
     if (!currentUser) return [];
@@ -124,6 +145,19 @@ export const AuthLoginPage: React.FC<AuthLoginPageProps> = ({
       setSubmitting(false);
       if (!result.ok) {
         setPassword('');
+        if (result.requiresEmailVerification && result.unverifiedEmail) {
+          setErrorMessage('');
+          setPendingEmailVerify({
+            email: result.unverifiedEmail,
+            code: '',
+            resending: false,
+            cooldown: 0,
+            infoMsg:
+              result.error ??
+              `Enter the 6-digit verification code sent to ${result.unverifiedEmail}.`,
+          });
+          return;
+        }
         if (result.lockedSeconds && result.lockedSeconds > 0) {
           setLockCountdown(result.lockedSeconds);
         }
@@ -142,6 +176,53 @@ export const AuthLoginPage: React.FC<AuthLoginPageProps> = ({
       setJustSignedIn(true);
       onOpenDashboard();
     }, 240);
+  };
+
+  const handleVerifyEmailOtp = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pendingEmailVerify || submitting) return;
+    const cleanOtp = pendingEmailVerify.code.replace(/\D/g, '').trim();
+    if (cleanOtp.length !== 6) {
+      setErrorMessage('Enter the 6-digit verification code sent to your email.');
+      return;
+    }
+    setErrorMessage('');
+    setSubmitting(true);
+    const verified = verifyRegistrationOtp(pendingEmailVerify.email, cleanOtp);
+    setSubmitting(false);
+    if (!verified.ok) {
+      setErrorMessage(verified.error ?? 'Incorrect or expired verification code.');
+      return;
+    }
+    setPendingEmailVerify(null);
+    setJustSignedIn(true);
+    onOpenDashboard();
+  };
+
+  const handleResendEmailOtp = async () => {
+    if (!pendingEmailVerify || pendingEmailVerify.resending || pendingEmailVerify.cooldown > 0) {
+      return;
+    }
+    setErrorMessage('');
+    setPendingEmailVerify((prev) => (prev ? { ...prev, resending: true } : null));
+    const res = await resendRegistrationOtp(pendingEmailVerify.email);
+    setPendingEmailVerify((prev) =>
+      prev
+        ? {
+            ...prev,
+            resending: false,
+            cooldown: res.cooldownSeconds ?? (res.ok ? 30 : 0),
+            infoMsg: res.ok
+              ? res.emailSent
+                ? `A new 6-digit verification code was sent to ${prev.email}.`
+                : res.error || 'Fresh 6-digit code generated.'
+              : prev.infoMsg,
+          }
+        : null
+    );
+    if (!res.ok) {
+      setErrorMessage(res.error ?? 'Unable to resend verification code.');
+    }
   };
 
   const handleVerifyTwoFactor = async (e: React.FormEvent) => {
@@ -307,6 +388,129 @@ export const AuthLoginPage: React.FC<AuthLoginPageProps> = ({
                 </button>
               </div>
             </div>
+          </div>
+        ) : pendingEmailVerify ? (
+          <div>
+            <div className="text-center sm:text-left">
+              <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#0E6B63] mb-2">
+                <MailCheck className="w-4 h-4 shrink-0" aria-hidden="true" />
+                <span>Email Verification Required</span>
+              </div>
+              <h1
+                className="font-display text-2xl sm:text-[26px] font-extrabold tracking-tight text-[#0F172A]"
+                style={{ textWrap: 'balance' }}
+              >
+                Verify your email code
+              </h1>
+              <p className="mt-1.5 text-xs sm:text-sm text-slate-600 leading-relaxed">
+                Enter the 6-digit verification code sent to{' '}
+                <span className="font-mono font-semibold text-[#0F172A]">
+                  {pendingEmailVerify.email}
+                </span>{' '}
+                before signing in.
+              </p>
+            </div>
+
+            {pendingEmailVerify.infoMsg && (
+              <div className="mt-4 rounded-xl bg-[#F2FAF8] border border-[#0E6B63]/20 px-3.5 py-2.5 text-xs text-[#0E6B63]">
+                {pendingEmailVerify.infoMsg}
+              </div>
+            )}
+
+            <form
+              onSubmit={handleVerifyEmailOtp}
+              noValidate
+              className="mt-5 space-y-4"
+            >
+              <div>
+                <label
+                  htmlFor="portal-email-otp-code"
+                  className="block text-xs font-semibold text-[#0F172A] mb-1.5"
+                >
+                  6-Digit Verification Code
+                </label>
+                <input
+                  id="portal-email-otp-code"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  autoFocus
+                  maxLength={6}
+                  value={pendingEmailVerify.code}
+                  onChange={(e) => {
+                    const v = e.target.value.replace(/\D/g, '').slice(0, 6);
+                    setPendingEmailVerify((prev) =>
+                      prev ? { ...prev, code: v } : null
+                    );
+                    if (errorMessage) setErrorMessage('');
+                  }}
+                  placeholder="000000"
+                  className="w-full min-h-[52px] px-4 py-3 text-center text-xl font-mono tabular-nums font-bold tracking-[0.35em] text-[#0F172A] placeholder:text-slate-300 bg-white border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63] focus:ring-4 focus:ring-[#0E6B63]/10"
+                />
+              </div>
+
+              {errorMessage && (
+                <p
+                  role="alert"
+                  className="text-xs font-semibold text-[#DC2626] bg-red-50 border border-red-200 rounded-xl px-3.5 py-2.5"
+                >
+                  {errorMessage}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={submitting || pendingEmailVerify.code.length !== 6}
+                className="group w-full min-h-[48px] inline-flex items-center justify-center gap-2 py-3 px-6 text-sm font-semibold text-white bg-[#0E6B63] hover:bg-[#0A534D] disabled:opacity-55 disabled:cursor-not-allowed rounded-xl shadow-[0_8px_24px_rgba(14,107,99,0.2)] transition-all duration-200 cursor-pointer whitespace-nowrap"
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                    <span>Verifying...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>Verify Email &amp; Sign In</span>
+                    <ArrowRight className="w-4 h-4" aria-hidden="true" />
+                  </>
+                )}
+              </button>
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <button
+                  type="button"
+                  disabled={pendingEmailVerify.resending || pendingEmailVerify.cooldown > 0}
+                  onClick={handleResendEmailOtp}
+                  className="min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-[#CBD5E1] hover:border-[#0E6B63] disabled:opacity-55 disabled:cursor-not-allowed text-xs font-semibold text-[#0F172A] transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  <RefreshCw
+                    className={`w-3.5 h-3.5 text-[#0E6B63] ${
+                      pendingEmailVerify.resending ? 'animate-spin' : ''
+                    }`}
+                    aria-hidden="true"
+                  />
+                  <span className="font-mono-num">
+                    {pendingEmailVerify.resending
+                      ? 'Sending...'
+                      : pendingEmailVerify.cooldown > 0
+                        ? `Resend Code (${pendingEmailVerify.cooldown}s)`
+                        : 'Resend Code'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPendingEmailVerify(null);
+                    setErrorMessage('');
+                  }}
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-slate-600 hover:text-[#0E6B63] cursor-pointer whitespace-nowrap"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Back to login</span>
+                </button>
+              </div>
+            </form>
           </div>
         ) : pendingTwoFactor ? (
           <div>

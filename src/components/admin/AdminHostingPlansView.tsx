@@ -58,6 +58,8 @@ export const AdminHostingPlansView: React.FC<AdminHostingPlansViewProps> = ({
   const [planTagline, setPlanTagline] = useState('');
   const [planMonthly, setPlanMonthly] = useState('9.99');
   const [planYearly, setPlanYearly] = useState('99.00');
+  const [planTwoYear, setPlanTwoYear] = useState('178.20');
+  const [planFourYear, setPlanFourYear] = useState('316.80');
   const [planRenewal, setPlanRenewal] = useState('99.00');
   const [planStorage, setPlanStorage] = useState('50 GB NVMe Storage');
   const [planBandwidth, setPlanBandwidth] = useState('Unlimited Bandwidth');
@@ -91,6 +93,12 @@ export const AdminHostingPlansView: React.FC<AdminHostingPlansViewProps> = ({
       setPlanTagline(plan.tagline);
       setPlanMonthly(plan.monthlyPrice.toFixed(2));
       setPlanYearly(plan.yearlyPrice.toFixed(2));
+      setPlanTwoYear(
+        (plan.twoYearPrice ?? Number((plan.yearlyPrice * 2 * 0.9).toFixed(2))).toFixed(2)
+      );
+      setPlanFourYear(
+        (plan.fourYearPrice ?? Number((plan.yearlyPrice * 4 * 0.8).toFixed(2))).toFixed(2)
+      );
       setPlanRenewal(plan.renewalPrice.toFixed(2));
       setPlanStorage(plan.storage);
       setPlanBandwidth(plan.bandwidth);
@@ -116,6 +124,8 @@ export const AdminHostingPlansView: React.FC<AdminHostingPlansViewProps> = ({
       setPlanTagline('High-availability NVMe cloud plan with automated provisioning.');
       setPlanMonthly('12.99');
       setPlanYearly('129.00');
+      setPlanTwoYear('232.20');
+      setPlanFourYear('412.80');
       setPlanRenewal('129.00');
       setPlanStorage('50 GB NVMe Storage');
       setPlanBandwidth('Unlimited Bandwidth');
@@ -144,14 +154,22 @@ export const AdminHostingPlansView: React.FC<AdminHostingPlansViewProps> = ({
     e.preventDefault();
     const monthly = parseFloat(planMonthly);
     const yearly = parseFloat(planYearly);
+    const twoYear = parseFloat(planTwoYear);
+    const fourYear = parseFloat(planFourYear);
     const renewal = parseFloat(planRenewal);
 
     if (!planName.trim()) {
       setFormError('Plan name is required.');
       return;
     }
-    if ([monthly, yearly, renewal].some((n) => !Number.isFinite(n) || n < 0)) {
-      setFormError('Monthly, Yearly, and Renewal prices must be valid numbers.');
+    if (
+      [monthly, yearly, twoYear, fourYear, renewal].some(
+        (n) => !Number.isFinite(n) || n < 0
+      )
+    ) {
+      setFormError(
+        'Monthly, Yearly, 2-Year, 4-Year, and Renewal prices must be valid numbers.'
+      );
       return;
     }
 
@@ -167,6 +185,8 @@ export const AdminHostingPlansView: React.FC<AdminHostingPlansViewProps> = ({
         tagline: planTagline.trim(),
         monthlyPrice: monthly,
         yearlyPrice: yearly,
+        twoYearPrice: twoYear,
+        fourYearPrice: fourYear,
         renewalPrice: renewal,
         storage: planStorage.trim(),
         bandwidth: planBandwidth.trim(),
@@ -195,6 +215,8 @@ export const AdminHostingPlansView: React.FC<AdminHostingPlansViewProps> = ({
       tagline: planTagline.trim(),
       monthlyPrice: monthly,
       yearlyPrice: yearly,
+      twoYearPrice: twoYear,
+      fourYearPrice: fourYear,
       renewalPrice: renewal,
       storage: planStorage.trim() || '50 GB NVMe',
       bandwidth: planBandwidth.trim() || 'Unlimited',
@@ -349,6 +371,34 @@ export const AdminHostingPlansView: React.FC<AdminHostingPlansViewProps> = ({
                 min="0"
                 value={planYearly}
                 onChange={(e) => setPlanYearly(e.target.value)}
+                className="w-full px-3 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                2-Year Price (USD) *
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={planTwoYear}
+                onChange={(e) => setPlanTwoYear(e.target.value)}
+                className="w-full px-3 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                4-Year Price (USD) *
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={planFourYear}
+                onChange={(e) => setPlanFourYear(e.target.value)}
                 className="w-full px-3 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg"
               />
             </div>
@@ -573,6 +623,7 @@ export const AdminHostingPlansView: React.FC<AdminHostingPlansViewProps> = ({
                 <th className="py-3 px-4">Plan &amp; Specs</th>
                 <th className="py-3 px-4 text-right">Monthly</th>
                 <th className="py-3 px-4 text-right">Yearly</th>
+                <th className="py-3 px-4 text-right">2-Yr / 4-Yr</th>
                 <th className="py-3 px-4 text-right">Renewal</th>
                 <th className="py-3 px-4">Auto-Provisioning Server &amp; Package</th>
                 <th className="py-3 px-4">Status</th>
@@ -582,7 +633,7 @@ export const AdminHostingPlansView: React.FC<AdminHostingPlansViewProps> = ({
             <tbody className="divide-y divide-[#E2E8F0] text-xs">
               {plansInCategory.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-10 text-center text-slate-500">
+                  <td colSpan={8} className="py-10 text-center text-slate-500">
                     No plans configured in this category yet. Click Add Hosting Plan above.
                   </td>
                 </tr>
@@ -614,6 +665,10 @@ export const AdminHostingPlansView: React.FC<AdminHostingPlansViewProps> = ({
                       </td>
                       <td className="py-3.5 px-4 text-right font-mono tabular-nums font-semibold text-[#0E6B63] whitespace-nowrap">
                         {formatPrice(plan.yearlyPrice)}
+                      </td>
+                      <td className="py-3.5 px-4 text-right font-mono tabular-nums text-[11px] text-slate-700 whitespace-nowrap">
+                        <div>2Y: {formatPrice(plan.twoYearPrice ?? Number((plan.yearlyPrice * 2 * 0.9).toFixed(2)))}</div>
+                        <div>4Y: {formatPrice(plan.fourYearPrice ?? Number((plan.yearlyPrice * 4 * 0.8).toFixed(2)))}</div>
                       </td>
                       <td className="py-3.5 px-4 text-right font-mono tabular-nums text-slate-600 whitespace-nowrap">
                         {formatPrice(plan.renewalPrice)}

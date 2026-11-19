@@ -188,7 +188,7 @@ export const InfrastructureSection: React.FC = () => {
           </h2>
           <p className="text-sm sm:text-base text-slate-600 mt-3 leading-relaxed">
             Experience rapid speeds from our international data centres and CDN
-            nodes, regardless of your traffic&rsquo;s origin. CP Cloud Hosting
+            nodes, regardless of your traffic&rsquo;s origin. cpcloudhost.com
             Cloud, AWS &amp; Google Cloud.
           </p>
         </div>
@@ -202,7 +202,7 @@ export const InfrastructureSection: React.FC = () => {
               fill="none"
               xmlns="http://www.w3.org/2000/svg"
               role="img"
-              aria-label="Dotted world map showing CP Cloud Hosting global datacentre pins"
+              aria-label="Dotted world map showing cpcloudhost.com global datacentre pins"
             >
               <g fill="#475569" fillOpacity="0.68">
                 {worldDots.map((dot) => (

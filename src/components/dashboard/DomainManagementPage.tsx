@@ -63,6 +63,8 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
     regenerateDomainEppCode,
     updateDomainDnsRecords,
     updateDomainWhoisContact,
+    clientNotifyDomainTransferApproved,
+    resendDomainVerificationEmail,
   } = usePlatform();
   const { formatPrice } = useCurrency();
 
@@ -70,10 +72,17 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
 
   const [activeTab, setActiveTab] = useState<DomainConsoleTab>('overview');
 
-  // Nameservers form state
-  const currentNs1 = domain.nameservers?.[0] || 'ns1.cpcloudhost.com';
-  const currentNs2 = domain.nameservers?.[1] || 'ns2.cpcloudhost.com';
+  // Nameservers form state (supports 2 to 4 nameservers)
+  const currentNsList =
+    domain.nameservers && domain.nameservers.length >= 2
+      ? domain.nameservers
+      : ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com'];
+  const currentNs1 = currentNsList[0] || 'ns1.cpcloudhost.com';
+  const currentNs2 = currentNsList[1] || 'ns2.cpcloudhost.com';
+  const currentNs3 = currentNsList[2] || '';
+  const currentNs4 = currentNsList[3] || '';
   const isCurrentlyDefaultNs =
+    currentNsList.length === 2 &&
     currentNs1.toLowerCase() === 'ns1.cpcloudhost.com' &&
     currentNs2.toLowerCase() === 'ns2.cpcloudhost.com';
 
@@ -82,6 +91,8 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
   );
   const [ns1, setNs1] = useState(currentNs1);
   const [ns2, setNs2] = useState(currentNs2);
+  const [ns3, setNs3] = useState(currentNs3);
+  const [ns4, setNs4] = useState(currentNs4);
   const [nsError, setNsError] = useState('');
 
   // DNS Zone Editor state
@@ -148,14 +159,21 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
     useState<DomainContactAddress | null>(fallbackContact);
 
   useEffect(() => {
-    const nextNs1 = domain.nameservers?.[0] || 'ns1.cpcloudhost.com';
-    const nextNs2 = domain.nameservers?.[1] || 'ns2.cpcloudhost.com';
+    const nextList =
+      domain.nameservers && domain.nameservers.length >= 2
+        ? domain.nameservers
+        : ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com'];
+    const nextNs1 = nextList[0] || 'ns1.cpcloudhost.com';
+    const nextNs2 = nextList[1] || 'ns2.cpcloudhost.com';
     const isDef =
+      nextList.length === 2 &&
       nextNs1.toLowerCase() === 'ns1.cpcloudhost.com' &&
       nextNs2.toLowerCase() === 'ns2.cpcloudhost.com';
     setNsMode(isDef ? 'default' : 'custom');
     setNs1(nextNs1);
     setNs2(nextNs2);
+    setNs3(nextList[2] || '');
+    setNs4(nextList[3] || '');
     setDnsRecords(defaultRecords);
     setRevealEpp(false);
     setTransferError('');
@@ -179,21 +197,27 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
 
   const handleSaveNameservers = () => {
     setNsError('');
-    const finalNs1 =
-      nsMode === 'default' ? 'ns1.cpcloudhost.com' : ns1.trim().toLowerCase();
-    const finalNs2 =
-      nsMode === 'default' ? 'ns2.cpcloudhost.com' : ns2.trim().toLowerCase();
-    if (!finalNs1 || !finalNs1.includes('.') || !finalNs2 || !finalNs2.includes('.')) {
-      setNsError('Enter valid hostnames for both Nameserver 1 and Nameserver 2.');
+    const finalNsList =
+      nsMode === 'default'
+        ? ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']
+        : [ns1, ns2, ns3, ns4]
+            .map((v) => v.trim().toLowerCase())
+            .filter(Boolean);
+    if (
+      finalNsList.length < 2 ||
+      !finalNsList[0]?.includes('.') ||
+      !finalNsList[1]?.includes('.')
+    ) {
+      setNsError('Enter valid hostnames for at least Nameserver 1 and Nameserver 2.');
       return;
     }
-    const res = requestDomainNameserverChange(domain.id, finalNs1, finalNs2);
+    const res = requestDomainNameserverChange(domain.id, finalNsList);
     if (!res.ok) {
       setNsError(res.error || 'Could not queue nameserver update.');
       return;
     }
     onShowToast(
-      `Nameserver change queued for ${domain.domainOrHost}. Estimated update time: 1 to 3 hours.`
+      `Nameserver change queued (${finalNsList.length} NS) for ${domain.domainOrHost}. Estimated update time: 1 to 3 hours.`
     );
   };
 
@@ -351,20 +375,52 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
             </div>
             <div>
               <p className="font-mono text-xs font-bold text-[#D97706] uppercase tracking-wide">
-                Pending Admin Review · {domain.id}
+                {domain.productType === 'Domain Transfer'
+                  ? `Domain Transfer · ${
+                      lifecycle.transferStatus === 'client_notified'
+                        ? 'Registrar Approval Notified'
+                        : lifecycle.transferStatus === 'in_progress'
+                          ? `Day ${lifecycle.transferDaysElapsed} of 7 (${lifecycle.transferDaysRemaining}d remaining)`
+                          : 'Pending Admin Review'
+                    } · ${domain.id}`
+                  : `Pending Admin Review · ${domain.id}`}
               </p>
               <h1 className="font-display text-xl sm:text-2xl font-bold text-[#0F172A] mt-1">
-                {domain.domainOrHost} is awaiting registrar approval
+                {domain.productType === 'Domain Transfer'
+                  ? `${domain.domainOrHost} transfer status`
+                  : `${domain.domainOrHost} is awaiting registrar approval`}
               </h1>
               <p className="text-sm text-slate-600 mt-1.5 max-w-2xl leading-relaxed">
                 {domain.productType === 'Domain Transfer'
-                  ? 'Our transfer desk is verifying your EPP code and registrar transfer request. Approve the registrant confirmation email to complete transfer right away, or it will finalize automatically within 7 days.'
+                  ? lifecycle.transferStatus === 'in_progress'
+                    ? 'Your transfer is active in the 7-day registry transfer window. Once you approve the transfer request at your losing registrar, click the button below to notify our admin desk for immediate completion.'
+                    : lifecycle.transferStatus === 'client_notified'
+                      ? 'Thank you for confirming registrar approval. Our admin desk has been notified and will accept the transfer to unlock full domain management.'
+                      : 'Our transfer desk is verifying your EPP code and registrar transfer request. Once approved to start, the 7-day transfer tracker will begin.'
                   : 'Our registrar operations team is reviewing your domain registration and payment details. Once approved, we will email your WHOIS registrant verification link so you can activate and manage your domain.'}
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-3 pt-2">
+            {domain.productType === 'Domain Transfer' &&
+              lifecycle.transferStatus === 'in_progress' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const r = clientNotifyDomainTransferApproved(domain.id);
+                    if (r.ok) {
+                      onShowToast(
+                        `Admin notified that you approved ${domain.domainOrHost} at your registrar`
+                      );
+                    }
+                  }}
+                  className="min-h-[40px] inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold transition-colors cursor-pointer"
+                >
+                  <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
+                  <span>Approve at Registrar · Notify Admin</span>
+                </button>
+              )}
             {linkedInvoice && linkedInvoice.status !== 'paid' && (
               <button
                 type="button"
@@ -463,8 +519,28 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
 
             <button
               type="button"
+              onClick={async () => {
+                const res = await resendDomainVerificationEmail(domain.id);
+                if (!res.ok) {
+                  onShowToast(res.error || 'Could not resend verification email');
+                  return;
+                }
+                onShowToast(
+                  res.emailSent
+                    ? `Verification email sent to ${domain.clientEmail}`
+                    : 'Verification link refreshed — enable SMTP to send to inbox'
+                );
+              }}
+              className="min-h-[42px] inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <MailCheck className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+              <span>Resend Verification Email</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => copyValue('verifyLink', fullVerifyUrl, 'Verification Link')}
-              className="min-h-[42px] inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] transition-colors cursor-pointer"
+              className="min-h-[42px] inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#E2E8F0] hover:border-[#0E6B63] text-xs font-semibold text-[#0F172A] transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
               <Copy className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
               <span>{copiedKey === 'verifyLink' ? 'Link Copied' : 'Copy Verification Link'}</span>
@@ -666,15 +742,17 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
 
           <div className="rounded-xl border border-[#E2E8F0] bg-[#F8FAFC] p-4">
             <div className="flex items-center justify-between text-xs text-slate-500">
-              <span>Active Nameservers</span>
+              <span>Active Nameservers ({currentNsList.length})</span>
               <Shield className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
             </div>
             <p className="mt-1.5 font-mono text-xs font-bold text-[#0F172A] truncate">
-              {currentNs1}
+              {currentNsList.slice(0, 2).join(' · ')}
             </p>
-            <p className="mt-0.5 font-mono text-[11px] text-slate-500 truncate">
-              {currentNs2}
-            </p>
+            {currentNsList.length > 2 && (
+              <p className="mt-0.5 font-mono text-[11px] text-slate-500 truncate">
+                {currentNsList.slice(2).join(' · ')}
+              </p>
+            )}
           </div>
         </div>
 
@@ -895,6 +973,8 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
                       setNsMode('default');
                       setNs1('ns1.cpcloudhost.com');
                       setNs2('ns2.cpcloudhost.com');
+                      setNs3('');
+                      setNs4('');
                       setNsError('');
                     }}
                     className="mt-1 text-[#0E6B63] focus:ring-[#0E6B63]"
@@ -933,10 +1013,10 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
                   />
                   <div className="text-xs w-full">
                     <span className="font-bold text-[#0F172A] block">
-                      Change to Custom Nameservers
+                      Change to Custom Nameservers (2–4 NS)
                     </span>
                     <span className="text-slate-500 block mt-1">
-                      Delegate DNS resolution to Cloudflare, Route53, or your VPS nameservers.
+                      Delegate DNS resolution to StackDNS (4 NS), Cloudflare, or your VPS nameservers.
                     </span>
                   </div>
                 </div>
@@ -947,25 +1027,49 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                 <div>
                   <label className="block text-xs font-semibold text-[#0F172A] mb-1">
-                    Nameserver 1
+                    Nameserver 1 *
                   </label>
                   <input
                     type="text"
                     value={ns1}
                     onChange={(e) => setNs1(e.target.value)}
-                    placeholder="ns1.example.com"
+                    placeholder="ns1.stackdns.com"
                     className="w-full min-h-[42px] px-3.5 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
                   />
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-[#0F172A] mb-1">
-                    Nameserver 2
+                    Nameserver 2 *
                   </label>
                   <input
                     type="text"
                     value={ns2}
                     onChange={(e) => setNs2(e.target.value)}
-                    placeholder="ns2.example.com"
+                    placeholder="ns2.stackdns.com"
+                    className="w-full min-h-[42px] px-3.5 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-[#0F172A] mb-1">
+                    Nameserver 3 (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={ns3}
+                    onChange={(e) => setNs3(e.target.value)}
+                    placeholder="ns3.stackdns.com"
+                    className="w-full min-h-[42px] px-3.5 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-[#0F172A] mb-1">
+                    Nameserver 4 (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={ns4}
+                    onChange={(e) => setNs4(e.target.value)}
+                    placeholder="ns4.stackdns.com"
                     className="w-full min-h-[42px] px-3.5 py-2 text-xs font-mono border border-[#CBD5E1] rounded-lg focus:outline-none focus:border-[#0E6B63]"
                   />
                 </div>
@@ -982,7 +1086,7 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
                   <p>
                     Requested NS:{' '}
                     <span className="font-mono font-semibold text-[#0F172A]">
-                      {domain.pendingNameservers[0]}, {domain.pendingNameservers[1]}
+                      {domain.pendingNameservers.join(', ')}
                     </span>
                     {domain.nameserverRequestedAt ? (
                       <span className="text-slate-500 font-mono">
@@ -1002,7 +1106,7 @@ export const DomainManagementPage: React.FC<DomainManagementPageProps> = ({
               <div className="p-3.5 rounded-xl bg-[#F2FAF8] border border-[#0E6B63]/20 flex items-center gap-2.5 text-xs text-[#0E6B63]">
                 <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden="true" />
                 <span>
-                  Nameservers verified active (<span className="font-mono">{currentNs1}, {currentNs2}</span>) · Updated {domain.nameserverUpdatedAt}.
+                  Nameservers verified active (<span className="font-mono">{currentNsList.join(', ')}</span>) · Updated {domain.nameserverUpdatedAt}.
                 </span>
               </div>
             )}

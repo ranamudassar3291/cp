@@ -11,7 +11,9 @@ import {
   Loader2,
   Lock,
   Mail,
+  MailCheck,
   Phone,
+  RefreshCw,
   ShieldCheck,
   User,
   UserCheck,
@@ -211,7 +213,13 @@ export const AuthRegisterPage: React.FC<AuthRegisterPageProps> = ({
   onOpenDashboard,
   onOpenPolicy,
 }) => {
-  const { registerClientAccount, users, pendingPostAuthPath } = usePlatform();
+  const {
+    registerClientAccount,
+    verifyRegistrationOtp,
+    resendRegistrationOtp,
+    users,
+    pendingPostAuthPath,
+  } = usePlatform();
   const { countryCode, countryName } = useCurrency();
 
   const initialDialOption = useMemo(() => {
@@ -233,6 +241,23 @@ export const AuthRegisterPage: React.FC<AuthRegisterPageProps> = ({
   const [copiedPw, setCopiedPw] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState('');
+  const [otpStepAccount, setOtpStepAccount] = useState<{
+    id: string;
+    name: string;
+    username: string;
+    email: string;
+    phone: string;
+    emailSent: boolean;
+    smtpConfigured: boolean;
+  } | null>(null);
+  const [otpCode, setOtpCode] = useState('');
+  const [otpSubmitting, setOtpSubmitting] = useState(false);
+  const [otpResending, setOtpResending] = useState(false);
+  const [otpCooldown, setOtpCooldown] = useState(0);
+  const [otpFeedback, setOtpFeedback] = useState<{
+    type: 'error' | 'success' | 'info';
+    text: string;
+  } | null>(null);
   const [registeredAccount, setRegisteredAccount] = useState<{
     id: string;
     name: string;
@@ -257,6 +282,14 @@ export const AuthRegisterPage: React.FC<AuthRegisterPageProps> = ({
       setDialIso(countryCode);
     }
   }, [countryCode, phoneLocal]);
+
+  useEffect(() => {
+    if (otpCooldown <= 0) return;
+    const timer = window.setInterval(() => {
+      setOtpCooldown((prev) => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [otpCooldown]);
 
   const activeDialObj = useMemo(
     () => DIAL_CODES.find((d) => d.iso === dialIso) ?? DIAL_CODES[0],
@@ -378,12 +411,104 @@ export const AuthRegisterPage: React.FC<AuthRegisterPageProps> = ({
         return;
       }
       setPassword('');
+      if (result.requiresEmailVerification) {
+        setOtpStepAccount({
+          ...result.account,
+          emailSent: Boolean(result.emailSent),
+          smtpConfigured: Boolean(result.smtpConfigured),
+        });
+        setOtpCode('');
+        setOtpCooldown(30);
+        setOtpFeedback(
+          result.smtpConfigured
+            ? {
+                type: 'info',
+                text: `We sent a 6-digit verification code to ${result.account.email}. Check your inbox or spam folder.`,
+              }
+            : {
+                type: 'info',
+                text: 'A 6-digit verification code has been generated. Configure SMTP in Admin → System Config to deliver codes to external email inboxes.',
+              }
+        );
+        return;
+      }
       if (pendingPostAuthPath && onOpenDashboard) {
         onOpenDashboard();
         return;
       }
       setRegisteredAccount(result.account);
     }, 260);
+  };
+
+  const handleVerifyOtpSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!otpStepAccount || otpSubmitting) return;
+    const cleanOtp = otpCode.replace(/\D/g, '').trim();
+    if (cleanOtp.length !== 6) {
+      setOtpFeedback({
+        type: 'error',
+        text: 'Enter the complete 6-digit verification code.',
+      });
+      return;
+    }
+    setOtpSubmitting(true);
+    setOtpFeedback(null);
+    const verified = verifyRegistrationOtp(otpStepAccount.email, cleanOtp);
+    setOtpSubmitting(false);
+    if (!verified.ok) {
+      setOtpFeedback({
+        type: 'error',
+        text: verified.error ?? 'Invalid or expired verification code.',
+      });
+      return;
+    }
+    const verifiedAccount = {
+      id: otpStepAccount.id,
+      name: otpStepAccount.name,
+      username: otpStepAccount.username,
+      email: otpStepAccount.email,
+      phone: otpStepAccount.phone,
+    };
+    setOtpStepAccount(null);
+    if (pendingPostAuthPath && onOpenDashboard) {
+      onOpenDashboard();
+      return;
+    }
+    setRegisteredAccount(verifiedAccount);
+  };
+
+  const handleResendOtp = async () => {
+    if (!otpStepAccount || otpResending || otpCooldown > 0) return;
+    setOtpResending(true);
+    setOtpFeedback(null);
+    const res = await resendRegistrationOtp(otpStepAccount.email);
+    setOtpResending(false);
+    if (!res.ok) {
+      if (res.cooldownSeconds && res.cooldownSeconds > 0) {
+        setOtpCooldown(res.cooldownSeconds);
+      }
+      setOtpFeedback({
+        type: 'error',
+        text: res.error ?? 'Unable to resend verification code right now.',
+      });
+      return;
+    }
+    setOtpCooldown(res.cooldownSeconds ?? 30);
+    setOtpStepAccount((prev) =>
+      prev
+        ? {
+            ...prev,
+            emailSent: Boolean(res.emailSent),
+            smtpConfigured: Boolean(res.smtpConfigured),
+          }
+        : null
+    );
+    setOtpFeedback({
+      type: res.emailSent ? 'success' : 'info',
+      text: res.emailSent
+        ? `A fresh 6-digit verification code was sent to ${otpStepAccount.email}.`
+        : res.error || 'Fresh 6-digit code generated. Enable SMTP in Admin → System Config for inbox delivery.',
+    });
   };
 
   return (
@@ -429,12 +554,126 @@ export const AuthRegisterPage: React.FC<AuthRegisterPageProps> = ({
 
       {/* Main Centered Clean Registration Card */}
       <div className="auth-fade-up-d1 w-full max-w-[468px] bg-white border border-[#E2E8F0] rounded-2xl shadow-[0_12px_36px_-14px_rgba(15,23,42,0.08)] p-6 sm:p-8 lg:p-9">
-        {registeredAccount ? (
+        {otpStepAccount ? (
+          <div className="space-y-5">
+            <div>
+              <div className="inline-flex items-center gap-2 text-xs font-semibold text-[#0E6B63] mb-2">
+                <MailCheck className="w-4 h-4 shrink-0" aria-hidden="true" />
+                <span>Step 2 of 2 · Email Verification</span>
+              </div>
+              <h1
+                className="font-display text-2xl font-extrabold tracking-tight text-[#0F172A]"
+                style={{ textWrap: 'balance' }}
+              >
+                Verify your email address
+              </h1>
+              <p className="text-xs sm:text-sm text-slate-600 mt-1.5 leading-relaxed">
+                Enter the 6-digit verification code sent to{' '}
+                <span className="font-mono font-semibold text-[#0F172A]">
+                  {otpStepAccount.email}
+                </span>{' '}
+                to activate your hosting portal and receive your welcome email.
+              </p>
+            </div>
+
+            <form onSubmit={handleVerifyOtpSubmit} noValidate className="space-y-4">
+              <div>
+                <label
+                  htmlFor="reg-email-otp"
+                  className="block text-xs font-semibold text-[#0F172A] mb-1.5"
+                >
+                  6-Digit Verification Code
+                </label>
+                <input
+                  id="reg-email-otp"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  autoFocus
+                  maxLength={6}
+                  value={otpCode}
+                  onChange={(e) => {
+                    setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6));
+                    if (otpFeedback?.type === 'error') setOtpFeedback(null);
+                  }}
+                  placeholder="000000"
+                  className="w-full min-h-[52px] px-4 py-3 text-center text-xl font-mono tabular-nums font-bold tracking-[0.35em] text-[#0F172A] placeholder:text-slate-300 placeholder:tracking-[0.3em] bg-white border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0E6B63] focus:ring-4 focus:ring-[#0E6B63]/10"
+                />
+              </div>
+
+              {otpFeedback && (
+                <p
+                  role={otpFeedback.type === 'error' ? 'alert' : 'status'}
+                  className={`text-xs font-medium rounded-xl px-3.5 py-2.5 border ${
+                    otpFeedback.type === 'error'
+                      ? 'text-[#DC2626] bg-red-50 border-red-200 font-semibold'
+                      : otpFeedback.type === 'success'
+                        ? 'text-[#16A34A] bg-emerald-50 border-emerald-200'
+                        : 'text-[#0E6B63] bg-[#F2FAF8] border-[#0E6B63]/20'
+                  }`}
+                >
+                  {otpFeedback.text}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={otpSubmitting || otpCode.length !== 6}
+                className="group w-full min-h-[48px] inline-flex items-center justify-center gap-2 py-3 px-6 text-sm font-semibold text-white bg-[#0E6B63] hover:bg-[#0A534D] disabled:opacity-55 disabled:cursor-not-allowed rounded-xl shadow-[0_8px_24px_rgba(14,107,99,0.2)] transition-all duration-200 cursor-pointer whitespace-nowrap"
+              >
+                {otpSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                    <span>Verifying code...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>Verify Email &amp; Continue</span>
+                    <ArrowRight className="w-4 h-4" aria-hidden="true" />
+                  </>
+                )}
+              </button>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <button
+                  type="button"
+                  disabled={otpResending || otpCooldown > 0}
+                  onClick={handleResendOtp}
+                  className="min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-[#CBD5E1] hover:border-[#0E6B63] disabled:opacity-55 disabled:cursor-not-allowed text-xs font-semibold text-[#0F172A] transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  <RefreshCw
+                    className={`w-3.5 h-3.5 text-[#0E6B63] ${otpResending ? 'animate-spin' : ''}`}
+                    aria-hidden="true"
+                  />
+                  <span className="font-mono-num">
+                    {otpResending
+                      ? 'Sending...'
+                      : otpCooldown > 0
+                        ? `Resend Code (${otpCooldown}s)`
+                        : 'Resend Code'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOtpStepAccount(null);
+                    setOtpCode('');
+                    setOtpFeedback(null);
+                  }}
+                  className="text-xs font-semibold text-slate-500 hover:text-[#0E6B63] cursor-pointer whitespace-nowrap"
+                >
+                  Change email address
+                </button>
+              </div>
+            </form>
+          </div>
+        ) : registeredAccount ? (
           <div className="space-y-5">
             <div>
               <div className="inline-flex items-center gap-2 text-xs font-semibold text-[#16A34A] mb-2">
                 <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden="true" />
-                <span>Account Registered Successfully</span>
+                <span>Email Verified &amp; Account Active</span>
               </div>
               <h1
                 className="font-display text-2xl font-extrabold tracking-tight text-[#0F172A]"
@@ -443,8 +682,8 @@ export const AuthRegisterPage: React.FC<AuthRegisterPageProps> = ({
                 Welcome, {registeredAccount.name}
               </h1>
               <p className="text-xs sm:text-sm text-slate-600 mt-1.5 leading-relaxed">
-                Your international hosting account is ready. Sign in on the portal
-                using your email or username and chosen password.
+                Your email address is verified and your international hosting
+                account is signed in and ready to deploy.
               </p>
             </div>
 
@@ -476,17 +715,28 @@ export const AuthRegisterPage: React.FC<AuthRegisterPageProps> = ({
             </div>
 
             <div className="space-y-2.5 pt-1">
-              <a
-                href="/auth/login"
-                onClick={(e) => {
-                  e.preventDefault();
-                  onGoToLogin();
-                }}
-                className="w-full min-h-[46px] inline-flex items-center justify-center gap-2 py-3 px-5 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-sm font-semibold shadow-[0_6px_20px_rgba(14,107,99,0.2)] transition-all duration-200 cursor-pointer"
-              >
-                <span>Proceed to Log In</span>
-                <ArrowRight className="w-4 h-4" aria-hidden="true" />
-              </a>
+              {onOpenDashboard ? (
+                <button
+                  type="button"
+                  onClick={onOpenDashboard}
+                  className="w-full min-h-[46px] inline-flex items-center justify-center gap-2 py-3 px-5 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-sm font-semibold shadow-[0_6px_20px_rgba(14,107,99,0.2)] transition-all duration-200 cursor-pointer whitespace-nowrap"
+                >
+                  <span>Open Client Dashboard</span>
+                  <ArrowRight className="w-4 h-4" aria-hidden="true" />
+                </button>
+              ) : (
+                <a
+                  href="/auth/login"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onGoToLogin();
+                  }}
+                  className="w-full min-h-[46px] inline-flex items-center justify-center gap-2 py-3 px-5 rounded-xl bg-[#0E6B63] hover:bg-[#0A534D] text-white text-sm font-semibold shadow-[0_6px_20px_rgba(14,107,99,0.2)] transition-all duration-200 cursor-pointer"
+                >
+                  <span>Proceed to Log In</span>
+                  <ArrowRight className="w-4 h-4" aria-hidden="true" />
+                </a>
+              )}
 
               <a
                 href="/"

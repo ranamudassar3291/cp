@@ -26,6 +26,7 @@ import {
   Loader2,
   Lock,
   LogOut,
+  MailCheck,
   MapPin,
   Maximize2,
   Menu,
@@ -154,6 +155,10 @@ const TICKET_DEPARTMENTS: {
   {
     id: 'Support',
     description: 'General hosting guidance, plan upgrades & pre-sales',
+  },
+  {
+    id: 'Abuse',
+    description: 'Report spamming, phishing, malware, DMCA or AUP compliance notices',
   },
 ];
 
@@ -478,6 +483,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
     tickets,
     loginActivityLogs,
     paymentMethods,
+    provisioningModules,
     invoiceTemplateConfig,
     logout,
     exitClientImpersonation,
@@ -486,6 +492,8 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
     changePassword,
     updateClientOrderSettings,
     requestOrderCancellation,
+    clientNotifyDomainTransferApproved,
+    resendDomainVerificationEmail,
     createSupportTicket,
     replySupportTicket,
     resolveSupportTicket,
@@ -545,12 +553,88 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
     'all' | PlatformOrder['status']
   >('all');
   const [managedServiceId, setManagedServiceId] = useState<string | null>(null);
+  const [revealManagedPassword, setRevealManagedPassword] = useState(false);
+  const [ssoLoading, setSsoLoading] = useState(false);
+  const [ssoError, setSsoError] = useState('');
+  const [ssoLaunchUrl, setSsoLaunchUrl] = useState('');
   const [showSvcCancelForm, setShowSvcCancelForm] = useState(false);
   const [svcCancelType, setSvcCancelType] =
     useState<CancellationType>('end_of_period');
   const [svcCancelReason, setSvcCancelReason] = useState('');
   const [svcCancelError, setSvcCancelError] = useState('');
   const [copiedKey, setCopiedKey] = useState('');
+
+  useEffect(() => {
+    setRevealManagedPassword(false);
+    setSsoError('');
+    setSsoLaunchUrl('');
+    setSsoLoading(false);
+  }, [managedServiceId]);
+
+  const handleDirectCpanelSsoLogin = async (svc: PlatformOrder) => {
+    setSsoError('');
+    setSsoLaunchUrl('');
+    const whmMod =
+      provisioningModules.find(
+        (m) => m.id === svc.serverModuleId && m.moduleType === 'whm'
+      ) ??
+      provisioningModules.find(
+        (m) => m.moduleType === 'whm' && m.enabled && m.apiToken.trim()
+      );
+    const targetUser = (svc.cpanelUsername || '').trim();
+    if (!whmMod || !whmMod.hostname || !whmMod.apiToken.trim()) {
+      setSsoError(
+        'Direct SSO session requires an active WHM server module API token. Use the cPanel URL and credentials above.'
+      );
+      return;
+    }
+    if (!targetUser) {
+      setSsoError('cPanel account username is not assigned yet for this service.');
+      return;
+    }
+    setSsoLoading(true);
+    try {
+      const res = await fetch('/api/modules/whm/sso-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hostname: whmMod.hostname,
+          port: whmMod.port,
+          useSsl: whmMod.useSsl,
+          username: whmMod.username,
+          apiToken: whmMod.apiToken,
+          ignoreSslErrors: whmMod.ignoreSslErrors,
+          acctUsername: targetUser,
+          cpanelUsername: targetUser,
+          service: svc.productType === 'Reseller Hosting' ? 'whostmgrd' : 'cpaneld',
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        ssoUrl?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.ok || !data.ssoUrl) {
+        setSsoError(
+          data.error || 'Could not generate WHM single sign-on session URL.'
+        );
+        return;
+      }
+      setSsoLaunchUrl(data.ssoUrl);
+      const anchor = document.createElement('a');
+      anchor.href = data.ssoUrl;
+      anchor.target = '_blank';
+      anchor.rel = 'noopener noreferrer';
+      anchor.click();
+      showToast(`Direct cPanel SSO session ready for ${targetUser}`);
+    } catch (err) {
+      setSsoError(
+        err instanceof Error ? err.message : 'Unable to reach WHM SSO endpoint.'
+      );
+    } finally {
+      setSsoLoading(false);
+    }
+  };
 
   // Domains search & filter
   const [domainSearch, setDomainSearch] = useState('');
@@ -2240,20 +2324,28 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                           : formatOrderTone(displayStatus)
                                       }
                                       label={
-                                        lc.isPendingAdminApproval
-                                          ? 'Pending Review'
-                                          : lc.isPendingContactVerification
-                                            ? 'Verify WHOIS'
-                                            : displayStatus.charAt(0).toUpperCase() +
-                                              displayStatus.slice(1)
+                                        lc.isTransferOrder && dom.status === 'pending'
+                                          ? lc.transferStatus === 'client_notified'
+                                            ? `Notified (Day ${lc.transferDaysElapsed}/7)`
+                                            : lc.transferStatus === 'in_progress'
+                                              ? `Transferring (${lc.transferDaysRemaining}d left)`
+                                              : 'Transfer Pending Review'
+                                          : lc.isPendingAdminApproval
+                                            ? 'Pending Review'
+                                            : lc.isPendingContactVerification
+                                              ? 'Verify WHOIS'
+                                              : displayStatus.charAt(0).toUpperCase() +
+                                                displayStatus.slice(1)
                                       }
                                     />
                                     <span className="text-[11px] font-medium text-slate-500">
-                                      {lc.icann60DayLockActive
-                                        ? `60d ICANN Lock (${lc.daysUntilIcannUnlock}d left)`
-                                        : lc.effectiveRegistrarLocked
-                                          ? 'Transfer Locked'
-                                          : 'Unlocked'}
+                                      {lc.isTransferOrder && dom.status === 'pending'
+                                        ? `7-Day Window (Day ${lc.transferDaysElapsed}/7)`
+                                        : lc.icann60DayLockActive
+                                          ? `60d ICANN Lock (${lc.daysUntilIcannUnlock}d left)`
+                                          : lc.effectiveRegistrarLocked
+                                            ? 'Transfer Locked'
+                                            : 'Unlocked'}
                                     </span>
                                   </div>
                                   <p className="mt-1 text-xs text-slate-500 font-mono-num truncate">
@@ -2261,12 +2353,29 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                   </p>
                                   {dom.nameserverUpdateStatus === 'pending_update' && dom.pendingNameservers && (
                                     <p className="mt-1 text-[11px] font-mono text-[#D97706] truncate">
-                                      NS queued (1–3h): {dom.pendingNameservers[0]}, {dom.pendingNameservers[1]}
+                                      NS queued (1–3h): {dom.pendingNameservers.join(', ')}
                                     </p>
                                   )}
                                 </div>
 
-                                <div className="flex items-center justify-between sm:justify-end gap-2 shrink-0">
+                                <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2 shrink-0">
+                                  {lc.isTransferOrder &&
+                                    dom.status === 'pending' &&
+                                    lc.transferStatus === 'in_progress' && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const r = clientNotifyDomainTransferApproved(dom.id);
+                                          if (r.ok) {
+                                            showToast(`Admin notified of registrar approval for ${dom.domainOrHost}`);
+                                          }
+                                        }}
+                                        className="min-h-[34px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer whitespace-nowrap"
+                                      >
+                                        <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
+                                        <span>Approve at Registrar · Notify Admin</span>
+                                      </button>
+                                    )}
                                   {lc.isExpired && linkedInv && (
                                     <button
                                       type="button"
@@ -2278,19 +2387,40 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                     </button>
                                   )}
                                   {lc.isPendingContactVerification && (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        if (typeof window !== 'undefined') {
-                                          window.history.pushState({}, '', verifyPath);
-                                          window.dispatchEvent(new PopStateEvent('popstate'));
-                                        }
-                                      }}
-                                      className="min-h-[34px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer whitespace-nowrap"
-                                    >
-                                      <ShieldCheck className="w-3.5 h-3.5" aria-hidden="true" />
-                                      <span>Verify WHOIS</span>
-                                    </button>
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (typeof window !== 'undefined') {
+                                            window.history.pushState({}, '', verifyPath);
+                                            window.dispatchEvent(new PopStateEvent('popstate'));
+                                          }
+                                        }}
+                                        className="min-h-[34px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
+                                      >
+                                        <ShieldCheck className="w-3.5 h-3.5" aria-hidden="true" />
+                                        <span>Verify WHOIS</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={async () => {
+                                          const r = await resendDomainVerificationEmail(dom.id);
+                                          if (!r.ok) {
+                                            showToast(r.error || 'Could not resend verification email');
+                                            return;
+                                          }
+                                          showToast(
+                                            r.emailSent
+                                              ? `Verification email resent to ${dom.clientEmail}`
+                                              : 'Verification link refreshed — configure SMTP to email inbox'
+                                          );
+                                        }}
+                                        className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#CBD5E1] hover:border-[#0E6B63] text-[#0F172A] text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
+                                      >
+                                        <MailCheck className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+                                        <span>Resend Verify Email</span>
+                                      </button>
+                                    </>
                                   )}
                                   <button
                                     type="button"
@@ -2306,7 +2436,13 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                       <>
                                         <Lock className="w-3 h-3" aria-hidden="true" />
                                         <span>
-                                          {lc.isPendingAdminApproval ? 'Pending Review' : 'Manage Locked'}
+                                          {lc.isTransferOrder && dom.status === 'pending'
+                                            ? lc.transferStatus === 'client_notified'
+                                              ? 'Awaiting Admin Accept'
+                                              : `Locked (${lc.transferDaysRemaining}d)`
+                                            : lc.isPendingAdminApproval
+                                              ? 'Pending Review'
+                                              : 'Manage Locked'}
                                         </span>
                                       </>
                                     ) : (
@@ -2893,7 +3029,12 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                       </p>
                                       {dom.nameserverUpdateStatus === 'pending_update' && dom.pendingNameservers && (
                                         <p className="text-[11px] font-mono text-[#D97706] truncate">
-                                          NS queued (1–3h): {dom.pendingNameservers[0]}, {dom.pendingNameservers[1]}
+                                          NS queued (1–3h): {dom.pendingNameservers.join(', ')}
+                                        </p>
+                                      )}
+                                      {lc.isTransferOrder && dom.status === 'pending' && (
+                                        <p className="text-[11px] text-[#0E6B63] font-medium">
+                                          7-Day Transfer · Day {lc.transferDaysElapsed}/7 ({lc.transferDaysRemaining}d remaining)
                                         </p>
                                       )}
                                     </div>
@@ -2929,7 +3070,21 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                 </td>
 
                                 <td className="py-3.5 px-4 text-xs">
-                                  {lc.icann60DayLockActive ? (
+                                  {lc.isTransferOrder && dom.status === 'pending' ? (
+                                    <div>
+                                      <span className="inline-flex items-center gap-1 font-semibold text-[#D97706]">
+                                        <Clock className="w-3.5 h-3.5" aria-hidden="true" />
+                                        Day {lc.transferDaysElapsed} of 7
+                                      </span>
+                                      <span className="block text-[11px] text-slate-500">
+                                        {lc.transferStatus === 'client_notified'
+                                          ? 'Registrar approval notified'
+                                          : lc.transferStatus === 'in_progress'
+                                            ? `${lc.transferDaysRemaining}d until auto-unlock`
+                                            : 'Awaiting transfer start'}
+                                      </span>
+                                    </div>
+                                  ) : lc.icann60DayLockActive ? (
                                     <div>
                                       <span className="inline-flex items-center gap-1 font-semibold text-[#D97706]">
                                         <Lock className="w-3.5 h-3.5" aria-hidden="true" />
@@ -2997,18 +3152,44 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                         : formatOrderTone(displayStatus)
                                     }
                                     label={
-                                      lc.isPendingAdminApproval
-                                        ? 'Pending Review'
-                                        : lc.isPendingContactVerification
-                                          ? 'Verify WHOIS'
-                                          : displayStatus.charAt(0).toUpperCase() +
-                                            displayStatus.slice(1)
+                                      lc.isTransferOrder && dom.status === 'pending'
+                                        ? lc.transferStatus === 'client_notified'
+                                          ? 'Admin Accepting'
+                                          : lc.transferStatus === 'in_progress'
+                                            ? `In Progress (${lc.transferDaysRemaining}d)`
+                                            : 'Pending Review'
+                                        : lc.isPendingAdminApproval
+                                          ? 'Pending Review'
+                                          : lc.isPendingContactVerification
+                                            ? 'Verify WHOIS'
+                                            : displayStatus.charAt(0).toUpperCase() +
+                                              displayStatus.slice(1)
                                     }
                                   />
                                 </td>
 
                                 <td className="py-3.5 px-4 text-right whitespace-nowrap">
                                   <div className="inline-flex items-center justify-end gap-2">
+                                    {lc.isTransferOrder &&
+                                      dom.status === 'pending' &&
+                                      lc.transferStatus === 'in_progress' && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const r = clientNotifyDomainTransferApproved(dom.id);
+                                            if (r.ok) {
+                                              showToast(
+                                                `Registrar approval notified to admin for ${dom.domainOrHost}`
+                                              );
+                                            }
+                                          }}
+                                          className="min-h-[34px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer whitespace-nowrap"
+                                        >
+                                          <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
+                                          <span>Approve at Registrar · Notify Admin</span>
+                                        </button>
+                                      )}
+
                                     {lc.isExpired && linkedInv && (
                                       <button
                                         type="button"
@@ -3021,19 +3202,40 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                     )}
 
                                     {lc.isPendingContactVerification && (
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          if (typeof window !== 'undefined') {
-                                            window.history.pushState({}, '', verifyPath);
-                                            window.dispatchEvent(new PopStateEvent('popstate'));
-                                          }
-                                        }}
-                                        className="min-h-[34px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer whitespace-nowrap"
-                                      >
-                                        <ShieldCheck className="w-3.5 h-3.5" aria-hidden="true" />
-                                        <span>Verify WHOIS</span>
-                                      </button>
+                                      <>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            if (typeof window !== 'undefined') {
+                                              window.history.pushState({}, '', verifyPath);
+                                              window.dispatchEvent(new PopStateEvent('popstate'));
+                                            }
+                                          }}
+                                          className="min-h-[34px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] text-white text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
+                                        >
+                                          <ShieldCheck className="w-3.5 h-3.5" aria-hidden="true" />
+                                          <span>Verify WHOIS</span>
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={async () => {
+                                            const r = await resendDomainVerificationEmail(dom.id);
+                                            if (!r.ok) {
+                                              showToast(r.error || 'Could not resend verification email');
+                                              return;
+                                            }
+                                            showToast(
+                                              r.emailSent
+                                                ? `Verification email resent to ${dom.clientEmail}`
+                                                : 'Verification link refreshed — configure SMTP to email inbox'
+                                            );
+                                          }}
+                                          className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#CBD5E1] hover:border-[#0E6B63] text-[#0F172A] text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
+                                        >
+                                          <MailCheck className="w-3.5 h-3.5 text-[#0E6B63]" aria-hidden="true" />
+                                          <span>Resend Verify Email</span>
+                                        </button>
+                                      </>
                                     )}
 
                                     <button
@@ -3041,13 +3243,15 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                       disabled={isManageDisabled}
                                       onClick={() => handleOpenDomainManagePage(dom.id)}
                                       title={
-                                        lc.isPendingAdminApproval
-                                          ? 'Our team is reviewing your domain registration order'
-                                          : lc.isPendingContactVerification
-                                            ? 'Verify WHOIS contact details to unlock domain management'
-                                            : isManageDisabled
-                                              ? 'Domain management is locked because this domain expired or requires renewal'
-                                              : `Open domain console for ${dom.domainOrHost}`
+                                        lc.isTransferOrder && dom.status === 'pending'
+                                          ? 'Domain transfer completes once registrar approval is accepted or 7 days elapse'
+                                          : lc.isPendingAdminApproval
+                                            ? 'Our team is reviewing your domain registration order'
+                                            : lc.isPendingContactVerification
+                                              ? 'Verify WHOIS contact details to unlock domain management'
+                                              : isManageDisabled
+                                                ? 'Domain management is locked because this domain expired or requires renewal'
+                                                : `Open domain console for ${dom.domainOrHost}`
                                       }
                                       className={`min-h-[34px] inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap ${
                                         isManageDisabled
@@ -3059,7 +3263,13 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                                         <>
                                           <Lock className="w-3.5 h-3.5" aria-hidden="true" />
                                           <span>
-                                            {lc.isPendingAdminApproval ? 'Pending Review' : 'Manage Locked'}
+                                            {lc.isTransferOrder && dom.status === 'pending'
+                                              ? lc.transferStatus === 'client_notified'
+                                                ? 'Awaiting Accept'
+                                                : `Locked (${lc.transferDaysRemaining}d left)`
+                                              : lc.isPendingAdminApproval
+                                                ? 'Pending Review'
+                                                : 'Manage Locked'}
                                           </span>
                                         </>
                                       ) : (
@@ -4258,7 +4468,7 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                           >
                             <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                               <span className="font-display font-bold text-[#0F172A]">
-                                {msg.authorName}
+                                {msg.authorRole === 'support' ? 'Support cpcloudhost' : msg.authorName}
                                 {msg.authorRole === 'support' && (
                                   <span className="ml-2 font-sans font-semibold text-[#0E6B63]">
                                     Support Staff
@@ -5445,47 +5655,276 @@ export const ClientDashboardPage: React.FC<ClientDashboardPageProps> = ({
                   })()}
                 </div>
               ) : (
-                <div className="border border-[#E2E8F0] rounded-xl bg-[#F8FAFC] p-4 space-y-2.5 text-xs">
+                <div className="border border-[#E2E8F0] rounded-xl bg-[#F8FAFC] p-4 space-y-3 text-xs">
                   <p className="font-semibold text-[#0F172A] flex items-center gap-1.5">
                     <Terminal className="w-4 h-4 text-[#0E6B63]" aria-hidden="true" />
-                    <span>Direct Provisioning &amp; Control Access</span>
-                  </p>
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-slate-500">
-                      {managedService.productType === 'Unmanaged VPS' ||
-                      managedService.productType === 'n8n Hosting'
-                        ? 'SSH Command'
-                        : 'Control Panel Endpoint'}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleCopy(
-                          'endpoint',
-                          managedService.productType === 'Unmanaged VPS' ||
+                    <span>
+                      {managedService.productType === 'Shared Cloud'
+                        ? 'StackCP Control Panel Access'
+                        : managedService.productType === 'Unmanaged VPS' ||
                             managedService.productType === 'n8n Hosting'
-                            ? `ssh root@${managedService.serverIp ?? managedService.domainOrHost}`
-                            : `https://${managedService.domainOrHost}:2083`,
-                          'Connection endpoint'
-                        )
-                      }
-                      className="font-mono text-[#0E6B63] hover:underline inline-flex items-center gap-1 cursor-pointer"
-                    >
-                      <span>
-                        {managedService.productType === 'Unmanaged VPS' ||
-                        managedService.productType === 'n8n Hosting'
-                          ? `ssh root@${managedService.serverIp ?? managedService.domainOrHost}`
-                          : `https://${managedService.domainOrHost}:2083`}
-                      </span>
-                      <Copy className="w-3 h-3" aria-hidden="true" />
-                    </button>
-                  </div>
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-slate-500">Portal Username</span>
-                    <span className="font-mono font-semibold text-[#0F172A]">
-                      {currentUser.username}
+                          ? 'SSH Root Access'
+                          : 'Direct Control Panel Access'}
                     </span>
-                  </div>
+                  </p>
+
+                  {managedService.productType === 'Unmanaged VPS' ||
+                  managedService.productType === 'n8n Hosting' ? (
+                    <>
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-slate-500">SSH Command</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleCopy(
+                              'endpoint',
+                              `ssh root@${managedService.serverIp ?? managedService.domainOrHost}`,
+                              'SSH command'
+                            )
+                          }
+                          className="font-mono text-[#0E6B63] hover:underline inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <span>
+                            {`ssh root@${managedService.serverIp ?? managedService.domainOrHost}`}
+                          </span>
+                          <Copy className="w-3 h-3" aria-hidden="true" />
+                        </button>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-slate-500">Portal Username</span>
+                        <span className="font-mono font-semibold text-[#0F172A]">
+                          {managedService.cpanelUsername || 'root'}
+                        </span>
+                      </div>
+                    </>
+                  ) : managedService.productType === 'Shared Cloud' ? (
+                    <>
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-slate-500">Control Panel Link</span>
+                        <a
+                          href={managedService.controlPanelUrl || 'https://stackcp.com'}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-mono font-bold text-[#0E6B63] hover:underline inline-flex items-center gap-1"
+                        >
+                          <span>stackcp.com</span>
+                          <ExternalLink className="w-3 h-3" aria-hidden="true" />
+                        </a>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-slate-500">StackCP Username</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleCopy(
+                              'username',
+                              managedService.cpanelUsername || managedService.domainOrHost,
+                              'StackCP Username'
+                            )
+                          }
+                          className="font-mono font-semibold text-[#0F172A] hover:text-[#0E6B63] inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <span>{managedService.cpanelUsername || managedService.domainOrHost}</span>
+                          <Copy className="w-3 h-3 text-slate-400" aria-hidden="true" />
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-slate-500">StackCP Password</span>
+                        {managedService.controlPanelPassword ? (
+                          <div className="inline-flex items-center gap-2">
+                            <span className="font-mono font-semibold text-[#0F172A]">
+                              {revealManagedPassword
+                                ? managedService.controlPanelPassword
+                                : '••••••••••••'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setRevealManagedPassword((v) => !v)}
+                              className="text-slate-500 hover:text-[#0F172A] cursor-pointer"
+                              aria-label={revealManagedPassword ? 'Hide password' : 'Show password'}
+                            >
+                              {revealManagedPassword ? (
+                                <EyeOff className="w-3.5 h-3.5" aria-hidden="true" />
+                              ) : (
+                                <Eye className="w-3.5 h-3.5" aria-hidden="true" />
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleCopy(
+                                  'cp-password',
+                                  managedService.controlPanelPassword || '',
+                                  'StackCP Password'
+                                )
+                              }
+                              className="text-[#0E6B63] hover:text-[#0A534D] cursor-pointer"
+                              aria-label="Copy password"
+                            >
+                              <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-slate-400 italic">
+                            Issued on approval
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="pt-2 border-t border-[#E2E8F0] space-y-1">
+                        <span className="text-slate-500 block">StackDNS Nameservers (4)</span>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 font-mono text-[11px] font-semibold text-[#0F172A]">
+                          {(managedService.nameservers && managedService.nameservers.length >= 2
+                            ? managedService.nameservers
+                            : [
+                                'ns1.stackdns.com',
+                                'ns2.stackdns.com',
+                                'ns3.stackdns.com',
+                                'ns4.stackdns.com',
+                              ]
+                          ).map((ns) => (
+                            <span key={ns} className="truncate">
+                              {ns}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-slate-500">cPanel Endpoint</span>
+                        <a
+                          href={
+                            managedService.controlPanelUrl ||
+                            `https://${managedService.serverIp ?? managedService.domainOrHost}:2083`
+                          }
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-mono text-[#0E6B63] hover:underline inline-flex items-center gap-1"
+                        >
+                          <span>
+                            {managedService.controlPanelUrl ||
+                              `https://${managedService.serverIp ?? managedService.domainOrHost}:2083`}
+                          </span>
+                          <ExternalLink className="w-3 h-3" aria-hidden="true" />
+                        </a>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-slate-500">cPanel Username</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleCopy(
+                              'username',
+                              managedService.cpanelUsername || currentUser.username,
+                              'cPanel Username'
+                            )
+                          }
+                          className="font-mono font-semibold text-[#0F172A] hover:text-[#0E6B63] inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <span>{managedService.cpanelUsername || currentUser.username}</span>
+                          <Copy className="w-3 h-3 text-slate-400" aria-hidden="true" />
+                        </button>
+                      </div>
+
+                      {managedService.controlPanelPassword && (
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-slate-500">cPanel Password</span>
+                          <div className="inline-flex items-center gap-2">
+                            <span className="font-mono font-semibold text-[#0F172A]">
+                              {revealManagedPassword
+                                ? managedService.controlPanelPassword
+                                : '••••••••••••'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setRevealManagedPassword((v) => !v)}
+                              className="text-slate-500 hover:text-[#0F172A] cursor-pointer"
+                              aria-label={revealManagedPassword ? 'Hide password' : 'Show password'}
+                            >
+                              {revealManagedPassword ? (
+                                <EyeOff className="w-3.5 h-3.5" aria-hidden="true" />
+                              ) : (
+                                <Eye className="w-3.5 h-3.5" aria-hidden="true" />
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleCopy(
+                                  'cp-password',
+                                  managedService.controlPanelPassword || '',
+                                  'cPanel Password'
+                                )
+                              }
+                              className="text-[#0E6B63] hover:text-[#0A534D] cursor-pointer"
+                              aria-label="Copy password"
+                            >
+                              <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-slate-500">Nameservers</span>
+                        <span className="font-mono text-[#0F172A] text-right">
+                          {(managedService.nameservers && managedService.nameservers.length > 0
+                            ? managedService.nameservers
+                            : ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']
+                          ).join(', ')}
+                        </span>
+                      </div>
+
+                      {(managedService.productType === 'cPanel Hosting' ||
+                        managedService.productType === 'Reseller Hosting') &&
+                        managedService.status === 'active' && (
+                          <div className="pt-2 border-t border-[#E2E8F0] space-y-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={ssoLoading}
+                                onClick={() => void handleDirectCpanelSsoLogin(managedService)}
+                                className="min-h-[38px] inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#0E6B63] hover:bg-[#0A534D] disabled:opacity-60 text-white text-xs font-semibold cursor-pointer whitespace-nowrap"
+                              >
+                                {ssoLoading ? (
+                                  <>
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                                    <span>Generating SSO Session...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
+                                    <span>Direct Login to cPanel (SSO)</span>
+                                  </>
+                                )}
+                              </button>
+
+                              {ssoLaunchUrl && (
+                                <a
+                                  href={ssoLaunchUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-[#0E6B63] text-[#0E6B63] hover:bg-[#F2FAF8] text-xs font-semibold whitespace-nowrap"
+                                >
+                                  <ArrowUpRight className="w-3.5 h-3.5" aria-hidden="true" />
+                                  <span>Open cPanel Now</span>
+                                </a>
+                              )}
+                            </div>
+                            {ssoError && (
+                              <p className="text-[11px] font-medium text-[#D97706]">
+                                {ssoError}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                    </>
+                  )}
                 </div>
               )}
 

@@ -39,6 +39,7 @@ import { ServiceOrderPage } from './components/order/ServiceOrderPage';
 import { CmsExtraSections } from './components/cms/CmsExtraSections';
 import { CustomCmsPage } from './components/cms/CustomCmsPage';
 import { Footer } from './components/Footer';
+import { CookieConsentBanner } from './components/CookieConsentBanner';
 import { LiveSupportChatWidget } from './components/LiveSupportChatWidget';
 import { ServiceMatrixItem } from './data/hostingData';
 import { applyPageSeoMetadata } from './utils/seoManager';
@@ -1156,6 +1157,9 @@ export default function App() {
             }
           />
         )}
+
+      {/* Cookie Consent Notice & Privacy Preferences (Public Website Only) */}
+      <CookieConsentBanner hidden={isStandaloneShell} />
 
       {/* Toast Notification Banner */}
       {toastMsg && (

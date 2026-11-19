@@ -4,6 +4,7 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import {
@@ -47,6 +48,20 @@ export interface AuthSessionUser {
   signedInAt: string;
 }
 
+export const ENCRYPTED_SECRET_MASK = '••••••••ENCRYPTED••••••••';
+
+export interface IpSecurityRecord {
+  ipAddress: string;
+  trialCount: number;
+  trialEmails: string[];
+  firstTrialOrderId: string | null;
+  firstTrialAt: string | null;
+  blocked: boolean;
+  blockedReason: string | null;
+  blockedAt: string | null;
+  updatedAt: string;
+}
+
 export interface ManagedUserAccount {
   id: string;
   name: string;
@@ -64,6 +79,12 @@ export interface ManagedUserAccount {
   role: UserRole;
   status: UserAccountStatus;
   kycVerified: boolean;
+  emailVerified?: boolean;
+  emailVerifiedAtUtc?: string;
+  freeTrialClaimed?: boolean;
+  signupIp?: string;
+  lastIp?: string;
+  termsAcceptedAtUtc?: string;
   activeServices: number;
   totalSpendUsd: number;
   createdAt: string;
@@ -150,6 +171,8 @@ export interface ManagedHostingPlanRecord {
   audience: string;
   monthlyPrice: number;
   yearlyPrice: number;
+  twoYearPrice?: number;
+  fourYearPrice?: number;
   renewalPrice: number;
   storage: string;
   bandwidth: string;
@@ -174,9 +197,16 @@ export interface SystemSmtpSettings {
   password: string;
   fromName: string;
   fromEmail: string;
+  configured?: boolean;
   lastVerifiedAtUtc?: string;
   lastTestStatus?: 'untested' | 'verified' | 'error';
   lastTestMessage?: string;
+}
+
+export function isSmtpConfigured(smtp?: SystemSmtpSettings | null): boolean {
+  if (!smtp?.enabled) return false;
+  if (smtp.configured) return true;
+  return Boolean(smtp.host?.trim() && smtp.username?.trim() && smtp.password);
 }
 
 export interface SystemGoogleOAuthSettings {
@@ -328,7 +358,7 @@ export interface OrderCheckoutDraft {
   trialDays?: number;
   serverConfig?: ServerCustomConfig;
   nameserversType?: 'default' | 'custom';
-  nameservers?: [string, string];
+  nameservers?: string[];
   whoisPrivacy?: boolean;
   whoisContactId?: string;
   eppAuthCode?: string;
@@ -367,7 +397,7 @@ export interface PlatformOrder {
   autoRenew?: boolean;
   invoicePaid?: boolean;
   nextDueDate?: string;
-  nameservers?: [string, string];
+  nameservers?: string[];
   registrarLock?: boolean;
   whoisPrivacy?: boolean;
   eppCode?: string;
@@ -375,12 +405,18 @@ export interface PlatformOrder {
   dnsRecords?: DomainDnsRecord[];
   serverIp?: string;
   cpanelUsername?: string;
+  controlPanelUrl?: string;
+  controlPanelPassword?: string;
   serverModuleId?: string;
   serverPackageName?: string;
+  linkedFreeDomainOrderId?: string;
+  linkedHostingOrderId?: string;
   promoCode?: string;
   discountUsd?: number;
   isFreeTrial?: boolean;
   trialDays?: number;
+  recurringMonthlyUsd?: number;
+  trialConvertedAtUtc?: string;
   serverConfig?: ServerCustomConfig;
   transactionRef?: string;
   paymentSubmittedAt?: string;
@@ -403,10 +439,14 @@ export interface PlatformOrder {
     | 'verified';
   domainVerificationToken?: string;
   domainContactVerifiedAt?: string;
-  pendingNameservers?: [string, string];
+  pendingNameservers?: string[];
   nameserverUpdateStatus?: 'idle' | 'pending_update' | 'updated';
   nameserverRequestedAt?: string;
   nameserverUpdatedAt?: string;
+  transferStatus?: 'pending_admin' | 'in_progress' | 'client_notified' | 'completed';
+  transferStartedAt?: string;
+  transferClientNotifiedAt?: string;
+  transferCompletedAt?: string;
 }
 
 export type TicketDepartment =
@@ -414,7 +454,8 @@ export type TicketDepartment =
   | 'Technical Support'
   | 'Billing'
   | 'Account'
-  | 'Support';
+  | 'Support'
+  | 'Abuse';
 
 export type TicketPriority = 'Normal' | 'High' | 'Urgent';
 export type TicketStatus = 'open' | 'pending' | 'resolved';
@@ -576,6 +617,13 @@ export type LoginActivityEventType =
   | 'Service/Domain Transferred'
   | 'Invoice Auto-Generated'
   | 'WHOIS Contact Verified'
+  | 'WHM Account Auto-Suspended'
+  | 'WHM Account Unsuspended'
+  | 'WHM State Sync Warning'
+  | 'Service Auto-Suspended (Due Date)'
+  | 'Email Verification Code Sent'
+  | 'Email Address Verified'
+  | 'Abuse Ticket Issued'
   | 'Signed Out';
 
 export interface LoginActivityRecord {
@@ -713,6 +761,8 @@ interface PlatformContextValue {
   hostingPlans: ManagedHostingPlanRecord[];
   systemSettings: SystemIntegrationSettings;
   promoCodes: PromoCodeRecord[];
+  ipSecurityRecords: IpSecurityRecord[];
+  dbSyncedAtUtc: string | null;
   orderCheckoutDraft: OrderCheckoutDraft | null;
   lastSearchedDomain: LastSearchedDomain | null;
   pendingPostAuthPath: string | null;
@@ -721,24 +771,27 @@ interface PlatformContextValue {
     passphrase: string,
     rememberMe?: boolean,
     portal?: 'client' | 'admin'
-  ) => {
+  ) => Promise<{
     ok: boolean;
     requiresTwoFactor?: boolean;
+    requiresEmailVerification?: boolean;
+    unverifiedEmail?: string;
     error?: string;
     lockedSeconds?: number;
     user?: AuthSessionUser;
-  };
+  }>;
   signInWithGoogle: (input: {
     email: string;
     name: string;
     googleSub?: string;
     country?: string;
-  }) => {
+    token?: string;
+  }) => Promise<{
     ok: boolean;
     error?: string;
     user?: AuthSessionUser;
     isNewAccount?: boolean;
-  };
+  }>;
   verifyTwoFactorChallenge: (codeOrBackup: string) => Promise<{
     ok: boolean;
     error?: string;
@@ -763,10 +816,11 @@ interface PlatformContextValue {
   createUserAccount: (input: {
     name: string;
     email: string;
-    company: string;
+    company?: string;
     country: string;
     role: UserRole;
-  }) => { ok: boolean; error?: string };
+    password?: string;
+  }) => { ok: boolean; error?: string; user?: ManagedUserAccount };
   registerClientAccount: (input: {
     name: string;
     username: string;
@@ -775,12 +829,32 @@ interface PlatformContextValue {
     country: string;
     referralSource: string;
     password: string;
+    termsAcceptedAtUtc?: string;
     autoSignIn?: boolean;
-  }) => {
+    skipEmailOtp?: boolean;
+  }) => Promise<{
     ok: boolean;
     error?: string;
+    requiresEmailVerification?: boolean;
+    emailSent?: boolean;
+    smtpConfigured?: boolean;
     account?: { id: string; name: string; username: string; email: string; phone: string };
-  };
+  }>;
+  verifyRegistrationOtp: (
+    email: string,
+    code: string
+  ) => Promise<{
+    ok: boolean;
+    error?: string;
+    user?: AuthSessionUser;
+  }>;
+  resendRegistrationOtp: (email: string) => Promise<{
+    ok: boolean;
+    error?: string;
+    emailSent?: boolean;
+    smtpConfigured?: boolean;
+    cooldownSeconds?: number;
+  }>;
   updateClientProfile: (updates: {
     name: string;
     company: string;
@@ -790,7 +864,7 @@ interface PlatformContextValue {
   changePassword: (
     currentPassword: string,
     newPassword: string
-  ) => { ok: boolean; error?: string };
+  ) => Promise<{ ok: boolean; error?: string }>;
   updateUserStatus: (userId: string, status: UserAccountStatus) => void;
   updateUserRole: (userId: string, role: UserRole) => void;
   toggleUserKyc: (userId: string) => void;
@@ -811,7 +885,7 @@ interface PlatformContextValue {
   adminChangeUserPassword: (
     userId: string,
     newPassword: string
-  ) => { ok: boolean; error?: string };
+  ) => Promise<{ ok: boolean; error?: string }>;
   adminResetUserTwoFactor: (userId: string) => void;
   updateOwnAdminCredentials: (input: {
     name: string;
@@ -819,7 +893,7 @@ interface PlatformContextValue {
     email: string;
     currentPassword: string;
     newPassword?: string;
-  }) => { ok: boolean; error?: string };
+  }) => Promise<{ ok: boolean; error?: string }>;
   createAdminAccount: (input: {
     name: string;
     username: string;
@@ -851,17 +925,22 @@ interface PlatformContextValue {
     nextDueDate?: string;
     invoicePaid?: boolean;
     autoRenew?: boolean;
-    nameservers?: [string, string];
+    nameservers?: string[];
     registrarLock?: boolean;
     whoisPrivacy?: boolean;
     serverIp?: string;
     cpanelUsername?: string;
+    controlPanelUrl?: string;
+    controlPanelPassword?: string;
     serverModuleId?: string;
     serverPackageName?: string;
+    linkedFreeDomainOrderId?: string;
+    linkedHostingOrderId?: string;
     promoCode?: string;
     discountUsd?: number;
     isFreeTrial?: boolean;
     trialDays?: number;
+    recurringMonthlyUsd?: number;
     serverConfig?: ServerCustomConfig;
     transactionRef?: string;
     notes?: string;
@@ -869,6 +948,8 @@ interface PlatformContextValue {
     eppCode?: string;
     whoisContact?: DomainContactAddress;
     dnsRecords?: DomainDnsRecord[];
+    transferStatus?: PlatformOrder['transferStatus'];
+    transferStartedAt?: string;
   }) => { order: PlatformOrder; invoice: PlatformInvoice | null };
   updateOrderStatus: (orderId: string, status: OrderStatus, notes?: string) => void;
   approveOrderWithServer: (input: {
@@ -877,12 +958,24 @@ interface PlatformContextValue {
     serverPackageName?: string;
     serverIp?: string;
     cpanelUsername?: string;
+    controlPanelUrl?: string;
+    controlPanelPassword?: string;
+    nameservers?: string[];
     notes?: string;
   }) => {
     ok: boolean;
     error?: string;
     invoice?: PlatformInvoice;
     invoiceWasCreated?: boolean;
+  };
+  approveSharedHostingOrder: (input: {
+    orderId: string;
+    password: string;
+    notes?: string;
+  }) => {
+    ok: boolean;
+    error?: string;
+    invoice?: PlatformInvoice;
   };
   generateInvoiceForOrder: (orderId: string) => {
     ok: boolean;
@@ -903,10 +996,12 @@ interface PlatformContextValue {
       datacenter?: string;
       serverIp?: string;
       cpanelUsername?: string;
+      controlPanelUrl?: string;
+      controlPanelPassword?: string;
       serverModuleId?: string;
       serverPackageName?: string;
       autoRenew?: boolean;
-      nameservers?: [string, string];
+      nameservers?: string[];
       registrarLock?: boolean;
       whoisPrivacy?: boolean;
       notes?: string;
@@ -1026,13 +1121,29 @@ interface PlatformContextValue {
     orderId: string,
     token: string
   ) => { ok: boolean; error?: string; order?: PlatformOrder };
+  resendDomainVerificationEmail: (orderId: string) => Promise<{
+    ok: boolean;
+    error?: string;
+    verifyUrl?: string;
+    emailSent?: boolean;
+  }>;
   requestDomainNameserverChange: (
     orderId: string,
-    ns1: string,
-    ns2: string
+    ns1OrList: string | string[],
+    ns2?: string
   ) => { ok: boolean; error?: string };
   adminApplyNameserverChange: (
     orderId: string
+  ) => { ok: boolean; error?: string };
+  adminStartDomainTransfer: (
+    orderId: string
+  ) => { ok: boolean; error?: string };
+  clientNotifyDomainTransferApproved: (
+    orderId: string
+  ) => { ok: boolean; error?: string };
+  adminCompleteDomainTransfer: (
+    orderId: string,
+    viaSevenDayAllow?: boolean
   ) => { ok: boolean; error?: string };
   payClientOrderInvoice: (
     orderOrInvoiceId: string,
@@ -1075,6 +1186,21 @@ interface PlatformContextValue {
     status?: TicketStatus;
     attachments?: TicketAttachment[];
   }) => { ok: boolean; error?: string; ticket?: SupportTicketRecord };
+  adminCreateAbuseTicketAndNotify: (input: {
+    userId?: string;
+    clientEmail?: string;
+    relatedService?: string;
+    subject: string;
+    message: string;
+    priority?: TicketPriority;
+    suspendMatchingService?: boolean;
+    abuseCaseTicketId?: string;
+  }) => Promise<{
+    ok: boolean;
+    error?: string;
+    ticket?: SupportTicketRecord;
+    emailSent?: boolean;
+  }>;
   replySupportTicket: (
     ticketId: string,
     message: string,
@@ -1213,6 +1339,25 @@ interface PlatformContextValue {
   setPendingPostAuthPath: (path: string | null) => void;
   runDueDateBillingSweep: () => { suspendedCount: number; expiredCount: number };
   resetOperationalDataForProduction: () => void;
+  hasClientUsedFreeTrial: (email: string) => boolean;
+  validateFreeTrialEligibility: (email: string) => Promise<{
+    ok: boolean;
+    allowed: boolean;
+    ipBlocked?: boolean;
+    accountSuspended?: boolean;
+    error?: string;
+  }>;
+  adminToggleIpBlock: (
+    ipAddress: string,
+    blocked: boolean,
+    reason?: string
+  ) => Promise<{ ok: boolean; error?: string }>;
+  runAutomatedTrialBillingNow: () => Promise<{
+    ok: boolean;
+    convertedTrials?: number;
+    generatedInvoices?: number;
+    error?: string;
+  }>;
 }
 
 const SESSION_KEY = 'cpcloud_admin_session_v1';
@@ -1238,7 +1383,9 @@ const ORDER_DRAFT_KEY = 'cpcloud_order_draft_v1';
 const LAST_SEARCHED_DOMAIN_KEY = 'cpcloud_last_searched_domain_v1';
 const POST_AUTH_REDIRECT_KEY = 'cpcloud_post_auth_redirect_v1';
 const DOMAIN_CONTACTS_KEY = 'cpcloud_domain_contacts_v1';
+const EMAIL_OTP_STORAGE_KEY = 'cpcloud_pending_email_otp_v1';
 const PROD_CLEANUP_KEY = 'cpcloud_prod_clean_v2';
+const AUTH_TOKEN_KEY = 'cpcloud_auth_token_v1';
 
 const LEGACY_FAKE_USER_IDS = new Set([
   'USR-1042',
@@ -1641,12 +1788,21 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'Essential NVMe cloud capacity for new launches.',
     monthlyPrice: 2.5,
     yearlyPrice: 30.0,
+    twoYearPrice: 54.0,
+    fourYearPrice: 96.0,
     renewalPrice: 30.0,
     storage: '10GB SSD Space',
     bandwidth: 'Unlimited Bandwidth',
     ssl: 'Free Wildcard SSL',
     backups: 'Daily Snapshots',
-    features: ['6 Linux Websites', '18x Databases', '24x Emails', '10GB SSD Space', '80+ App Installer'],
+    features: [
+      '6 Linux Websites',
+      '18x Databases',
+      '24x Emails',
+      '10GB SSD Space',
+      '1 Free .com Domain (1-Yr w/ 1Y/2Y/4Y Plan)',
+      '80+ App Installer',
+    ],
     popular: false,
     enabled: true,
     autoProvision: true,
@@ -1662,12 +1818,21 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'High-throughput NGINX caching for busy sites & stores.',
     monthlyPrice: 3.49,
     yearlyPrice: 41.88,
+    twoYearPrice: 75.38,
+    fourYearPrice: 134.0,
     renewalPrice: 41.88,
     storage: '20GB SSD Space',
     bandwidth: 'Unlimited Bandwidth',
     ssl: 'Free Wildcard SSL',
     backups: 'Daily Snapshots',
-    features: ['12 Linux Websites', '36x 1GB Databases', '48x Emails', '20GB SSD Space', 'Free NGINX edge cache'],
+    features: [
+      '12 Linux Websites',
+      '36x 1GB Databases',
+      '48x Emails',
+      '20GB SSD Space',
+      '1 Free .com Domain (1-Yr w/ 1Y/2Y/4Y Plan)',
+      'Free NGINX edge cache',
+    ],
     popular: true,
     enabled: true,
     autoProvision: true,
@@ -1683,12 +1848,20 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'Unrestricted multi-site headroom for client fleets.',
     monthlyPrice: 4.49,
     yearlyPrice: 53.88,
+    twoYearPrice: 96.98,
+    fourYearPrice: 172.4,
     renewalPrice: 53.88,
     storage: 'Unlimited SSD Space',
     bandwidth: 'Unlimited Bandwidth',
     ssl: 'Free Wildcard SSL',
     backups: 'Daily Snapshots',
-    features: ['Unlimited Linux Websites', 'Unlimited 1GB Databases', 'Unlimited Emails', 'Unlimited SSD Space'],
+    features: [
+      'Unlimited Linux Websites',
+      'Unlimited 1GB Databases',
+      'Unlimited Emails',
+      'Unlimited SSD Space',
+      '1 Free .com Domain (1-Yr w/ 1Y/2Y/4Y Plan)',
+    ],
     popular: false,
     enabled: true,
     autoProvision: true,
@@ -1705,12 +1878,20 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'Reliable NVMe cPanel hosting engineered for growing business websites.',
     monthlyPrice: 14.99,
     yearlyPrice: 143.88,
+    twoYearPrice: 258.98,
+    fourYearPrice: 460.4,
     renewalPrice: 143.88,
     storage: '50 GB NVMe Storage',
     bandwidth: 'Unlimited Bandwidth',
     ssl: 'Free SSL Certificate',
     backups: 'Weekly Backups',
-    features: ['Host 3 Websites', '1 GB RAM', '10 Email Accounts', '1 Free .com Domain (Yearly)', 'Node.js & Python'],
+    features: [
+      'Host 3 Websites',
+      '1 GB RAM',
+      '10 Email Accounts',
+      '1 Free .com Domain (1-Yr w/ 1Y/2Y/4Y Plan)',
+      'Node.js & Python',
+    ],
     popular: false,
     enabled: true,
     autoProvision: true,
@@ -1726,12 +1907,20 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'High-headroom multi-site cPanel hosting with daily backups and doubled NVMe.',
     monthlyPrice: 24.99,
     yearlyPrice: 239.88,
+    twoYearPrice: 431.78,
+    fourYearPrice: 767.6,
     renewalPrice: 239.88,
     storage: '100 GB NVMe Storage',
     bandwidth: 'Unlimited Bandwidth',
     ssl: 'Free SSL Certificate',
     backups: 'Free Daily Backup',
-    features: ['Host 10 Websites', '2 GB RAM', '20 Email Accounts', '1 Free .com Domain (Yearly)', 'Node.js & Python'],
+    features: [
+      'Host 10 Websites',
+      '2 GB RAM',
+      '20 Email Accounts',
+      '1 Free .com Domain (1-Yr w/ 1Y/2Y/4Y Plan)',
+      'Node.js & Python',
+    ],
     popular: true,
     enabled: true,
     autoProvision: true,
@@ -1747,12 +1936,20 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'Full-power developer and agency cPanel stack with unmetered websites & SSH.',
     monthlyPrice: 39.99,
     yearlyPrice: 419.88,
+    twoYearPrice: 755.78,
+    fourYearPrice: 1343.6,
     renewalPrice: 419.88,
     storage: 'Unlimited NVMe Storage',
     bandwidth: 'Unlimited Bandwidth',
     ssl: 'Free SSL Certificates',
     backups: 'Free Daily Auto Backup',
-    features: ['Host Unlimited Websites', '4 GB RAM', 'Unlimited Emails', '1 Free .com Domain', 'SSH Access'],
+    features: [
+      'Host Unlimited Websites',
+      '4 GB RAM',
+      'Unlimited Emails',
+      '1 Free .com Domain (1-Yr w/ 1Y/2Y/4Y Plan)',
+      'SSH Access',
+    ],
     popular: false,
     enabled: true,
     autoProvision: true,
@@ -1769,6 +1966,8 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'Essential managed speed for single sites.',
     monthlyPrice: 2.5,
     yearlyPrice: 30.0,
+    twoYearPrice: 54.0,
+    fourYearPrice: 96.0,
     renewalPrice: 30.0,
     storage: '10GB SSD',
     bandwidth: 'Unlimited Bandwidth',
@@ -1790,6 +1989,8 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'Tuned performance for multi-site businesses.',
     monthlyPrice: 3.49,
     yearlyPrice: 41.88,
+    twoYearPrice: 75.38,
+    fourYearPrice: 134.0,
     renewalPrice: 41.88,
     storage: '20GB SSD',
     bandwidth: 'Unlimited Bandwidth',
@@ -1811,6 +2012,8 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'Unrestricted capacity for high-volume fleets.',
     monthlyPrice: 4.49,
     yearlyPrice: 53.88,
+    twoYearPrice: 96.98,
+    fourYearPrice: 172.4,
     renewalPrice: 53.88,
     storage: 'Unlimited SSD',
     bandwidth: 'Unlimited Bandwidth',
@@ -1833,6 +2036,8 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'Streamlined Windows IIS hosting for modern ASP.NET web applications.',
     monthlyPrice: 2.5,
     yearlyPrice: 30.0,
+    twoYearPrice: 54.0,
+    fourYearPrice: 96.0,
     renewalPrice: 30.0,
     storage: '10GB SSD Space',
     bandwidth: 'Unlimited Bandwidth',
@@ -1854,6 +2059,8 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'Built for growing agencies managing client IIS & database portals.',
     monthlyPrice: 3.49,
     yearlyPrice: 41.88,
+    twoYearPrice: 75.38,
+    fourYearPrice: 134.0,
     renewalPrice: 41.88,
     storage: '20GB SSD Space',
     bandwidth: 'Unlimited Bandwidth',
@@ -1875,6 +2082,8 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'Unrestricted Windows IIS headroom unified inside one control plane.',
     monthlyPrice: 4.49,
     yearlyPrice: 53.88,
+    twoYearPrice: 96.98,
+    fourYearPrice: 172.4,
     renewalPrice: 53.88,
     storage: 'Unlimited SSD Space',
     bandwidth: 'Unlimited Bandwidth',
@@ -1897,6 +2106,8 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'Dedicated KVM compute resources with full root SSH control.',
     monthlyPrice: 12.99,
     yearlyPrice: 142.89,
+    twoYearPrice: 270.0,
+    fourYearPrice: 510.0,
     renewalPrice: 12.99,
     storage: '100 GB SSD',
     bandwidth: '200 Mbit/s Unlimited Traffic',
@@ -1918,6 +2129,8 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'Zero setup cost plus 1 month free on yearly billing.',
     monthlyPrice: 19.99,
     yearlyPrice: 219.89,
+    twoYearPrice: 418.0,
+    fourYearPrice: 790.0,
     renewalPrice: 19.99,
     storage: '200GB SSD / 100GB NVMe',
     bandwidth: '300 Mbit/s Unlimited Traffic',
@@ -1939,6 +2152,8 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'High-memory KVM compute with zero setup cost.',
     monthlyPrice: 34.99,
     yearlyPrice: 384.89,
+    twoYearPrice: 730.0,
+    fourYearPrice: 1380.0,
     renewalPrice: 34.99,
     storage: '300GB SSD / 150GB NVMe',
     bandwidth: '600 Mbit/s Unlimited Traffic',
@@ -1960,6 +2175,8 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'Dedicated 12-core power built for heavy applications.',
     monthlyPrice: 59.99,
     yearlyPrice: 659.89,
+    twoYearPrice: 1250.0,
+    fourYearPrice: 2370.0,
     renewalPrice: 59.99,
     storage: '400GB SSD / 200GB NVMe',
     bandwidth: '800 Mbit/s Unlimited Traffic',
@@ -1982,6 +2199,8 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'Pre-configured Docker n8n stack with unlimited executions.',
     monthlyPrice: 12.99,
     yearlyPrice: 142.89,
+    twoYearPrice: 270.0,
+    fourYearPrice: 510.0,
     renewalPrice: 12.99,
     storage: '100 GB SSD',
     bandwidth: '200 Mbit/s Port',
@@ -2003,6 +2222,8 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'Zero setup cost plus 1 month free on yearly billing.',
     monthlyPrice: 19.99,
     yearlyPrice: 219.89,
+    twoYearPrice: 418.0,
+    fourYearPrice: 790.0,
     renewalPrice: 19.99,
     storage: '200GB SSD / 100GB NVMe',
     bandwidth: '300 Mbit/s Port',
@@ -2024,6 +2245,8 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'High-memory n8n & Redis queue compute for concurrent agents.',
     monthlyPrice: 34.99,
     yearlyPrice: 384.89,
+    twoYearPrice: 730.0,
+    fourYearPrice: 1380.0,
     renewalPrice: 34.99,
     storage: '300GB SSD / 150GB NVMe',
     bandwidth: '600 Mbit/s Port',
@@ -2045,6 +2268,8 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'Dedicated 12-core power for heavy automation pipelines.',
     monthlyPrice: 59.99,
     yearlyPrice: 659.89,
+    twoYearPrice: 1250.0,
+    fourYearPrice: 2370.0,
     renewalPrice: 59.99,
     storage: '400GB SSD / 200GB NVMe',
     bandwidth: '800 Mbit/s Port',
@@ -2067,6 +2292,8 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'Start hosting client websites under your own brand with full WHM, white-label nameservers, and Gen4 NVMe speed.',
     monthlyPrice: 14.99,
     yearlyPrice: 149.0,
+    twoYearPrice: 268.0,
+    fourYearPrice: 476.0,
     renewalPrice: 149.0,
     storage: '60 GB Gen4 NVMe SSD',
     bandwidth: 'Unmetered Tier-1 Bandwidth',
@@ -2095,6 +2322,8 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'Scale recurring client hosting revenue with 60 isolated cPanel accounts, WHMCS automation hooks, and Imunify360 defense.',
     monthlyPrice: 29.99,
     yearlyPrice: 299.0,
+    twoYearPrice: 538.0,
+    fourYearPrice: 956.0,
     renewalPrice: 299.0,
     storage: '150 GB Gen4 NVMe SSD',
     bandwidth: 'Unmetered Tier-1 Bandwidth',
@@ -2123,6 +2352,8 @@ const INITIAL_MANAGED_PLANS: ManagedHostingPlanRecord[] = [
     tagline: 'Maximum account density and unthrottled enterprise throughput engineered for multi-region reseller brands.',
     monthlyPrice: 54.99,
     yearlyPrice: 549.0,
+    twoYearPrice: 988.0,
+    fourYearPrice: 1756.0,
     renewalPrice: 549.0,
     storage: '350 GB Gen4 NVMe SSD',
     bandwidth: 'Unmetered 10 Gbps Redundant Port',
@@ -2183,30 +2414,16 @@ const INITIAL_USERS: ManagedUserAccount[] = [
     name: 'Mr. Mudassar',
     username: 'mudassar',
     email: 'ranamudassar6486@gmail.com',
-    company: 'cpcloudhost.com HQ',
+    company: 'cpcloudhost.com HQ · CEO & Founder',
     country: 'Pakistan',
     role: 'admin',
     status: 'active',
     kycVerified: true,
+    emailVerified: true,
     activeServices: 0,
     totalSpendUsd: 0,
     createdAt: '2025-01-12',
     lastLoginAt: '2026-11-14 19:15 UTC',
-  },
-  {
-    id: 'USR-1002',
-    name: 'Mr. Arslan',
-    username: 'admin',
-    email: 'admin@cpcloudhost.com',
-    company: 'cpcloudhost.com Executive',
-    country: 'United Kingdom',
-    role: 'admin',
-    status: 'active',
-    kycVerified: true,
-    activeServices: 0,
-    totalSpendUsd: 0,
-    createdAt: '2025-01-12',
-    lastLoginAt: '2026-11-14 18:40 UTC',
   },
 ];
 
@@ -2244,7 +2461,8 @@ function applyAutomaticOrderExpirations(list: PlatformOrder[]): {
       ord.status === 'refunded' ||
       ord.status === 'transferred' ||
       ord.status === 'expired' ||
-      ord.status === 'suspended'
+      ord.status === 'suspended' ||
+      (ord.status === 'pending' && ord.productType === 'Domain Transfer')
     ) {
       return ord;
     }
@@ -2484,8 +2702,8 @@ export const INITIAL_CMS_PAGES: CmsPageRecord[] = [
       {
         id: 'switch-credits',
         heading:
-          "Switch to CP Cloud Hosting and we'll credit your unused time from your current provider.",
-        body: 'Are you locked in with your current web host? Our Switch Credits give you money back on any time you have left on your plan, so you can join CP Cloud Hosting sooner. Switch your cPanel or StackCP Web Hosting Now!',
+          "Switch to cpcloudhost.com and we'll credit your unused time from your current provider.",
+        body: 'Are you locked in with your current web host? Our Switch Credits give you money back on any time you have left on your plan, so you can join cpcloudhost.com sooner. Switch your cPanel or StackCP Web Hosting Now!',
         ctaText: 'Switch Now',
         ctaUrl: '#free-migrations',
       },
@@ -2806,7 +3024,7 @@ export const INITIAL_CMS_PAGES: CmsPageRecord[] = [
     isSystemPage: true,
     seoTitle: 'About Us — Global Cloud Infrastructure & Leadership | cpcloudhost.com',
     seoDescription:
-      'Meet the leadership and engineering team behind cpcloudhost.com — CEO Mr. Arslan, Founder Mr. Mudassar, and Support Lead Irfan — powering 99.99% uptime across global NVMe cloud hubs.',
+      'Meet Chief Executive Officer & Founder Mr. Mudassar and the cpcloudhost.com engineering team — powering 99.99% uptime across global NVMe cloud hubs.',
     heroBadge: 'About cpcloudhost.com · Global Cloud & Hosting Platform',
     heroTitle: 'Cloud Infrastructure Engineered for Speed, Trust & Human Support',
     heroSubtitle:
@@ -2978,13 +3196,44 @@ function readInitialCmsPages(): CmsPageRecord[] {
   const mergedSystem = INITIAL_CMS_PAGES.map((def) => {
     const existing = byId.get(def.id);
     if (!existing) return def;
+    const rawSections = existing.sections ?? def.sections;
+    const normalizedSections =
+      def.id === 'home'
+        ? rawSections.map((sec) =>
+            sec.id === 'switch-credits'
+              ? {
+                  ...sec,
+                  heading: sec.heading
+                    .replace(/CP Cloud Hosting/gi, 'cpcloudhost.com')
+                    .replace(/cpcloudhosting\.com/gi, 'cpcloudhost.com'),
+                  body: sec.body
+                    .replace(/CP Cloud Hosting/gi, 'cpcloudhost.com')
+                    .replace(/cpcloudhosting\.com/gi, 'cpcloudhost.com'),
+                }
+              : sec
+          )
+        : rawSections;
+    const sanitizedExisting =
+      def.id === 'about-us'
+        ? {
+            ...existing,
+            seoDescription:
+              existing.seoDescription && /(arslan|irfan)/i.test(existing.seoDescription)
+                ? def.seoDescription
+                : existing.seoDescription,
+            heroSubtitle:
+              existing.heroSubtitle && /(arslan|irfan)/i.test(existing.heroSubtitle)
+                ? def.heroSubtitle
+                : existing.heroSubtitle,
+          }
+        : existing;
     return {
       ...def,
-      ...existing,
+      ...sanitizedExisting,
       isSystemPage: true,
       slug: def.slug,
       highlights: existing.highlights ?? def.highlights,
-      sections: existing.sections ?? def.sections,
+      sections: normalizedSections,
       faqItems: existing.faqItems ?? def.faqItems,
     };
   });
@@ -3050,18 +3299,46 @@ function readStorage<T>(key: string, fallback: T): T {
 
 function readInitialUsers(): ManagedUserAccount[] {
   const raw = readStorage<ManagedUserAccount[]>(USERS_KEY, INITIAL_USERS);
-  return raw.map((u) => {
-    if (!u.supportPin) return u;
-    const legacyPin = u.supportPin as unknown as {
+  const filtered = raw.filter((u) => {
+    const lowerName = (u.name || '').trim().toLowerCase();
+    const lowerUsername = (u.username || '').trim().toLowerCase();
+    const lowerEmail = (u.email || '').trim().toLowerCase();
+    if (
+      u.id === 'USR-1002' ||
+      lowerName.includes('arslan') ||
+      lowerName === 'irfan' ||
+      lowerEmail === 'admin@cpcloudhost.com' ||
+      lowerUsername === 'arslan'
+    ) {
+      return false;
+    }
+    return true;
+  });
+  const ensuredUsers = filtered.length > 0 ? filtered : INITIAL_USERS;
+  return ensuredUsers.map((u) => {
+    const baseUser: ManagedUserAccount =
+      u.id === 'USR-1001'
+        ? {
+            ...u,
+            name: 'Mr. Mudassar',
+            company: 'cpcloudhost.com HQ · CEO & Founder',
+            emailVerified: true,
+          }
+        : {
+            ...u,
+            emailVerified: u.emailVerified !== false,
+          };
+    if (!baseUser.supportPin) return baseUser;
+    const legacyPin = baseUser.supportPin as unknown as {
       pin: string;
       createdAtUtc?: string;
       expiresAtMs?: number;
     };
     return {
-      ...u,
+      ...baseUser,
       supportPin: {
         pin: legacyPin.pin,
-        createdAtUtc: legacyPin.createdAtUtc || u.createdAt || 'Persistent',
+        createdAtUtc: legacyPin.createdAtUtc || baseUser.createdAt || 'Persistent',
       },
     };
   });
@@ -3072,6 +3349,7 @@ function normalizeTicketDepartment(dept: string): TicketDepartment {
   if (dept === 'Billing' || dept === 'Billing & Accounts') return 'Billing';
   if (dept === 'Account') return 'Account';
   if (dept === 'Support') return 'Support';
+  if (dept === 'Abuse' || dept === 'Abuse & Trust') return 'Abuse';
   return 'Technical Support';
 }
 
@@ -3087,6 +3365,13 @@ function readInitialTickets(): SupportTicketRecord[] {
     ...t,
     department: normalizeTicketDepartment(t.department as string),
     status: normalizeTicketStatus(t.status as string),
+    messages: Array.isArray(t.messages)
+      ? t.messages.map((m) =>
+          m.authorRole === 'support'
+            ? { ...m, authorName: 'Support cpcloudhost' }
+            : m
+        )
+      : [],
   }));
 }
 
@@ -3465,11 +3750,37 @@ function readInitialHostingPlans(): ManagedHostingPlanRecord[] {
   if (!stored || !Array.isArray(stored) || stored.length === 0) {
     return INITIAL_MANAGED_PLANS;
   }
-  const existingIds = new Set(stored.map((p) => p.id));
+  const byId = new Map(INITIAL_MANAGED_PLANS.map((p) => [p.id, p]));
+  const normalized = stored.map((plan) => {
+    const def = byId.get(plan.id);
+    const baseYear = plan.yearlyPrice || plan.monthlyPrice * 12;
+    const twoYear =
+      plan.twoYearPrice !== undefined && plan.twoYearPrice > 0
+        ? plan.twoYearPrice
+        : def?.twoYearPrice ?? Number((baseYear * 1.8).toFixed(2));
+    const fourYear =
+      plan.fourYearPrice !== undefined && plan.fourYearPrice > 0
+        ? plan.fourYearPrice
+        : def?.fourYearPrice ?? Number((baseYear * 3.2).toFixed(2));
+    let nextFeatures = Array.isArray(plan.features) ? [...plan.features] : [];
+    if (
+      (plan.pageCategory === 'shared-hosting' || plan.pageCategory === 'cpanel-hosting') &&
+      !nextFeatures.some((f) => f.toLowerCase().includes('.com'))
+    ) {
+      nextFeatures = [...nextFeatures, '1 Free .com Domain (1-Yr w/ 1Y/2Y/4Y Plan)'];
+    }
+    return {
+      ...plan,
+      twoYearPrice: twoYear,
+      fourYearPrice: fourYear,
+      features: nextFeatures,
+    };
+  });
+  const existingIds = new Set(normalized.map((p) => p.id));
   const missingReseller = INITIAL_MANAGED_PLANS.filter(
     (def) => def.pageCategory === 'reseller-hosting' && !existingIds.has(def.id)
   );
-  return missingReseller.length > 0 ? [...stored, ...missingReseller] : stored;
+  return missingReseller.length > 0 ? [...normalized, ...missingReseller] : normalized;
 }
 
 function readInitialSystemSettings(): SystemIntegrationSettings {
@@ -3645,6 +3956,24 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
   const [promoCodes, setPromoCodes] = useState<PromoCodeRecord[]>(() =>
     readInitialPromoCodes()
   );
+  const [ipSecurityRecords, setIpSecurityRecords] = useState<IpSecurityRecord[]>([]);
+  const [dbSyncedAtUtc, setDbSyncedAtUtc] = useState<string | null>(null);
+  const [authToken, setAuthToken] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      return (
+        window.localStorage.getItem(AUTH_TOKEN_KEY) ||
+        window.sessionStorage.getItem(AUTH_TOKEN_KEY) ||
+        null
+      );
+    } catch {
+      return null;
+    }
+  });
+  const dbHydratedRef = useRef<boolean>(false);
+  const suppressNextSyncRef = useRef<boolean>(false);
+  const syncTimerRef = useRef<number | null>(null);
+
   const [orderCheckoutDraft, setOrderCheckoutDraftState] =
     useState<OrderCheckoutDraft | null>(() => readInitialOrderDraft());
   const [lastSearchedDomain, setLastSearchedDomainState] =
@@ -3660,6 +3989,26 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
     rememberMe: boolean;
     portal: 'client' | 'admin';
   } | null>(null);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      if (authToken) {
+        if (rememberSession) {
+          window.localStorage.setItem(AUTH_TOKEN_KEY, authToken);
+          window.sessionStorage.removeItem(AUTH_TOKEN_KEY);
+        } else {
+          window.sessionStorage.setItem(AUTH_TOKEN_KEY, authToken);
+          window.localStorage.removeItem(AUTH_TOKEN_KEY);
+        }
+      } else {
+        window.localStorage.removeItem(AUTH_TOKEN_KEY);
+        window.sessionStorage.removeItem(AUTH_TOKEN_KEY);
+      }
+    } catch {
+      // ignore
+    }
+  }, [authToken, rememberSession]);
 
   useEffect(() => {
     try {
@@ -3704,6 +4053,8 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   }, [allDomainContacts]);
 
+  const usersRef = useRef<ManagedUserAccount[]>(users);
+  usersRef.current = users;
   const ordersRef = useRef<PlatformOrder[]>(orders);
   ordersRef.current = orders;
   const provisioningModulesRef = useRef<ProvisioningModuleRecord[]>(provisioningModules);
@@ -3745,13 +4096,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
   const dispatchSuspensionNoticeEmail = useCallback(
     (order: PlatformOrder, reason: string) => {
       const smtp = systemSettingsRef.current.smtp;
-      if (
-        typeof window === 'undefined' ||
-        !smtp?.enabled ||
-        !smtp.host.trim() ||
-        !smtp.username.trim() ||
-        !smtp.password
-      ) {
+      if (typeof window === 'undefined' || !isSmtpConfigured(smtp)) {
         return;
       }
       const tpl =
@@ -3821,6 +4166,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          moduleId: mod.id,
           hostname: mod.hostname,
           port: mod.port,
           useSsl: mod.useSsl,
@@ -4115,11 +4461,268 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
     [currentUser]
   );
 
+  const applyBootstrapStateFromServer = useCallback(
+    (remote: Record<string, any> | null | undefined) => {
+      if (!remote) return;
+      suppressNextSyncRef.current = true;
+      if (Array.isArray(remote.users) && remote.users.length > 0) {
+        setUsers(remote.users);
+        // Enforce immediate sign-out if logged-in client account was suspended in Supabase
+        if (currentUser) {
+          const updatedSelf = (remote.users as ManagedUserAccount[]).find(
+            (u) => u.email.toLowerCase() === currentUser.email.toLowerCase()
+          );
+          if (
+            updatedSelf &&
+            updatedSelf.role !== 'admin' &&
+            (updatedSelf.status === 'suspended' || updatedSelf.status === 'cancelled')
+          ) {
+            setCurrentUser(null);
+            setAuthToken(null);
+          }
+        }
+      }
+      if (Array.isArray(remote.orders)) setOrders(remote.orders);
+      if (Array.isArray(remote.invoices)) setInvoices(remote.invoices);
+      if (Array.isArray(remote.tickets)) setTickets(remote.tickets);
+      if (Array.isArray(remote.abuseComplaints)) setAbuseComplaints(remote.abuseComplaints);
+      if (Array.isArray(remote.loginActivityLogs)) setLoginActivityLogs(remote.loginActivityLogs);
+      if (Array.isArray(remote.cmsPages) && remote.cmsPages.length > 0) setCmsPages(remote.cmsPages);
+      if (remote.cmsSiteSettings) setCmsSiteSettings((prev) => ({ ...prev, ...remote.cmsSiteSettings }));
+      if (Array.isArray(remote.paymentMethods) && remote.paymentMethods.length > 0) {
+        setPaymentMethods(remote.paymentMethods);
+      }
+      if (Array.isArray(remote.emailTemplates) && remote.emailTemplates.length > 0) {
+        setEmailTemplates(remote.emailTemplates);
+      }
+      if (remote.invoiceTemplateConfig) {
+        setInvoiceTemplateConfig((prev) => ({ ...prev, ...remote.invoiceTemplateConfig }));
+      }
+      if (Array.isArray(remote.tldExtensions) && remote.tldExtensions.length > 0) {
+        setTldExtensions(remote.tldExtensions);
+      }
+      if (Array.isArray(remote.provisioningModules)) {
+        setProvisioningModules(remote.provisioningModules);
+      }
+      if (Array.isArray(remote.hostingPlans) && remote.hostingPlans.length > 0) {
+        setHostingPlans(remote.hostingPlans);
+      }
+      if (remote.systemSettings) {
+        setSystemSettings((prev) => ({
+          ...prev,
+          ...remote.systemSettings,
+          smtp: { ...prev.smtp, ...(remote.systemSettings.smtp || {}) },
+          googleOAuth: { ...prev.googleOAuth, ...(remote.systemSettings.googleOAuth || {}) },
+          adminAlerts: { ...prev.adminAlerts, ...(remote.systemSettings.adminAlerts || {}) },
+        }));
+      }
+      if (Array.isArray(remote.promoCodes) && remote.promoCodes.length > 0) {
+        setPromoCodes(remote.promoCodes);
+      }
+      if (Array.isArray(remote.domainContactAddresses)) {
+        setAllDomainContacts(remote.domainContactAddresses);
+      }
+      if (Array.isArray(remote.ipSecurityRecords)) {
+        setIpSecurityRecords(remote.ipSecurityRecords);
+      }
+      setDbSyncedAtUtc(new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC');
+    },
+    [currentUser]
+  );
+
+  // Initial Supabase bootstrap + auto-seed if database tables are empty
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    let cancelled = false;
+
+    const headers: Record<string, string> = {};
+    if (authToken) headers['x-cpcloud-token'] = authToken;
+
+    void fetch('/api/platform/bootstrap', { headers })
+      .then((res) => res.json())
+      .then(async (data: { ok?: boolean; isEmpty?: boolean; state?: Record<string, any> | null }) => {
+        if (cancelled) return;
+        if (data?.ok && data.isEmpty) {
+          const seedPayload = {
+            users: usersRef.current,
+            orders: ordersRef.current,
+            invoices,
+            tickets,
+            abuseComplaints,
+            loginActivityLogs,
+            cmsPages,
+            cmsSiteSettings,
+            paymentMethods,
+            emailTemplates: emailTemplatesRef.current,
+            invoiceTemplateConfig: invoiceTemplateConfigRef.current,
+            tldExtensions,
+            provisioningModules: provisioningModulesRef.current,
+            hostingPlans,
+            systemSettings: systemSettingsRef.current,
+            promoCodes,
+            domainContactAddresses: allDomainContacts,
+          };
+          const seedRes = await fetch('/api/platform/seed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...headers },
+            body: JSON.stringify(seedPayload),
+          });
+          const seeded = (await seedRes.json()) as { state?: Record<string, any> | null };
+          if (!cancelled && seeded?.state) {
+            applyBootstrapStateFromServer(seeded.state);
+          }
+        } else if (data?.ok && data.state) {
+          applyBootstrapStateFromServer(data.state);
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) {
+          dbHydratedRef.current = true;
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authToken]);
+
+  // Real-time WebSocket subscription for cross-session Supabase updates
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    let ws: WebSocket | null = null;
+    let closedByEffect = false;
+    let refreshTimer: number | null = null;
+
+    const connect = () => {
+      try {
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(
+          `${proto}//${window.location.host}/ws/live-chat?role=${isAdmin ? 'admin' : 'client'}`
+        );
+        ws.onmessage = (ev) => {
+          try {
+            const msg = JSON.parse(ev.data) as { type?: string };
+            if (msg.type === 'platform:updated') {
+              if (refreshTimer) window.clearTimeout(refreshTimer);
+              refreshTimer = window.setTimeout(() => {
+                const headers: Record<string, string> = {};
+                if (authToken) headers['x-cpcloud-token'] = authToken;
+                void fetch('/api/platform/bootstrap', { headers })
+                  .then((r) => r.json())
+                  .then((d: { ok?: boolean; state?: Record<string, any> | null }) => {
+                    if (d?.ok && d.state) {
+                      applyBootstrapStateFromServer(d.state);
+                    }
+                  })
+                  .catch(() => undefined);
+              }, 350);
+            }
+          } catch {
+            // ignore
+          }
+        };
+        ws.onclose = () => {
+          if (!closedByEffect) {
+            window.setTimeout(connect, 5000);
+          }
+        };
+      } catch {
+        // ignore ws fallback
+      }
+    };
+    connect();
+    return () => {
+      closedByEffect = true;
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      try {
+        ws?.close();
+      } catch {
+        // ignore
+      }
+    };
+  }, [isAdmin, authToken, applyBootstrapStateFromServer]);
+
+  // Debounced real-time sync to Supabase PostgreSQL on any state mutation
+  useEffect(() => {
+    if (typeof window === 'undefined' || !dbHydratedRef.current) return;
+    if (suppressNextSyncRef.current) {
+      suppressNextSyncRef.current = false;
+      return;
+    }
+    if (syncTimerRef.current) window.clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = window.setTimeout(() => {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (authToken) headers['x-cpcloud-token'] = authToken;
+      const bodyPayload = {
+        pruneMissing: isAdmin,
+        users,
+        orders,
+        invoices,
+        tickets,
+        abuseComplaints,
+        loginActivityLogs,
+        domainContactAddresses: allDomainContacts,
+        ...(isAdmin
+          ? {
+              cmsPages,
+              cmsSiteSettings,
+              paymentMethods,
+              emailTemplates,
+              invoiceTemplateConfig,
+              tldExtensions,
+              provisioningModules,
+              hostingPlans,
+              systemSettings,
+              promoCodes,
+            }
+          : {}),
+      };
+      void fetch('/api/platform/sync', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(bodyPayload),
+      })
+        .then((r) => r.json())
+        .then((d: { ok?: boolean }) => {
+          if (d?.ok) {
+            setDbSyncedAtUtc(new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC');
+          }
+        })
+        .catch(() => undefined);
+    }, 550);
+
+    return () => {
+      if (syncTimerRef.current) window.clearTimeout(syncTimerRef.current);
+    };
+  }, [
+    isAdmin,
+    authToken,
+    users,
+    orders,
+    invoices,
+    tickets,
+    abuseComplaints,
+    loginActivityLogs,
+    allDomainContacts,
+    cmsPages,
+    cmsSiteSettings,
+    paymentMethods,
+    emailTemplates,
+    invoiceTemplateConfig,
+    tldExtensions,
+    provisioningModules,
+    hostingPlans,
+    systemSettings,
+    promoCodes,
+  ]);
+
   const [failedAttempts, setFailedAttempts] = useState<number>(0);
   const [lockoutUntil, setLockoutUntil] = useState<number>(0);
 
   const loginWithCredentials = useCallback(
-    (
+    async (
       identifierInput: string,
       passphraseInput: string,
       rememberMe = false,
@@ -4152,99 +4755,155 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         };
       }
 
-      const normalizedIdentifier = cleanInput.toLowerCase();
-      const matched = users.find((u) => {
-        const derivedUsername = (u.username || u.email.split('@')[0]).toLowerCase();
-        return (
-          u.email.toLowerCase() === normalizedIdentifier ||
-          derivedUsername === normalizedIdentifier
-        );
-      });
+      const serverAuth = await fetch('/api/auth/verify-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identifier: cleanInput, password: pass, portal }),
+      })
+        .then((r) => r.json())
+        .catch(() => null) as {
+          ok?: boolean;
+          error?: string;
+          user?: ManagedUserAccount;
+          token?: string;
+          requiresEmailVerification?: boolean;
+          unverifiedEmail?: string;
+          lockedSeconds?: number;
+        } | null;
 
-      const expectedPassphrase =
-        matched?.passwordSecret ??
-        (matched?.role === 'admin' ? 'cpcloud-admin-2026' : 'client-2026');
-
-      if (!matched || pass !== expectedPassphrase) {
-        const nextAttempts = failedAttempts + 1;
-        if (nextAttempts >= 5) {
-          const nextLockUntil = Date.now() + 30_000;
-          setFailedAttempts(0);
-          setLockoutUntil(nextLockUntil);
-          if (matched) {
-            appendLoginActivity({
-              userEmail: matched.email,
-              userName: matched.name,
-              eventType: 'Account Locked (Rate Limit)',
-              status: 'blocked',
-              authMethod: portal === 'admin' ? 'Admin Lockout (30s)' : 'Password Lockout (30s)',
-              country: matched.country,
-            });
+      if (serverAuth && !serverAuth.ok) {
+        if (serverAuth.requiresEmailVerification && serverAuth.unverifiedEmail) {
+          const matchedLocal = usersRef.current.find(
+            (u) => u.email.toLowerCase() === serverAuth.unverifiedEmail!.toLowerCase()
+          );
+          if (matchedLocal) {
+            const existingOtpMap = readStorage<
+              Record<string, { code: string; expiresAtMs: number; lastSentAtMs: number }>
+            >(EMAIL_OTP_STORAGE_KEY, {});
+            const existingOtp = existingOtpMap[matchedLocal.email.toLowerCase()];
+            if (!existingOtp || Date.now() > existingOtp.expiresAtMs) {
+              const freshCode = String(Math.floor(100000 + Math.random() * 900000));
+              const nowOtpMs = Date.now();
+              try {
+                window.localStorage.setItem(
+                  EMAIL_OTP_STORAGE_KEY,
+                  JSON.stringify({
+                    ...existingOtpMap,
+                    [matchedLocal.email.toLowerCase()]: {
+                      code: freshCode,
+                      expiresAtMs: nowOtpMs + 10 * 60 * 1000,
+                      lastSentAtMs: nowOtpMs,
+                    },
+                  })
+                );
+              } catch {
+                // ignore
+              }
+              const smtp = systemSettingsRef.current.smtp;
+              if (typeof window !== 'undefined' && isSmtpConfigured(smtp)) {
+                const tpl =
+                  emailTemplatesRef.current.find(
+                    (t) => t.key === 'verification-code' || t.id === 'verification-code'
+                  ) ?? INITIAL_EMAIL_TEMPLATES.find((t) => t.key === 'verification-code');
+                if (tpl && tpl.enabled) {
+                  const vars = {
+                    company_name: invoiceTemplateConfigRef.current.companyName || 'CPCloudHost',
+                    client_name: matchedLocal.name,
+                    client_email: matchedLocal.email,
+                    verification_code: freshCode,
+                  };
+                  void fetch('/api/system/send-templated-email', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      smtp,
+                      toEmail: matchedLocal.email,
+                      companyName: invoiceTemplateConfigRef.current.companyName,
+                      companyEmail: invoiceTemplateConfigRef.current.companyEmail,
+                      companyWebsite: invoiceTemplateConfigRef.current.companyWebsite,
+                      accentColor: invoiceTemplateConfigRef.current.accentColor,
+                      headerBadge: 'EMAIL VERIFICATION CODE',
+                      subject: renderEmailMergeText(tpl.subject, vars),
+                      preheader: renderEmailMergeText(tpl.preheader, vars),
+                      heading: renderEmailMergeText(tpl.heading, vars),
+                      body: renderEmailMergeText(tpl.body, vars),
+                      ctaLabel: renderEmailMergeText(tpl.ctaLabel, vars),
+                      ctaUrl: renderEmailMergeText(tpl.ctaUrl, vars),
+                      footerNote: renderEmailMergeText(tpl.footerNote, vars),
+                    }),
+                  }).catch(() => undefined);
+                }
+              }
+            }
           }
           return {
             ok: false,
+            requiresEmailVerification: true,
+            unverifiedEmail: serverAuth.unverifiedEmail,
+            error: serverAuth.error,
+          };
+        }
+
+        const nextAttempts = failedAttempts + 1;
+        if (nextAttempts >= 5) {
+          setFailedAttempts(0);
+          setLockoutUntil(Date.now() + 30_000);
+          return {
+            ok: false,
             lockedSeconds: 30,
-            error:
-              'Too many failed sign-in attempts. Login temporarily locked for 30 seconds.',
+            error: 'Too many failed sign-in attempts. Login temporarily locked for 30 seconds.',
           };
         }
         setFailedAttempts(nextAttempts);
-        if (matched) {
-          appendLoginActivity({
-            userEmail: matched.email,
-            userName: matched.name,
-            eventType: 'Failed Login Attempt',
-            status: 'warning',
-            authMethod: portal === 'admin' ? 'Admin Invalid Password' : 'Invalid Password',
-            country: matched.country,
-          });
+        return {
+          ok: false,
+          lockedSeconds: serverAuth.lockedSeconds,
+          error: serverAuth.error || 'Invalid username, email, or password.',
+        };
+      }
+
+      const normalizedIdentifier = cleanInput.toLowerCase();
+      const matched =
+        (serverAuth?.ok && serverAuth.user
+          ? usersRef.current.find((u) => u.id === serverAuth.user!.id) || serverAuth.user
+          : usersRef.current.find((u) => {
+              const derivedUsername = (u.username || u.email.split('@')[0]).toLowerCase();
+              return (
+                u.email.toLowerCase() === normalizedIdentifier ||
+                derivedUsername === normalizedIdentifier
+              );
+            })) || null;
+
+      if (!serverAuth?.ok) {
+        const expectedPassphrase =
+          matched?.passwordSecret ??
+          (matched?.role === 'admin' ? 'cpcloud-admin-2026' : 'client-2026');
+        if (!matched || pass !== expectedPassphrase) {
+          const nextAttempts = failedAttempts + 1;
+          if (nextAttempts >= 5) {
+            setFailedAttempts(0);
+            setLockoutUntil(Date.now() + 30_000);
+            return {
+              ok: false,
+              lockedSeconds: 30,
+              error:
+                'Too many failed sign-in attempts. Login temporarily locked for 30 seconds.',
+            };
+          }
+          setFailedAttempts(nextAttempts);
+          return { ok: false, error: 'Invalid username, email, or password.' };
         }
-        return {
-          ok: false,
-          error: 'Invalid username, email, or password.',
-        };
       }
 
-      if (matched.status === 'suspended' || matched.status === 'cancelled') {
-        appendLoginActivity({
-          userEmail: matched.email,
-          userName: matched.name,
-          eventType: 'Suspended Account Blocked',
-          status: 'blocked',
-          authMethod:
-            matched.status === 'cancelled'
-              ? 'Cancelled Account Blocked'
-              : 'Account Status Check',
-          country: matched.country,
-        });
-        return {
-          ok: false,
-          error:
-            matched.status === 'cancelled'
-              ? 'This account has been cancelled. Contact billing@cpcloudhost.com for reinstatement.'
-              : 'This account has been suspended. Contact support@cpcloudhost.com for review.',
-        };
-      }
-
-      if (portal === 'admin' && matched.role !== 'admin') {
-        appendLoginActivity({
-          userEmail: matched.email,
-          userName: matched.name,
-          eventType: 'Unauthorized Admin Login Blocked',
-          status: 'blocked',
-          authMethod: `Role ${matched.role.toUpperCase()} rejected at /admin/wp`,
-          country: matched.country,
-        });
-        return {
-          ok: false,
-          error: 'Access denied. Authorized staff credentials are required.',
-        };
+      if (!matched) {
+        return { ok: false, error: 'Invalid username, email, or password.' };
       }
 
       setFailedAttempts(0);
       setLockoutUntil(0);
 
       if (matched.twoFactorEnabled && matched.twoFactorSecret) {
+        if (serverAuth?.token) setAuthToken(serverAuth.token);
         setPendingChallenge({
           userId: matched.id,
           email: matched.email,
@@ -4273,6 +4932,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       };
 
       setRememberSession(rememberMe);
+      if (serverAuth?.token) setAuthToken(serverAuth.token);
       try {
         if (rememberMe && portal === 'client') {
           window.localStorage.setItem(REMEMBER_ID_KEY, cleanInput);
@@ -4307,11 +4967,11 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       setCurrentUser(session);
       return { ok: true, user: session };
     },
-    [users, failedAttempts, lockoutUntil, appendLoginActivity]
+    [failedAttempts, lockoutUntil, appendLoginActivity]
   );
 
   const signInWithGoogle = useCallback(
-    (input: { email: string; name: string; googleSub?: string; country?: string }) => {
+    async (input: { email: string; name: string; googleSub?: string; country?: string; token?: string }) => {
       const cleanEmail = (input.email || '').trim().toLowerCase();
       const cleanName = (input.name || '').trim() || cleanEmail.split('@')[0] || 'Google User';
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(cleanEmail)) {
@@ -4351,6 +5011,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
           country: existing.country,
           signedInAt: nowUtc,
         };
+        if (input.token) setAuthToken(input.token);
         setUsers((prev) =>
           prev.map((u) =>
             u.id === existing.id
@@ -4729,9 +5390,10 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
     (input: {
       name: string;
       email: string;
-      company: string;
+      company?: string;
       country: string;
       role: UserRole;
+      password?: string;
     }) => {
       if (!isAdmin) {
         return { ok: false, error: 'Unauthorized: Administrator role required.' };
@@ -4744,14 +5406,27 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         return { ok: false, error: 'A user account with this email already exists.' };
       }
 
+      const cleanPassword = input.password?.trim() || '';
+      if (input.password !== undefined && cleanPassword.length < 6) {
+        return { ok: false, error: 'Password must be at least 6 characters.' };
+      }
+
       const nextId = `USR-${Math.floor(1200 + Math.random() * 8700)}`;
       const today = new Date().toISOString().slice(0, 10);
+      const baseSlug =
+        cleanEmail
+          .split('@')[0]
+          .replace(/[^a-z0-9._-]/g, '')
+          .toLowerCase()
+          .slice(0, 24) || 'client';
       const created: ManagedUserAccount = {
         id: nextId,
         name: input.name.trim(),
+        username: baseSlug,
         email: cleanEmail,
-        company: input.company.trim() || 'Independent',
-        country: input.country.trim() || 'United States',
+        passwordSecret: cleanPassword || 'client-2026',
+        company: input.company?.trim() || 'Independent',
+        country: input.country.trim() || 'Pakistan',
         role: input.role,
         status: 'active',
         kycVerified: input.role === 'admin',
@@ -4759,11 +5434,160 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         totalSpendUsd: 0,
         createdAt: today,
         lastLoginAt: 'Never signed in',
+        supportPin: generateSupportPin(),
       };
       setUsers((prev) => [created, ...prev]);
-      return { ok: true };
+
+      if (
+        typeof window !== 'undefined' &&
+        systemSettings.smtp?.enabled &&
+        systemSettings.smtp.host.trim() &&
+        systemSettings.smtp.username.trim() &&
+        systemSettings.smtp.password
+      ) {
+        const welcomeTpl =
+          emailTemplates.find((t) => t.key === 'welcome-email' || t.id === 'welcome-email') ??
+          INITIAL_EMAIL_TEMPLATES.find((t) => t.key === 'welcome-email');
+        if (welcomeTpl && welcomeTpl.enabled) {
+          const mergeVars: Record<string, string> = {
+            company_name: invoiceTemplateConfig.companyName || 'CPCloudHost',
+            client_name: created.name,
+            client_email: created.email,
+            client_username: created.username || baseSlug,
+            support_pin: created.supportPin?.pin || '—',
+            control_panel_url: `${window.location?.origin || 'https://cpcloudhost.com'}/dashboard`,
+          };
+          void fetch('/api/system/send-templated-email', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              smtp: systemSettings.smtp,
+              toEmail: created.email,
+              companyName: invoiceTemplateConfig.companyName,
+              companyEmail: invoiceTemplateConfig.companyEmail,
+              companyWebsite: invoiceTemplateConfig.companyWebsite,
+              accentColor: invoiceTemplateConfig.accentColor,
+              headerBadge: 'ACCOUNT CREATED',
+              subject: renderEmailMergeText(welcomeTpl.subject, mergeVars),
+              preheader: renderEmailMergeText(welcomeTpl.preheader, mergeVars),
+              heading: renderEmailMergeText(welcomeTpl.heading, mergeVars),
+              body: renderEmailMergeText(welcomeTpl.body, mergeVars),
+              ctaLabel: renderEmailMergeText(welcomeTpl.ctaLabel, mergeVars),
+              ctaUrl: renderEmailMergeText(welcomeTpl.ctaUrl, mergeVars),
+              footerNote: renderEmailMergeText(welcomeTpl.footerNote, mergeVars),
+            }),
+          }).catch(() => undefined);
+        }
+      }
+
+      return { ok: true, user: created };
     },
-    [isAdmin, users]
+    [isAdmin, users, systemSettings.smtp, emailTemplates, invoiceTemplateConfig]
+  );
+
+  const sendEmailVerificationOtpCode = useCallback(
+    async (target: { name: string; email: string }): Promise<{
+      code: string;
+      emailSent: boolean;
+      smtpConfigured: boolean;
+      error?: string;
+    }> => {
+      const cleanEmail = target.email.trim().toLowerCase();
+      const freshCode = String(Math.floor(100000 + Math.random() * 900000));
+      const nowMs = Date.now();
+      const otpMap = readStorage<
+        Record<string, { code: string; expiresAtMs: number; lastSentAtMs: number }>
+      >(EMAIL_OTP_STORAGE_KEY, {});
+      try {
+        window.localStorage.setItem(
+          EMAIL_OTP_STORAGE_KEY,
+          JSON.stringify({
+            ...otpMap,
+            [cleanEmail]: {
+              code: freshCode,
+              expiresAtMs: nowMs + 10 * 60 * 1000,
+              lastSentAtMs: nowMs,
+            },
+          })
+        );
+      } catch {
+        // ignore storage write failure
+      }
+
+      appendLoginActivity({
+        userEmail: cleanEmail,
+        userName: target.name,
+        eventType: 'Email Verification Code Sent',
+        status: 'success',
+        authMethod: '6-Digit Email OTP',
+        country: 'Global Verification',
+      });
+
+      const smtp = systemSettingsRef.current.smtp;
+      const smtpReady = Boolean(
+        typeof window !== 'undefined' &&
+          smtp?.enabled &&
+          smtp.host.trim() &&
+          smtp.username.trim() &&
+          smtp.password
+      );
+      if (!smtpReady) {
+        return { code: freshCode, emailSent: false, smtpConfigured: false };
+      }
+
+      const tpl =
+        emailTemplatesRef.current.find(
+          (t) => t.key === 'verification-code' || t.id === 'verification-code'
+        ) ?? INITIAL_EMAIL_TEMPLATES.find((t) => t.key === 'verification-code');
+      if (!tpl || !tpl.enabled) {
+        return { code: freshCode, emailSent: false, smtpConfigured: true };
+      }
+
+      const vars: Record<string, string> = {
+        company_name: invoiceTemplateConfigRef.current.companyName || 'CPCloudHost',
+        client_name: target.name,
+        client_email: cleanEmail,
+        verification_code: freshCode,
+      };
+
+      try {
+        const res = await fetch('/api/system/send-templated-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            smtp,
+            toEmail: cleanEmail,
+            companyName: invoiceTemplateConfigRef.current.companyName,
+            companyEmail: invoiceTemplateConfigRef.current.companyEmail,
+            companyWebsite: invoiceTemplateConfigRef.current.companyWebsite,
+            accentColor: invoiceTemplateConfigRef.current.accentColor,
+            headerBadge: 'EMAIL VERIFICATION CODE',
+            subject: renderEmailMergeText(tpl.subject, vars),
+            preheader: renderEmailMergeText(tpl.preheader, vars),
+            heading: renderEmailMergeText(tpl.heading, vars),
+            body: renderEmailMergeText(tpl.body, vars),
+            ctaLabel: renderEmailMergeText(tpl.ctaLabel, vars),
+            ctaUrl: renderEmailMergeText(tpl.ctaUrl, vars),
+            footerNote: renderEmailMergeText(tpl.footerNote, vars),
+          }),
+        });
+        const data = (await res.json()) as { ok?: boolean; error?: string };
+        return {
+          code: freshCode,
+          emailSent: Boolean(res.ok && data.ok),
+          smtpConfigured: true,
+          error: !res.ok || !data.ok ? data.error : undefined,
+        };
+      } catch (err) {
+        return {
+          code: freshCode,
+          emailSent: false,
+          smtpConfigured: true,
+          error: err instanceof Error ? err.message : 'SMTP delivery error',
+        };
+      }
+    },
+    [appendLoginActivity]
   );
 
   const registerClientAccount = useCallback(
@@ -4776,6 +5600,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       referralSource: string;
       password: string;
       autoSignIn?: boolean;
+      skipEmailOtp?: boolean;
     }) => {
       const cleanName = input.name.trim();
       const cleanUsername = input.username.trim().toLowerCase();
@@ -4809,14 +5634,14 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
           error: 'Password must be at least 8 characters and meet security rules.',
         };
       }
-      if (users.some((u) => u.email.toLowerCase() === cleanEmail)) {
+      if (usersRef.current.some((u) => u.email.toLowerCase() === cleanEmail)) {
         return {
           ok: false,
           error: 'An account with this email address is already registered.',
         };
       }
       if (
-        users.some(
+        usersRef.current.some(
           (u) => (u.username || u.email.split('@')[0]).toLowerCase() === cleanUsername
         )
       ) {
@@ -4826,6 +5651,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         };
       }
 
+      const requiresOtp = !input.skipEmailOtp;
       const nextId = `USR-${Math.floor(1200 + Math.random() * 8700)}`;
       const today = new Date().toISOString().slice(0, 10);
       const created: ManagedUserAccount = {
@@ -4841,16 +5667,28 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         role: 'client',
         status: 'active',
         kycVerified: false,
+        emailVerified: !requiresOtp,
         activeServices: 0,
         totalSpendUsd: 0,
         createdAt: today,
-        lastLoginAt: 'Registered via Portal',
+        lastLoginAt: requiresOtp ? 'Awaiting Email Verification' : 'Registered via Portal',
         supportPin: generateSupportPin(),
       };
 
+      usersRef.current = [created, ...usersRef.current];
       setUsers((prev) => [created, ...prev]);
+
       const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
-      if (input.autoSignIn) {
+      appendLoginActivity({
+        userEmail: created.email,
+        userName: created.name,
+        eventType: 'Account Registered',
+        status: 'success',
+        authMethod: requiresOtp ? 'Registration Form (OTP Pending)' : 'Registration Form',
+        country: created.country,
+      });
+
+      if (!requiresOtp && input.autoSignIn) {
         setRememberSession(true);
         setCurrentUser({
           id: created.id,
@@ -4862,17 +5700,30 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
           country: created.country,
           signedInAt: nowUtc,
         });
+        return {
+          ok: true,
+          requiresEmailVerification: false,
+          account: {
+            id: created.id,
+            name: created.name,
+            username: cleanUsername,
+            email: created.email,
+            phone: cleanPhone,
+          },
+        };
       }
-      appendLoginActivity({
-        userEmail: created.email,
-        userName: created.name,
-        eventType: 'Account Registered',
-        status: 'success',
-        authMethod: 'Registration Form',
-        country: created.country,
-      });
+
+      void sendEmailVerificationOtpCode({ name: created.name, email: created.email });
+      const smtp = systemSettingsRef.current.smtp;
+      const smtpConfigured = Boolean(
+        smtp?.enabled && smtp.host.trim() && smtp.username.trim() && smtp.password
+      );
+
       return {
         ok: true,
+        requiresEmailVerification: true,
+        emailSent: smtpConfigured,
+        smtpConfigured,
         account: {
           id: created.id,
           name: created.name,
@@ -4882,7 +5733,177 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         },
       };
     },
-    [users, appendLoginActivity]
+    [appendLoginActivity, sendEmailVerificationOtpCode]
+  );
+
+  const verifyRegistrationOtp = useCallback(
+    (email: string, code: string) => {
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanCode = code.replace(/\D/g, '').trim();
+      if (!cleanEmail || cleanCode.length !== 6) {
+        return { ok: false, error: 'Enter the 6-digit verification code sent to your email.' };
+      }
+
+      const matched = usersRef.current.find((u) => u.email.toLowerCase() === cleanEmail);
+      if (!matched) {
+        return { ok: false, error: 'No registration record found for this email address.' };
+      }
+
+      const otpMap = readStorage<
+        Record<string, { code: string; expiresAtMs: number; lastSentAtMs: number }>
+      >(EMAIL_OTP_STORAGE_KEY, {});
+      const entry = otpMap[cleanEmail];
+      if (!entry) {
+        return { ok: false, error: 'No active verification code found. Click Resend Code.' };
+      }
+      if (Date.now() > entry.expiresAtMs) {
+        return { ok: false, error: 'This verification code has expired. Click Resend Code to get a new one.' };
+      }
+      if (entry.code !== cleanCode) {
+        return { ok: false, error: 'Incorrect 6-digit verification code. Check your email and try again.' };
+      }
+
+      const nextOtpMap = { ...otpMap };
+      delete nextOtpMap[cleanEmail];
+      try {
+        window.localStorage.setItem(EMAIL_OTP_STORAGE_KEY, JSON.stringify(nextOtpMap));
+      } catch {
+        // ignore
+      }
+
+      const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+      usersRef.current = usersRef.current.map((u) =>
+        u.id === matched.id
+          ? {
+              ...u,
+              emailVerified: true,
+              emailVerifiedAtUtc: nowUtc,
+              lastLoginAt: nowUtc,
+            }
+          : u
+      );
+      setUsers((prev) =>
+        prev.map((u) =>
+          u.id === matched.id
+            ? {
+                ...u,
+                emailVerified: true,
+                emailVerifiedAtUtc: nowUtc,
+                lastLoginAt: nowUtc,
+              }
+            : u
+        )
+      );
+
+      const resolvedUsername = matched.username || matched.email.split('@')[0];
+      const session: AuthSessionUser = {
+        id: matched.id,
+        name: matched.name,
+        username: resolvedUsername,
+        email: matched.email,
+        role: matched.role,
+        status: matched.status,
+        country: matched.country,
+        signedInAt: nowUtc,
+      };
+      setRememberSession(true);
+      setCurrentUser(session);
+
+      appendLoginActivity({
+        userEmail: matched.email,
+        userName: matched.name,
+        eventType: 'Email Address Verified',
+        status: 'success',
+        authMethod: '6-Digit Email OTP Verified',
+        country: matched.country,
+      });
+
+      // Dispatch Welcome Email automatically after verification
+      const smtp = systemSettingsRef.current.smtp;
+      if (
+        typeof window !== 'undefined' &&
+        smtp?.enabled &&
+        smtp.host.trim() &&
+        smtp.username.trim() &&
+        smtp.password
+      ) {
+        const welcomeTpl =
+          emailTemplatesRef.current.find(
+            (t) => t.key === 'welcome-email' || t.id === 'welcome-email'
+          ) ?? INITIAL_EMAIL_TEMPLATES.find((t) => t.key === 'welcome-email');
+        if (welcomeTpl && welcomeTpl.enabled) {
+          const origin =
+            window.location?.origin ||
+            invoiceTemplateConfigRef.current.companyWebsite ||
+            'https://cpcloudhost.com';
+          const vars: Record<string, string> = {
+            company_name: invoiceTemplateConfigRef.current.companyName || 'CPCloudHost',
+            client_name: matched.name,
+            client_email: matched.email,
+            client_username: resolvedUsername,
+            support_pin: matched.supportPin?.pin || '—',
+            control_panel_url: `${origin}/dashboard`,
+          };
+          void fetch('/api/system/send-templated-email', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              smtp,
+              toEmail: matched.email,
+              companyName: invoiceTemplateConfigRef.current.companyName,
+              companyEmail: invoiceTemplateConfigRef.current.companyEmail,
+              companyWebsite: invoiceTemplateConfigRef.current.companyWebsite,
+              accentColor: invoiceTemplateConfigRef.current.accentColor,
+              headerBadge: 'WELCOME · ACCOUNT VERIFIED',
+              subject: renderEmailMergeText(welcomeTpl.subject, vars),
+              preheader: renderEmailMergeText(welcomeTpl.preheader, vars),
+              heading: renderEmailMergeText(welcomeTpl.heading, vars),
+              body: renderEmailMergeText(welcomeTpl.body, vars),
+              ctaLabel: renderEmailMergeText(welcomeTpl.ctaLabel, vars),
+              ctaUrl: renderEmailMergeText(welcomeTpl.ctaUrl, vars),
+              footerNote: renderEmailMergeText(welcomeTpl.footerNote, vars),
+            }),
+          }).catch(() => undefined);
+        }
+      }
+
+      return { ok: true, user: session };
+    },
+    [appendLoginActivity]
+  );
+
+  const resendRegistrationOtp = useCallback(
+    async (email: string) => {
+      const cleanEmail = email.trim().toLowerCase();
+      const matched = usersRef.current.find((u) => u.email.toLowerCase() === cleanEmail);
+      if (!matched) {
+        return { ok: false, error: 'Account not found for this email address.' };
+      }
+      const otpMap = readStorage<
+        Record<string, { code: string; expiresAtMs: number; lastSentAtMs: number }>
+      >(EMAIL_OTP_STORAGE_KEY, {});
+      const prevEntry = otpMap[cleanEmail];
+      if (prevEntry && Date.now() - prevEntry.lastSentAtMs < 30_000) {
+        const waitSec = Math.ceil((30_000 - (Date.now() - prevEntry.lastSentAtMs)) / 1000);
+        return {
+          ok: false,
+          cooldownSeconds: waitSec,
+          error: `Please wait ${waitSec}s before requesting another verification code.`,
+        };
+      }
+      const sent = await sendEmailVerificationOtpCode({
+        name: matched.name,
+        email: matched.email,
+      });
+      return {
+        ok: true,
+        emailSent: sent.emailSent,
+        smtpConfigured: sent.smtpConfigured,
+        cooldownSeconds: 30,
+        error: sent.error,
+      };
+    },
+    [sendEmailVerificationOtpCode]
   );
 
   const updateUserStatus = useCallback(
@@ -5447,13 +6468,17 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       nextDueDate?: string;
       invoicePaid?: boolean;
       autoRenew?: boolean;
-      nameservers?: [string, string];
+      nameservers?: string[];
       registrarLock?: boolean;
       whoisPrivacy?: boolean;
       serverIp?: string;
       cpanelUsername?: string;
+      controlPanelUrl?: string;
+      controlPanelPassword?: string;
       serverModuleId?: string;
       serverPackageName?: string;
+      linkedFreeDomainOrderId?: string;
+      linkedHostingOrderId?: string;
       promoCode?: string;
       discountUsd?: number;
       isFreeTrial?: boolean;
@@ -5465,6 +6490,8 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       eppCode?: string;
       whoisContact?: DomainContactAddress;
       dnsRecords?: DomainDnsRecord[];
+      transferStatus?: PlatformOrder['transferStatus'];
+      transferStartedAt?: string;
     }) => {
       const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
       const resolvedCreatedAt = input.createdAt?.trim()
@@ -5484,6 +6511,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       const isDomain =
         input.productType === 'Domain Registration' ||
         input.productType === 'Domain Transfer';
+      const isSharedCloud = input.productType === 'Shared Cloud';
       const newOrderId =
         input.customRef || `ORD-${Math.floor(905000 + Math.random() * 94000)}`;
       const resolvedHost =
@@ -5497,6 +6525,22 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
           ? resolvedStatus === 'active'
             ? 'pending_contact_verification'
             : 'pending_admin_approval'
+          : undefined;
+
+      const resolvedNameservers: string[] | undefined =
+        input.nameservers && input.nameservers.length > 0
+          ? input.nameservers
+          : isSharedCloud
+            ? ['ns1.stackdns.com', 'ns2.stackdns.com', 'ns3.stackdns.com', 'ns4.stackdns.com']
+            : isDomain
+              ? ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']
+              : undefined;
+
+      const resolvedTransferStatus: PlatformOrder['transferStatus'] =
+        input.productType === 'Domain Transfer'
+          ? resolvedStatus === 'active'
+            ? 'completed'
+            : input.transferStatus || 'pending_admin'
           : undefined;
 
       const defaultDnsRecords: DomainDnsRecord[] | undefined = isDomain
@@ -5556,11 +6600,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         nextDueDate: resolvedNextDue,
         autoRenew: input.autoRenew !== undefined ? input.autoRenew : true,
         invoicePaid: resolvedPaid,
-        nameservers:
-          input.nameservers ||
-          (isDomain
-            ? ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com']
-            : undefined),
+        nameservers: resolvedNameservers,
         registrarLock:
           input.registrarLock !== undefined
             ? input.registrarLock
@@ -5580,8 +6620,12 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         dnsRecords: defaultDnsRecords,
         serverIp: input.serverIp?.trim() || undefined,
         cpanelUsername: input.cpanelUsername?.trim() || undefined,
+        controlPanelUrl: input.controlPanelUrl?.trim() || (isSharedCloud ? 'https://stackcp.com' : undefined),
+        controlPanelPassword: input.controlPanelPassword?.trim() || undefined,
         serverModuleId: input.serverModuleId,
         serverPackageName: input.serverPackageName,
+        linkedFreeDomainOrderId: input.linkedFreeDomainOrderId,
+        linkedHostingOrderId: input.linkedHostingOrderId,
         promoCode: input.promoCode,
         discountUsd: input.discountUsd,
         isFreeTrial: input.isFreeTrial,
@@ -5592,6 +6636,8 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         domainVerificationStatus: initialVerificationStatus,
         domainVerificationToken: generatedVerifyToken,
         nameserverUpdateStatus: isDomain ? 'idle' : undefined,
+        transferStatus: resolvedTransferStatus,
+        transferStartedAt: input.transferStartedAt,
       };
       ordersRef.current = [created, ...ordersRef.current];
       setOrders((prev) => [created, ...prev]);
@@ -5689,8 +6735,10 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
           start_date: created.createdAt.slice(0, 10),
           due_date: created.nextDueDate || '',
           payment_method: created.paymentMethod,
-          nameserver_1: nsPair[0],
-          nameserver_2: nsPair[1],
+          nameserver_1: nsPair[0] || 'ns1.cpcloudhost.com',
+          nameserver_2: nsPair[1] || 'ns2.cpcloudhost.com',
+          nameserver_3: nsPair[2] || 'ns3.stackdns.com',
+          nameserver_4: nsPair[3] || 'ns4.stackdns.com',
           whois_summary: whoisStr,
           verify_domain_url: `${origin}/verify-domain?orderId=${encodeURIComponent(created.id)}&token=${encodeURIComponent(generatedVerifyToken || '')}`,
           updated_at: nowUtc,
@@ -5978,6 +7026,247 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
     [isAdmin, orders, currentUser, invoiceTemplateConfig, upsertInvoiceOnOrderApproval, syncWhmAccountState, systemSettings.smtp, emailTemplates]
   );
 
+  const dispatchTemplatedOrderEmail = useCallback(
+    (
+      tplKey: string,
+      recipient: string,
+      vars: Record<string, string>,
+      headerBadge: string
+    ) => {
+      if (
+        typeof window === 'undefined' ||
+        !systemSettings.smtp?.enabled ||
+        !systemSettings.smtp.host.trim() ||
+        !systemSettings.smtp.username.trim() ||
+        !systemSettings.smtp.password ||
+        !recipient
+      ) {
+        return;
+      }
+      const tpl =
+        emailTemplates.find((t) => t.key === tplKey || t.id === tplKey) ??
+        INITIAL_EMAIL_TEMPLATES.find((t) => t.key === tplKey);
+      if (!tpl || !tpl.enabled) return;
+      void fetch('/api/system/send-templated-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          smtp: systemSettings.smtp,
+          toEmail: recipient,
+          companyName: invoiceTemplateConfig.companyName,
+          companyEmail: invoiceTemplateConfig.companyEmail,
+          companyWebsite: invoiceTemplateConfig.companyWebsite,
+          accentColor: invoiceTemplateConfig.accentColor,
+          headerBadge,
+          subject: renderEmailMergeText(tpl.subject, vars),
+          preheader: renderEmailMergeText(tpl.preheader, vars),
+          heading: renderEmailMergeText(tpl.heading, vars),
+          body: renderEmailMergeText(tpl.body, vars),
+          ctaLabel: renderEmailMergeText(tpl.ctaLabel, vars),
+          ctaUrl: renderEmailMergeText(tpl.ctaUrl, vars),
+          footerNote: renderEmailMergeText(tpl.footerNote, vars),
+        }),
+      }).catch(() => undefined);
+    },
+    [systemSettings.smtp, emailTemplates, invoiceTemplateConfig]
+  );
+
+  const activateLinkedFreeDomainForHosting = useCallback(
+    (hostingOrder: PlatformOrder, overrideNameservers?: string[]) => {
+      const linked =
+        ordersRef.current.find(
+          (o) =>
+            o.id === hostingOrder.linkedFreeDomainOrderId ||
+            o.linkedHostingOrderId === hostingOrder.id
+        ) ?? null;
+      if (!linked) return;
+
+      const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+      const todayIso = getTodayIsoUtc();
+      const domainDue = computeDefaultNextDueDate(todayIso, '1 Year');
+      const token =
+        linked.domainVerificationToken ||
+        `VRF-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+      const nextNs =
+        overrideNameservers && overrideNameservers.length > 0
+          ? overrideNameservers
+          : linked.nameservers && linked.nameservers.length > 0
+            ? linked.nameservers
+            : hostingOrder.nameservers || ['ns1.stackdns.com', 'ns2.stackdns.com', 'ns3.stackdns.com', 'ns4.stackdns.com'];
+
+      const activatedDomain: PlatformOrder = {
+        ...linked,
+        status: 'active',
+        billingCycle: '1 Year',
+        nextDueDate: domainDue,
+        invoicePaid: true,
+        nameservers: nextNs,
+        domainVerificationToken: token,
+        domainVerificationStatus:
+          linked.domainVerificationStatus === 'verified'
+            ? 'verified'
+            : 'pending_contact_verification',
+        notes: `Free 1-Year .com domain activated with ${hostingOrder.planName} (${hostingOrder.id}) on ${nowUtc}.`,
+      };
+
+      ordersRef.current = ordersRef.current.map((ord) =>
+        ord.id === linked.id ? activatedDomain : ord
+      );
+      setOrders((prev) =>
+        prev.map((ord) => (ord.id === linked.id ? activatedDomain : ord))
+      );
+
+      if (invoiceTemplateConfig.autoGenerateOnApproval !== false) {
+        upsertInvoiceOnOrderApproval(
+          activatedDomain,
+          `Free Year 1 .com Domain activated with hosting order ${hostingOrder.id}.`
+        );
+      }
+
+      const origin =
+        typeof window !== 'undefined'
+          ? window.location.origin
+          : invoiceTemplateConfig.companyWebsite || 'https://cpcloudhost.com';
+      const verifyUrl = `${origin}/verify-domain?orderId=${encodeURIComponent(activatedDomain.id)}&token=${encodeURIComponent(token)}`;
+      const whoisStr = activatedDomain.whoisContact
+        ? `${activatedDomain.whoisContact.firstName} ${activatedDomain.whoisContact.lastName}${activatedDomain.whoisContact.organization ? ` · ${activatedDomain.whoisContact.organization}` : ''} · ${activatedDomain.whoisContact.addressLine1}, ${activatedDomain.whoisContact.city}, ${activatedDomain.whoisContact.countryName}`
+        : `${activatedDomain.clientName} (${activatedDomain.clientEmail})`;
+
+      const vars: Record<string, string> = {
+        company_name: invoiceTemplateConfig.companyName || 'CPCloudHost',
+        client_name: activatedDomain.clientName,
+        client_email: activatedDomain.clientEmail,
+        order_id: activatedDomain.id,
+        domain: activatedDomain.domainOrHost,
+        billing_cycle: '1 Year',
+        amount: '$0.00 USD (Free Year 1 Promo)',
+        start_date: todayIso,
+        due_date: domainDue,
+        nameserver_1: nextNs[0] || 'ns1.stackdns.com',
+        nameserver_2: nextNs[1] || 'ns2.stackdns.com',
+        nameserver_3: nextNs[2] || 'ns3.stackdns.com',
+        nameserver_4: nextNs[3] || 'ns4.stackdns.com',
+        whois_summary: whoisStr,
+        verify_domain_url: verifyUrl,
+        updated_at: nowUtc,
+      };
+
+      dispatchTemplatedOrderEmail(
+        'domain-registration',
+        activatedDomain.clientEmail,
+        vars,
+        'FREE .COM DOMAIN ACTIVE'
+      );
+      if (activatedDomain.domainVerificationStatus !== 'verified') {
+        dispatchTemplatedOrderEmail(
+          'domain-contact-verification',
+          activatedDomain.clientEmail,
+          vars,
+          'WHOIS VERIFICATION'
+        );
+      }
+    },
+    [invoiceTemplateConfig, upsertInvoiceOnOrderApproval, dispatchTemplatedOrderEmail]
+  );
+
+  const approveSharedHostingOrder = useCallback(
+    (input: { orderId: string; password: string; notes?: string }) => {
+      if (!isAdmin || !currentUser) {
+        return { ok: false, error: 'Administrator clearance required.' };
+      }
+      const target =
+        orders.find((o) => o.id === input.orderId) ??
+        ordersRef.current.find((o) => o.id === input.orderId);
+      if (!target) {
+        return { ok: false, error: 'Order record not found.' };
+      }
+      const cleanPassword = input.password.trim();
+      if (!cleanPassword) {
+        return { ok: false, error: 'Enter a StackCP control panel password.' };
+      }
+
+      const todayIso = getTodayIsoUtc();
+      const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+      const resolvedDueDate =
+        target.nextDueDate && target.nextDueDate.trim()
+          ? target.nextDueDate
+          : computeDefaultNextDueDate(todayIso, target.billingCycle);
+      const stackNs = [
+        'ns1.stackdns.com',
+        'ns2.stackdns.com',
+        'ns3.stackdns.com',
+        'ns4.stackdns.com',
+      ];
+      const resolvedNote =
+        input.notes?.trim() ||
+        `Shared Cloud approved & StackCP credentials issued by ${currentUser.name} (${nowUtc}).`;
+
+      const updatedOrder: PlatformOrder = {
+        ...target,
+        status: 'active',
+        nextDueDate: resolvedDueDate,
+        invoicePaid:
+          invoiceTemplateConfig.autoMarkPaidOnApproval !== false
+            ? true
+            : target.invoicePaid,
+        controlPanelUrl: 'https://stackcp.com',
+        cpanelUsername: target.domainOrHost,
+        controlPanelPassword: cleanPassword,
+        nameservers: stackNs,
+        notes: resolvedNote,
+      };
+
+      ordersRef.current = ordersRef.current.map((ord) =>
+        ord.id === input.orderId ? updatedOrder : ord
+      );
+      setOrders((prev) =>
+        prev.map((ord) => (ord.id === input.orderId ? updatedOrder : ord))
+      );
+
+      let resultingInvoice: PlatformInvoice | undefined;
+      if (invoiceTemplateConfig.autoGenerateOnApproval !== false) {
+        resultingInvoice = upsertInvoiceOnOrderApproval(updatedOrder, resolvedNote).invoice;
+      }
+
+      dispatchTemplatedOrderEmail(
+        'shared-hosting-details',
+        updatedOrder.clientEmail,
+        {
+          company_name: invoiceTemplateConfig.companyName || 'CPCloudHost',
+          client_name: updatedOrder.clientName,
+          plan_name: updatedOrder.planName,
+          datacenter: updatedOrder.datacenter,
+          domain: updatedOrder.domainOrHost,
+          cp_url: 'https://stackcp.com',
+          cp_username: updatedOrder.domainOrHost,
+          cp_password: cleanPassword,
+          server_hostname: 'stackcp.com',
+          server_ip: updatedOrder.serverIp || 'Autoscaling StackCP Cloud',
+          nameserver_1: stackNs[0],
+          nameserver_2: stackNs[1],
+          nameserver_3: stackNs[2],
+          nameserver_4: stackNs[3],
+          start_date: updatedOrder.createdAt.slice(0, 10),
+          due_date: resolvedDueDate,
+        },
+        'STACKCP CREDENTIALS'
+      );
+
+      activateLinkedFreeDomainForHosting(updatedOrder, stackNs);
+
+      return { ok: true, invoice: resultingInvoice };
+    },
+    [
+      isAdmin,
+      currentUser,
+      orders,
+      invoiceTemplateConfig,
+      upsertInvoiceOnOrderApproval,
+      dispatchTemplatedOrderEmail,
+      activateLinkedFreeDomainForHosting,
+    ]
+  );
+
   const approveOrderWithServer = useCallback(
     (input: {
       orderId: string;
@@ -5985,6 +7274,9 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       serverPackageName?: string;
       serverIp?: string;
       cpanelUsername?: string;
+      controlPanelUrl?: string;
+      controlPanelPassword?: string;
+      nameservers?: string[];
       notes?: string;
     }) => {
       if (!isAdmin || !currentUser) {
@@ -6010,6 +7302,19 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
               target.billingCycle
             );
 
+      const resolvedCpUrl =
+        input.controlPanelUrl?.trim() ||
+        target.controlPanelUrl ||
+        (mod?.hostname
+          ? `https://${mod.hostname}:${target.productType === 'Reseller Hosting' ? 2087 : 2083}`
+          : undefined);
+      const resolvedNs =
+        input.nameservers && input.nameservers.length > 0
+          ? input.nameservers
+          : mod?.nameservers?.filter(Boolean).length
+            ? mod.nameservers
+            : target.nameservers || ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com'];
+
       const updatedOrder: PlatformOrder = {
         ...target,
         status: 'active',
@@ -6021,8 +7326,12 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         serverModuleId: input.serverModuleId || target.serverModuleId,
         serverPackageName:
           input.serverPackageName?.trim() || target.serverPackageName,
-        serverIp: input.serverIp?.trim() || target.serverIp,
+        serverIp: input.serverIp?.trim() || mod?.hostname || target.serverIp,
         cpanelUsername: input.cpanelUsername?.trim() || target.cpanelUsername,
+        controlPanelUrl: resolvedCpUrl,
+        controlPanelPassword:
+          input.controlPanelPassword?.trim() || target.controlPanelPassword,
+        nameservers: resolvedNs,
         notes: resolvedNote,
       };
 
@@ -6042,6 +7351,50 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         invoiceWasCreated = res.created;
       }
 
+      const tplKey =
+        updatedOrder.productType === 'cPanel Hosting'
+          ? 'cpanel-hosting-details'
+          : updatedOrder.productType === 'Managed WordPress'
+            ? 'wordpress-hosting-details'
+            : updatedOrder.productType === 'Windows Hosting'
+              ? 'windows-hosting-details'
+              : updatedOrder.productType === 'Reseller Hosting'
+                ? 'reseller-hosting-details'
+                : updatedOrder.productType === 'Unmanaged VPS'
+                  ? 'vps-hosting-details'
+                  : updatedOrder.productType === 'n8n Hosting'
+                    ? 'n8n-hosting-details'
+                    : 'hosting-details';
+
+      dispatchTemplatedOrderEmail(
+        tplKey,
+        updatedOrder.clientEmail,
+        {
+          company_name: invoiceTemplateConfig.companyName || 'CPCloudHost',
+          client_name: updatedOrder.clientName,
+          plan_name: updatedOrder.planName,
+          datacenter: updatedOrder.datacenter,
+          domain: updatedOrder.domainOrHost,
+          cp_url: resolvedCpUrl || 'https://cpcloudhost.com/dashboard/services',
+          cp_username: updatedOrder.cpanelUsername || updatedOrder.domainOrHost,
+          cp_password:
+            updatedOrder.controlPanelPassword || 'Configured on provisioning node (use SSO in portal)',
+          server_hostname: mod?.hostname || updatedOrder.serverIp || updatedOrder.domainOrHost,
+          server_ip: updatedOrder.serverIp || mod?.hostname || 'Assigned Cluster Node',
+          whm_url: resolvedCpUrl || '',
+          cpanel_accounts_quota: updatedOrder.planName,
+          nameserver_1: resolvedNs[0] || 'ns1.cpcloudhost.com',
+          nameserver_2: resolvedNs[1] || 'ns2.cpcloudhost.com',
+          nameserver_3: resolvedNs[2] || '',
+          nameserver_4: resolvedNs[3] || '',
+          start_date: updatedOrder.createdAt.slice(0, 10),
+          due_date: resolvedDueDate,
+        },
+        `${updatedOrder.productType.toUpperCase()} ACTIVE`
+      );
+
+      activateLinkedFreeDomainForHosting(updatedOrder, resolvedNs);
+
       return {
         ok: true,
         invoice: resultingInvoice,
@@ -6055,6 +7408,8 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       provisioningModules,
       invoiceTemplateConfig,
       upsertInvoiceOnOrderApproval,
+      dispatchTemplatedOrderEmail,
+      activateLinkedFreeDomainForHosting,
     ]
   );
 
@@ -6068,19 +7423,21 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         amountUsd?: number;
         billingCycle?: PlatformOrder['billingCycle'];
         planName?: string;
-      domainOrHost?: string;
-      datacenter?: string;
-      serverIp?: string;
-      cpanelUsername?: string;
-      serverModuleId?: string;
-      serverPackageName?: string;
-      autoRenew?: boolean;
-      nameservers?: [string, string];
-      registrarLock?: boolean;
-      whoisPrivacy?: boolean;
-      notes?: string;
-    }
-  ) => {
+        domainOrHost?: string;
+        datacenter?: string;
+        serverIp?: string;
+        cpanelUsername?: string;
+        controlPanelUrl?: string;
+        controlPanelPassword?: string;
+        serverModuleId?: string;
+        serverPackageName?: string;
+        autoRenew?: boolean;
+        nameservers?: string[];
+        registrarLock?: boolean;
+        whoisPrivacy?: boolean;
+        notes?: string;
+      }
+    ) => {
     if (!isAdmin) {
       return { ok: false, error: 'Administrator clearance required.' };
     }
@@ -6315,8 +7672,15 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         setOrders((prev) =>
           prev.map((ord) => {
             if (ord.id !== targetInv.orderId) return ord;
+            const requiresProvisioningApproval =
+              ord.status === 'pending' &&
+              (ord.productType === 'Shared Cloud' ||
+                ord.productType === 'cPanel Hosting' ||
+                ord.productType === 'Domain Registration' ||
+                ord.productType === 'Domain Transfer');
             const shouldReactivate =
               paid &&
+              !requiresProvisioningApproval &&
               (ord.status === 'pending' || ord.status === 'suspended' || ord.status === 'expired');
             const isPastDue = ord.nextDueDate
               ? diffDaysIso(todayIso, parseIsoDateOnly(ord.nextDueDate)) < 0
@@ -6459,7 +7823,12 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
               paymentMethod: updatedInvoice.paymentMethod,
               invoicePaid: paid,
               status:
-                paid && ord.status === 'pending'
+                paid &&
+                ord.status === 'pending' &&
+                ord.productType !== 'Shared Cloud' &&
+                ord.productType !== 'cPanel Hosting' &&
+                ord.productType !== 'Domain Registration' &&
+                ord.productType !== 'Domain Transfer'
                   ? 'active'
                   : updates.status === 'refunded'
                     ? 'refunded'
@@ -7357,7 +8726,9 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const verifyDomainContactByToken = useCallback(
     (orderId: string, token: string) => {
-      const target = orders.find((o) => o.id === orderId);
+      const target =
+        ordersRef.current.find((o) => o.id === orderId) ??
+        orders.find((o) => o.id === orderId);
       if (!target) {
         return { ok: false, error: 'Domain registration order not found.' };
       }
@@ -7369,7 +8740,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       }
       if (
         target.domainVerificationToken &&
-        token.trim() !== target.domainVerificationToken
+        token.trim().toUpperCase() !== target.domainVerificationToken.trim().toUpperCase()
       ) {
         return {
           ok: false,
@@ -7385,6 +8756,9 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         domainContactVerifiedAt: target.domainContactVerifiedAt || nowUtc,
       };
 
+      ordersRef.current = ordersRef.current.map((ord) =>
+        ord.id === orderId ? updated : ord
+      );
       setOrders((prev) =>
         prev.map((ord) => (ord.id === orderId ? updated : ord))
       );
@@ -7451,8 +8825,120 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
     [orders, appendLoginActivity, systemSettings.smtp, emailTemplates, invoiceTemplateConfig]
   );
 
+  const resendDomainVerificationEmail = useCallback(
+    async (orderId: string) => {
+      const target =
+        ordersRef.current.find((o) => o.id === orderId) ??
+        orders.find((o) => o.id === orderId);
+      if (!target) {
+        return { ok: false, error: 'Domain order not found.' };
+      }
+      if (!currentUser) {
+        return { ok: false, error: 'Sign in required.' };
+      }
+      const allowed =
+        isAdmin || target.clientEmail.toLowerCase() === currentUser.email.toLowerCase();
+      if (!allowed) {
+        return { ok: false, error: 'Permission denied.' };
+      }
+
+      const token =
+        target.domainVerificationToken ||
+        `VRF-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+      if (!target.domainVerificationToken) {
+        ordersRef.current = ordersRef.current.map((ord) =>
+          ord.id === orderId ? { ...ord, domainVerificationToken: token } : ord
+        );
+        setOrders((prev) =>
+          prev.map((ord) =>
+            ord.id === orderId ? { ...ord, domainVerificationToken: token } : ord
+          )
+        );
+      }
+
+      const origin =
+        typeof window !== 'undefined'
+          ? window.location.origin
+          : invoiceTemplateConfig.companyWebsite || 'https://cpcloudhost.com';
+      const verifyUrl = `${origin}/verify-domain?orderId=${encodeURIComponent(
+        target.id
+      )}&token=${encodeURIComponent(token)}`;
+
+      const smtp = systemSettings.smtp;
+      if (
+        !smtp?.enabled ||
+        !smtp.host.trim() ||
+        !smtp.username.trim() ||
+        !smtp.password
+      ) {
+        return { ok: true, verifyUrl, emailSent: false };
+      }
+
+      const tpl =
+        emailTemplates.find(
+          (t) =>
+            t.key === 'domain-contact-verification' ||
+            t.id === 'domain-contact-verification'
+        ) ??
+        INITIAL_EMAIL_TEMPLATES.find((t) => t.key === 'domain-contact-verification');
+      if (!tpl || !tpl.enabled) {
+        return { ok: true, verifyUrl, emailSent: false };
+      }
+
+      const nsPair = target.nameservers || ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com'];
+      const whoisStr = target.whoisContact
+        ? `${target.whoisContact.firstName} ${target.whoisContact.lastName}${
+            target.whoisContact.organization
+              ? ` · ${target.whoisContact.organization}`
+              : ''
+          } · ${target.whoisContact.addressLine1}, ${target.whoisContact.city}, ${
+            target.whoisContact.countryName
+          } · ${target.whoisContact.phone}`
+        : `${target.clientName} (${target.clientEmail})`;
+
+      const mergeVars: Record<string, string> = {
+        company_name: invoiceTemplateConfig.companyName || 'CPCloudHost',
+        client_name: target.clientName,
+        domain: target.domainOrHost,
+        order_id: target.id,
+        whois_summary: whoisStr,
+        nameserver_1: nsPair[0] || 'ns1.cpcloudhost.com',
+        nameserver_2: nsPair[1] || 'ns2.cpcloudhost.com',
+        verify_domain_url: verifyUrl,
+      };
+
+      try {
+        const res = await fetch('/api/system/send-templated-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            smtp,
+            toEmail: target.clientEmail,
+            companyName: invoiceTemplateConfig.companyName,
+            companyEmail: invoiceTemplateConfig.companyEmail,
+            companyWebsite: invoiceTemplateConfig.companyWebsite,
+            accentColor: invoiceTemplateConfig.accentColor,
+            headerBadge: 'WHOIS VERIFICATION',
+            subject: renderEmailMergeText(tpl.subject, mergeVars),
+            preheader: renderEmailMergeText(tpl.preheader, mergeVars),
+            heading: renderEmailMergeText(tpl.heading, mergeVars),
+            body: renderEmailMergeText(tpl.body, mergeVars),
+            ctaLabel: renderEmailMergeText(tpl.ctaLabel, mergeVars),
+            ctaUrl: renderEmailMergeText(tpl.ctaUrl, mergeVars),
+            footerNote: renderEmailMergeText(tpl.footerNote, mergeVars),
+          }),
+        });
+        const data = (await res.json()) as { ok?: boolean };
+        return { ok: true, verifyUrl, emailSent: Boolean(res.ok && data.ok) };
+      } catch {
+        return { ok: true, verifyUrl, emailSent: false };
+      }
+    },
+    [orders, currentUser, isAdmin, invoiceTemplateConfig, systemSettings.smtp, emailTemplates]
+  );
+
   const requestDomainNameserverChange = useCallback(
-    (orderId: string, ns1: string, ns2: string) => {
+    (orderId: string, ns1OrList: string | string[], ns2?: string) => {
       if (!currentUser) {
         return { ok: false, error: 'Sign in required.' };
       }
@@ -7478,15 +8964,19 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         };
       }
 
-      const clean1 = ns1.trim().toLowerCase();
-      const clean2 = ns2.trim().toLowerCase();
+      const rawList = Array.isArray(ns1OrList)
+        ? ns1OrList
+        : [ns1OrList, ns2 || ''];
+      const cleanedList = rawList.map((s) => s.trim().toLowerCase()).filter(Boolean).slice(0, 4);
       const nsRegex = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i;
-      if (!nsRegex.test(clean1) || !nsRegex.test(clean2)) {
+      if (cleanedList.length < 2 || cleanedList.some((ns) => !nsRegex.test(ns))) {
         return {
           ok: false,
-          error: 'Enter valid authoritative hostnames for NS1 and NS2 (e.g., ns1.cpcloudhost.com).',
+          error: 'Enter valid authoritative hostnames for at least NS1 and NS2 (e.g., ns1.cpcloudhost.com).',
         };
       }
+      const clean1 = cleanedList[0];
+      const clean2 = cleanedList[1];
 
       const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
       setOrders((prev) =>
@@ -7494,7 +8984,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
           ord.id === orderId
             ? {
                 ...ord,
-                pendingNameservers: [clean1, clean2],
+                pendingNameservers: cleanedList,
                 nameserverUpdateStatus: 'pending_update',
                 nameserverRequestedAt: nowUtc,
               }
@@ -7522,6 +9012,8 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
           order_id: target.id,
           nameserver_1: clean1,
           nameserver_2: clean2,
+          nameserver_3: cleanedList[2] || '',
+          nameserver_4: cleanedList[3] || '',
           eta_window: '1 to 3 hours',
           updated_at: nowUtc,
           action_url: `${origin}/admin/wp`,
@@ -7562,7 +9054,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
             const alertVars: Record<string, string> = {
               ...vars,
               event_title: `Nameserver Change Requested: ${target.domainOrHost}`,
-              event_details: `Requested NS1: ${clean1} · NS2: ${clean2} (Previous: ${(target.nameservers || []).join(', ')}). Click Update & Notify Client inside Admin Domains.`,
+              event_details: `Requested: ${cleanedList.join(', ')} (Previous: ${(target.nameservers || []).join(', ')}). Click Update & Notify Client inside Admin Domains.`,
             };
             void fetch('/api/system/send-templated-email', {
               method: 'POST',
@@ -7602,8 +9094,11 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       if (!target) {
         return { ok: false, error: 'Domain order record not found.' };
       }
-      const nextPair: [string, string] = target.pendingNameservers ||
-        target.nameservers || ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com'];
+      const nextList: string[] = target.pendingNameservers?.length
+        ? target.pendingNameservers
+        : target.nameservers?.length
+          ? target.nameservers
+          : ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com'];
       const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
 
       setOrders((prev) =>
@@ -7611,7 +9106,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
           ord.id === orderId
             ? {
                 ...ord,
-                nameservers: nextPair,
+                nameservers: nextList,
                 pendingNameservers: undefined,
                 nameserverUpdateStatus: 'updated',
                 nameserverUpdatedAt: nowUtc,
@@ -7620,54 +9115,213 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         )
       );
 
+      dispatchTemplatedOrderEmail(
+        'domain-nameserver-updated',
+        target.clientEmail,
+        {
+          company_name: invoiceTemplateConfig.companyName || 'CPCloudHost',
+          client_name: target.clientName,
+          client_email: target.clientEmail,
+          domain: target.domainOrHost,
+          order_id: target.id,
+          nameserver_1: nextList[0] || 'ns1.cpcloudhost.com',
+          nameserver_2: nextList[1] || 'ns2.cpcloudhost.com',
+          nameserver_3: nextList[2] || '',
+          nameserver_4: nextList[3] || '',
+          updated_at: nowUtc,
+        },
+        'NAMESERVER LIVE'
+      );
+
+      return { ok: true };
+    },
+    [isAdmin, orders, invoiceTemplateConfig, dispatchTemplatedOrderEmail]
+  );
+
+  const adminStartDomainTransfer = useCallback(
+    (orderId: string) => {
+      if (!isAdmin) {
+        return { ok: false, error: 'Administrator clearance required.' };
+      }
+      const target = orders.find((o) => o.id === orderId);
+      if (!target || target.productType !== 'Domain Transfer') {
+        return { ok: false, error: 'Domain transfer order not found.' };
+      }
+      const todayIso = getTodayIsoUtc();
+      const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+      const nsPair = target.nameservers || ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com'];
+
+      setOrders((prev) =>
+        prev.map((ord) =>
+          ord.id === orderId
+            ? {
+                ...ord,
+                status: 'pending',
+                transferStatus: 'in_progress',
+                transferStartedAt: ord.transferStartedAt || todayIso,
+                notes: `Transfer approved by ${currentUser?.name || 'Admin'} (${nowUtc}). 7-day transfer window active until client approves & notifies or Day 7 elapses.`,
+              }
+            : ord
+        )
+      );
+
+      dispatchTemplatedOrderEmail(
+        'domain-transfer-initiated',
+        target.clientEmail,
+        {
+          company_name: invoiceTemplateConfig.companyName || 'CPCloudHost',
+          client_name: target.clientName,
+          domain: target.domainOrHost,
+          order_id: target.id,
+          nameserver_1: nsPair[0] || 'ns1.cpcloudhost.com',
+          nameserver_2: nsPair[1] || 'ns2.cpcloudhost.com',
+        },
+        'TRANSFER IN PROGRESS'
+      );
+
+      return { ok: true };
+    },
+    [isAdmin, orders, currentUser, invoiceTemplateConfig, dispatchTemplatedOrderEmail]
+  );
+
+  const clientNotifyDomainTransferApproved = useCallback(
+    (orderId: string) => {
+      if (!currentUser) {
+        return { ok: false, error: 'Sign in required.' };
+      }
+      const target = orders.find((o) => o.id === orderId);
+      if (!target || target.productType !== 'Domain Transfer') {
+        return { ok: false, error: 'Domain transfer order not found.' };
+      }
+      const ownsOrder =
+        target.clientEmail.toLowerCase() === currentUser.email.toLowerCase() || isAdmin;
+      if (!ownsOrder) {
+        return { ok: false, error: 'Permission denied.' };
+      }
+      const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+
+      setOrders((prev) =>
+        prev.map((ord) =>
+          ord.id === orderId
+            ? {
+                ...ord,
+                transferStatus: 'client_notified',
+                transferClientNotifiedAt: nowUtc,
+                notes: `Client confirmed registrar transfer approval & notified admin (${nowUtc}).`,
+              }
+            : ord
+        )
+      );
+
+      dispatchTemplatedOrderEmail(
+        'domain-transfer-client-notified',
+        target.clientEmail,
+        {
+          company_name: invoiceTemplateConfig.companyName || 'CPCloudHost',
+          client_name: target.clientName,
+          domain: target.domainOrHost,
+          order_id: target.id,
+        },
+        'REGISTRAR APPROVAL LOGGED'
+      );
+
       if (
-        typeof window !== 'undefined' &&
-        systemSettings.smtp?.enabled &&
-        systemSettings.smtp.host.trim() &&
-        systemSettings.smtp.username.trim() &&
-        systemSettings.smtp.password
+        systemSettings.adminAlerts?.enabled &&
+        systemSettings.adminAlerts.notifyDomainEvents &&
+        systemSettings.adminAlerts.alertEmail.trim()
       ) {
-        const tpl =
-          emailTemplates.find(
-            (t) => t.key === 'domain-nameserver-updated' || t.id === 'domain-nameserver-updated'
-          ) ?? INITIAL_EMAIL_TEMPLATES.find((t) => t.key === 'domain-nameserver-updated');
-        if (tpl && tpl.enabled) {
-          const vars: Record<string, string> = {
+        const origin =
+          typeof window !== 'undefined'
+            ? window.location.origin
+            : invoiceTemplateConfig.companyWebsite || 'https://cpcloudhost.com';
+        dispatchTemplatedOrderEmail(
+          'admin-system-alert',
+          systemSettings.adminAlerts.alertEmail.trim(),
+          {
             company_name: invoiceTemplateConfig.companyName || 'CPCloudHost',
+            event_title: `Transfer Client Notified: ${target.domainOrHost}`,
             client_name: target.clientName,
             client_email: target.clientEmail,
             domain: target.domainOrHost,
             order_id: target.id,
-            nameserver_1: nextPair[0],
-            nameserver_2: nextPair[1],
+            event_details: `${target.clientName} confirmed registrar approval for ${target.domainOrHost}. Accept transfer inside Admin -> Domains to complete handover & send confirmation email.`,
             updated_at: nowUtc,
-          };
-          void fetch('/api/system/send-templated-email', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              smtp: systemSettings.smtp,
-              toEmail: target.clientEmail,
-              companyName: invoiceTemplateConfig.companyName,
-              companyEmail: invoiceTemplateConfig.companyEmail,
-              companyWebsite: invoiceTemplateConfig.companyWebsite,
-              accentColor: invoiceTemplateConfig.accentColor,
-              headerBadge: 'NAMESERVER LIVE',
-              subject: renderEmailMergeText(tpl.subject, vars),
-              preheader: renderEmailMergeText(tpl.preheader, vars),
-              heading: renderEmailMergeText(tpl.heading, vars),
-              body: renderEmailMergeText(tpl.body, vars),
-              ctaLabel: renderEmailMergeText(tpl.ctaLabel, vars),
-              ctaUrl: renderEmailMergeText(tpl.ctaUrl, vars),
-              footerNote: renderEmailMergeText(tpl.footerNote, vars),
-            }),
-          }).catch(() => undefined);
-        }
+            action_url: `${origin}/admin/wp`,
+          },
+          'ADMIN TRANSFER NOTIFY'
+        );
       }
 
       return { ok: true };
     },
-    [isAdmin, orders, systemSettings.smtp, emailTemplates, invoiceTemplateConfig]
+    [currentUser, isAdmin, orders, invoiceTemplateConfig, systemSettings.adminAlerts, dispatchTemplatedOrderEmail]
+  );
+
+  const adminCompleteDomainTransfer = useCallback(
+    (orderId: string, viaSevenDayAllow?: boolean) => {
+      if (!isAdmin) {
+        return { ok: false, error: 'Administrator clearance required.' };
+      }
+      const target = orders.find((o) => o.id === orderId);
+      if (!target || target.productType !== 'Domain Transfer') {
+        return { ok: false, error: 'Domain transfer order not found.' };
+      }
+      const todayIso = getTodayIsoUtc();
+      const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+      const updatedDue = addYearsToIso(todayIso, 1);
+      const nsPair = target.nameservers || ['ns1.cpcloudhost.com', 'ns2.cpcloudhost.com'];
+      const note = viaSevenDayAllow
+        ? `7-day ICANN transfer window elapsed — Manage unlocked & transfer finalized by ${currentUser?.name || 'Admin'} (${nowUtc}).`
+        : `Domain transfer accepted & completed by ${currentUser?.name || 'Admin'} (${nowUtc}).`;
+
+      const completedOrder: PlatformOrder = {
+        ...target,
+        status: 'active',
+        transferStatus: 'completed',
+        transferCompletedAt: nowUtc,
+        nextDueDate: updatedDue,
+        invoicePaid: true,
+        domainVerificationStatus: 'verified',
+        notes: note,
+      };
+
+      ordersRef.current = ordersRef.current.map((ord) =>
+        ord.id === orderId ? completedOrder : ord
+      );
+      setOrders((prev) =>
+        prev.map((ord) => (ord.id === orderId ? completedOrder : ord))
+      );
+
+      if (invoiceTemplateConfig.autoGenerateOnApproval !== false) {
+        upsertInvoiceOnOrderApproval(completedOrder, note);
+      }
+
+      dispatchTemplatedOrderEmail(
+        'domain-transfer',
+        completedOrder.clientEmail,
+        {
+          company_name: invoiceTemplateConfig.companyName || 'CPCloudHost',
+          client_name: completedOrder.clientName,
+          domain: completedOrder.domainOrHost,
+          order_id: completedOrder.id,
+          start_date: todayIso,
+          due_date: updatedDue,
+          nameserver_1: nsPair[0] || 'ns1.cpcloudhost.com',
+          nameserver_2: nsPair[1] || 'ns2.cpcloudhost.com',
+        },
+        'DOMAIN TRANSFER SUCCESSFUL'
+      );
+
+      return { ok: true };
+    },
+    [
+      isAdmin,
+      orders,
+      currentUser,
+      invoiceTemplateConfig,
+      upsertInvoiceOnOrderApproval,
+      dispatchTemplatedOrderEmail,
+    ]
   );
 
   const payClientOrderInvoice = useCallback(
@@ -7723,8 +9377,15 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
             const ownsOrder =
               ord.clientEmail.toLowerCase() === currentUser.email.toLowerCase() || isAdmin;
             if (!ownsOrder) return ord;
+            const requiresProvisioningApproval =
+              ord.status === 'pending' &&
+              (ord.productType === 'Shared Cloud' ||
+                ord.productType === 'cPanel Hosting' ||
+                ord.productType === 'Domain Registration' ||
+                ord.productType === 'Domain Transfer');
             const isReactivatingExpired =
               nextStatus === 'paid' &&
+              !requiresProvisioningApproval &&
               (ord.status === 'expired' ||
                 ord.status === 'suspended' ||
                 (ord.nextDueDate ? diffDaysIso(todayIso, parseIsoDateOnly(ord.nextDueDate)) < 0 : false));
@@ -7740,6 +9401,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
               nextDueDate: renewedNextDue,
               status:
                 nextStatus === 'paid' &&
+                !requiresProvisioningApproval &&
                 (ord.status === 'pending' || ord.status === 'expired' || ord.status === 'suspended')
                   ? 'active'
                   : ord.status,
@@ -7749,7 +9411,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
               paymentSubmittedAt: nowUtc,
               notes:
                 nextStatus === 'paid'
-                  ? `Invoice paid via ${matchedGateway?.name || paymentMethod}${cleanTxRef ? ` · TID: ${cleanTxRef}` : ''}${isReactivatingExpired ? ` · Renewed until ${renewedNextDue}` : ''}`
+                  ? `Invoice paid via ${matchedGateway?.name || paymentMethod}${cleanTxRef ? ` · TID: ${cleanTxRef}` : ''}${requiresProvisioningApproval ? ' · Awaiting Admin Provisioning Approval' : isReactivatingExpired ? ` · Renewed until ${renewedNextDue}` : ''}`
                   : `Payment details submitted (${matchedGateway?.name || paymentMethod}${cleanTxRef ? ` · TID: ${cleanTxRef}` : ''}) — Pending verification`,
             };
           })
@@ -8019,8 +9681,8 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
   );
 
   const dispatchTicketEmail = useCallback(
-    (
-      templateKey: 'ticket-created' | 'ticket-admin-reply',
+    async (
+      templateKey: 'ticket-created' | 'ticket-admin-reply' | 'ticket-closed' | 'abuse-ticket-alert',
       params: {
         toEmail: string;
         clientName: string;
@@ -8034,8 +9696,8 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         messageBody: string;
         staffName?: string;
       }
-    ) => {
-      if (typeof window === 'undefined') return;
+    ): Promise<boolean> => {
+      if (typeof window === 'undefined') return false;
       const smtp = systemSettings.smtp;
       if (
         !smtp?.enabled ||
@@ -8043,12 +9705,12 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         !smtp.username.trim() ||
         !smtp.password
       ) {
-        return;
+        return false;
       }
       const tpl =
         emailTemplates.find((t) => t.key === templateKey || t.id === templateKey) ??
         INITIAL_EMAIL_TEMPLATES.find((t) => t.key === templateKey);
-      if (!tpl || !tpl.enabled) return;
+      if (!tpl || !tpl.enabled) return false;
 
       const origin = window.location?.origin || invoiceTemplateConfig.companyWebsite || 'https://cpcloudhost.com';
       const mergeVars: Record<string, string> = {
@@ -8064,28 +9726,42 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         support_pin: params.supportPin || '—',
         ticket_message: params.messageBody,
         ticket_url: `${origin}/dashboard/tickets/${encodeURIComponent(params.ticketId)}`,
-        staff_name: params.staffName || 'CPCloudHost Engineering',
+        staff_name: 'Support cpcloudhost',
       };
 
-      void fetch('/api/system/send-templated-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          smtp,
-          toEmail: params.toEmail,
-          companyName: invoiceTemplateConfig.companyName,
-          companyEmail: invoiceTemplateConfig.companyEmail,
-          companyWebsite: invoiceTemplateConfig.companyWebsite,
-          accentColor: invoiceTemplateConfig.accentColor,
-          subject: renderEmailMergeText(tpl.subject, mergeVars),
-          preheader: renderEmailMergeText(tpl.preheader, mergeVars),
-          heading: renderEmailMergeText(tpl.heading, mergeVars),
-          body: renderEmailMergeText(tpl.body, mergeVars),
-          ctaLabel: renderEmailMergeText(tpl.ctaLabel, mergeVars),
-          ctaUrl: renderEmailMergeText(tpl.ctaUrl, mergeVars),
-          footerNote: renderEmailMergeText(tpl.footerNote, mergeVars),
-        }),
-      }).catch(() => undefined);
+      try {
+        const res = await fetch('/api/system/send-templated-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            smtp,
+            toEmail: params.toEmail,
+            companyName: invoiceTemplateConfig.companyName,
+            companyEmail: invoiceTemplateConfig.companyEmail,
+            companyWebsite: invoiceTemplateConfig.companyWebsite,
+            accentColor: invoiceTemplateConfig.accentColor,
+            headerBadge:
+              templateKey === 'abuse-ticket-alert'
+                ? 'ABUSE COMPLIANCE NOTICE'
+                : templateKey === 'ticket-closed'
+                  ? 'TICKET CLOSED'
+                  : templateKey === 'ticket-admin-reply'
+                    ? 'SUPPORT CPCLOUDHOST REPLY'
+                    : 'SUPPORT TICKET',
+            subject: renderEmailMergeText(tpl.subject, mergeVars),
+            preheader: renderEmailMergeText(tpl.preheader, mergeVars),
+            heading: renderEmailMergeText(tpl.heading, mergeVars),
+            body: renderEmailMergeText(tpl.body, mergeVars),
+            ctaLabel: renderEmailMergeText(tpl.ctaLabel, mergeVars),
+            ctaUrl: renderEmailMergeText(tpl.ctaUrl, mergeVars),
+            footerNote: renderEmailMergeText(tpl.footerNote, mergeVars),
+          }),
+        });
+        const data = (await res.json()) as { ok?: boolean };
+        return Boolean(res.ok && data.ok);
+      } catch {
+        return false;
+      }
     },
     [systemSettings.smtp, emailTemplates, invoiceTemplateConfig]
   );
@@ -8129,7 +9805,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       };
       setTickets((prev) => [created, ...prev]);
 
-      dispatchTicketEmail('ticket-created', {
+      void dispatchTicketEmail('ticket-created', {
         toEmail: created.clientEmail,
         clientName: created.clientName,
         ticketId: created.id,
@@ -8233,7 +9909,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
         messages: [
           {
             id: `MSG-${Date.now()}-ADMIN-INIT`,
-            authorName: `${currentUser.name} · Staff Operations`,
+            authorName: 'Support cpcloudhost',
             authorRole: 'support',
             body: input.message.trim(),
             timestampUtc: nowUtc,
@@ -8246,22 +9922,172 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       };
       setTickets((prev) => [created, ...prev]);
 
-      dispatchTicketEmail('ticket-created', {
-        toEmail: created.clientEmail,
-        clientName: created.clientName,
-        ticketId: created.id,
-        subject: created.subject,
-        department: created.department,
-        priority: created.priority,
-        status: created.status,
-        relatedService: created.relatedService,
-        supportPin: created.supportPinUsed,
-        messageBody: input.message.trim(),
-      });
+      void dispatchTicketEmail(
+        input.department === 'Abuse' ? 'abuse-ticket-alert' : 'ticket-created',
+        {
+          toEmail: created.clientEmail,
+          clientName: created.clientName,
+          ticketId: created.id,
+          subject: created.subject,
+          department: created.department,
+          priority: created.priority,
+          status: created.status,
+          relatedService: created.relatedService,
+          supportPin: created.supportPinUsed,
+          messageBody: input.message.trim(),
+          staffName: 'Support cpcloudhost',
+        }
+      );
 
       return { ok: true, ticket: created };
     },
     [isAdmin, currentUser, users, dispatchTicketEmail]
+  );
+
+  const adminCreateAbuseTicketAndNotify = useCallback(
+    async (input: {
+      userId?: string;
+      clientEmail?: string;
+      relatedService?: string;
+      subject: string;
+      message: string;
+      priority?: TicketPriority;
+      suspendMatchingService?: boolean;
+      abuseCaseTicketId?: string;
+    }) => {
+      if (!isAdmin || !currentUser) {
+        return { ok: false, error: 'Administrator clearance required.' };
+      }
+      const cleanSubject = input.subject.trim();
+      const cleanMessage = input.message.trim();
+      if (!cleanSubject || !cleanMessage) {
+        return { ok: false, error: 'Enter both an abuse subject and notice details.' };
+      }
+
+      const targetById = input.userId
+        ? usersRef.current.find((u) => u.id === input.userId)
+        : undefined;
+      const cleanEmailLower = (input.clientEmail || '').trim().toLowerCase();
+      const targetByEmail = cleanEmailLower
+        ? usersRef.current.find((u) => u.email.toLowerCase() === cleanEmailLower)
+        : undefined;
+      const matchedOrder = input.relatedService
+        ? ordersRef.current.find(
+            (o) =>
+              o.domainOrHost.toLowerCase() === input.relatedService?.trim().toLowerCase() ||
+              input.relatedService?.toLowerCase().includes(o.domainOrHost.toLowerCase())
+          )
+        : undefined;
+
+      const resolvedEmail = (
+        targetById?.email ||
+        targetByEmail?.email ||
+        cleanEmailLower ||
+        matchedOrder?.clientEmail ||
+        ''
+      )
+        .trim()
+        .toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(resolvedEmail)) {
+        return {
+          ok: false,
+          error: 'Select a valid client account or enter a valid client email address.',
+        };
+      }
+
+      const resolvedName =
+        targetById?.name ||
+        targetByEmail?.name ||
+        matchedOrder?.clientName ||
+        resolvedEmail.split('@')[0];
+      const resolvedPin =
+        targetById?.supportPin?.pin || targetByEmail?.supportPin?.pin;
+
+      const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+      const created: SupportTicketRecord = {
+        id: `TKT-${Math.floor(49000 + Math.random() * 50000)}`,
+        clientEmail: resolvedEmail,
+        clientName: resolvedName,
+        subject: cleanSubject,
+        department: 'Abuse',
+        priority: input.priority || 'High',
+        status: 'pending',
+        relatedService: input.relatedService?.trim() || matchedOrder?.domainOrHost,
+        supportPinUsed: resolvedPin,
+        createdAtUtc: nowUtc,
+        updatedAtUtc: nowUtc,
+        messages: [
+          {
+            id: `MSG-${Date.now()}-ABUSE`,
+            authorName: 'Support cpcloudhost',
+            authorRole: 'support',
+            body: cleanMessage,
+            timestampUtc: nowUtc,
+          },
+        ],
+      };
+
+      setTickets((prev) => [created, ...prev]);
+
+      if (input.suspendMatchingService && (input.relatedService || matchedOrder)) {
+        const needle = (input.relatedService || matchedOrder?.domainOrHost || '').toLowerCase();
+        setOrders((prev) =>
+          prev.map((ord) =>
+            ord.clientEmail.toLowerCase() === resolvedEmail &&
+            (needle.includes(ord.domainOrHost.toLowerCase()) ||
+              ord.domainOrHost.toLowerCase() === needle)
+              ? {
+                  ...ord,
+                  status: 'suspended',
+                  notes: `Suspended due to Abuse Ticket ${created.id} (${nowUtc})`,
+                }
+              : ord
+          )
+        );
+      }
+
+      if (input.abuseCaseTicketId) {
+        setAbuseComplaints((prev) =>
+          prev.map((item) =>
+            item.ticketId === input.abuseCaseTicketId
+              ? {
+                  ...item,
+                  status: input.suspendMatchingService ? 'suspended_target' : 'investigating',
+                  moderatorNotes: `${item.moderatorNotes}\n[${nowUtc}] Client notified via Abuse Ticket ${created.id}.`,
+                  moderatedBy: 'Support cpcloudhost',
+                  updatedAtUtc: nowUtc,
+                }
+              : item
+          )
+        );
+      }
+
+      appendLoginActivity({
+        userEmail: resolvedEmail,
+        userName: resolvedName,
+        eventType: 'Abuse Ticket Issued',
+        status: 'warning',
+        authMethod: `Ticket ${created.id} · ${created.relatedService || 'Account'}`,
+        country: targetById?.country || targetByEmail?.country || 'International',
+      });
+
+      const emailSent = await dispatchTicketEmail('abuse-ticket-alert', {
+        toEmail: created.clientEmail,
+        clientName: created.clientName,
+        ticketId: created.id,
+        subject: created.subject,
+        department: 'Abuse',
+        priority: created.priority,
+        status: created.status,
+        relatedService: created.relatedService,
+        supportPin: created.supportPinUsed,
+        messageBody: cleanMessage,
+        staffName: 'Support cpcloudhost',
+      });
+
+      return { ok: true, ticket: created, emailSent };
+    },
+    [isAdmin, currentUser, appendLoginActivity, dispatchTicketEmail]
   );
 
   const replySupportTicket = useCallback(
@@ -8356,6 +10182,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
   const resolveSupportTicket = useCallback(
     (ticketId: string) => {
       if (!currentUser) return;
+      const targetTicket = tickets.find((t) => t.id === ticketId) ?? null;
       const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
       setTickets((prev) =>
         prev.map((tkt) => {
@@ -8366,8 +10193,23 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
           return { ...tkt, status: 'resolved', updatedAtUtc: nowUtc };
         })
       );
+      if (targetTicket && isAdmin) {
+        void dispatchTicketEmail('ticket-closed', {
+          toEmail: targetTicket.clientEmail,
+          clientName: targetTicket.clientName,
+          ticketId: targetTicket.id,
+          subject: targetTicket.subject,
+          department: targetTicket.department,
+          priority: targetTicket.priority,
+          status: 'resolved',
+          relatedService: targetTicket.relatedService,
+          supportPin: targetTicket.supportPinUsed,
+          messageBody: 'This support ticket has been marked as resolved.',
+          staffName: 'Support cpcloudhost',
+        });
+      }
     },
-    [currentUser, isAdmin]
+    [currentUser, isAdmin, tickets, dispatchTicketEmail]
   );
 
   const reopenSupportTicket = useCallback(
@@ -8418,7 +10260,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
               ...tkt.messages,
               {
                 id: `MSG-${Date.now()}-ADMIN`,
-                authorName: `${currentUser.name} · Staff Operations`,
+                authorName: 'Support cpcloudhost',
                 authorRole: 'support',
                 body: resolvedBody,
                 timestampUtc: nowUtc,
@@ -8430,7 +10272,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       );
 
       if (targetTicket) {
-        dispatchTicketEmail('ticket-admin-reply', {
+        void dispatchTicketEmail('ticket-admin-reply', {
           toEmail: targetTicket.clientEmail,
           clientName: targetTicket.clientName,
           ticketId: targetTicket.id,
@@ -8441,7 +10283,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
           relatedService: targetTicket.relatedService,
           supportPin: targetTicket.supportPinUsed,
           messageBody: resolvedBody,
-          staffName: `${currentUser.name} · Support Engineering`,
+          staffName: 'Support cpcloudhost',
         });
       }
 
@@ -8460,6 +10302,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     ) => {
       if (!isAdmin) return;
+      const targetTicket = tickets.find((t) => t.id === ticketId) ?? null;
       const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
       setTickets((prev) =>
         prev.map((tkt) => {
@@ -8471,8 +10314,23 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
           };
         })
       );
+      if (targetTicket && updates.status === 'resolved' && targetTicket.status !== 'resolved') {
+        void dispatchTicketEmail('ticket-closed', {
+          toEmail: targetTicket.clientEmail,
+          clientName: targetTicket.clientName,
+          ticketId: targetTicket.id,
+          subject: targetTicket.subject,
+          department: updates.department || targetTicket.department,
+          priority: updates.priority || targetTicket.priority,
+          status: 'resolved',
+          relatedService: targetTicket.relatedService,
+          supportPin: targetTicket.supportPinUsed,
+          messageBody: 'This support ticket has been resolved and closed.',
+          staffName: 'Support cpcloudhost',
+        });
+      }
     },
-    [isAdmin]
+    [isAdmin, tickets, dispatchTicketEmail]
   );
 
   const normalizeCustomSlug = (rawSlug: string) => {
@@ -9136,6 +10994,8 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       logout,
       createUserAccount,
       registerClientAccount,
+      verifyRegistrationOtp,
+      resendRegistrationOtp,
       updateClientProfile,
       changePassword,
       updateUserStatus,
@@ -9151,6 +11011,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       addOrder,
       updateOrderStatus,
       approveOrderWithServer,
+      approveSharedHostingOrder,
       generateInvoiceForOrder,
       adminUpdateOrderDetails,
       adminTransferOrderToClient,
@@ -9177,8 +11038,12 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       updateDomainWhoisContact,
       approveDomainRegistrationAndSendVerify,
       verifyDomainContactByToken,
+      resendDomainVerificationEmail,
       requestDomainNameserverChange,
       adminApplyNameserverChange,
+      adminStartDomainTransfer,
+      clientNotifyDomainTransferApproved,
+      adminCompleteDomainTransfer,
       payClientOrderInvoice,
       requestOrderCancellation,
       adminHandleCancellation,
@@ -9186,6 +11051,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       adminProcessRefund,
       createSupportTicket,
       adminCreateTicketForClient,
+      adminCreateAbuseTicketAndNotify,
       replySupportTicket,
       resolveSupportTicket,
       reopenSupportTicket,
@@ -9261,6 +11127,8 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       logout,
       createUserAccount,
       registerClientAccount,
+      verifyRegistrationOtp,
+      resendRegistrationOtp,
       updateClientProfile,
       changePassword,
       updateUserStatus,
@@ -9276,6 +11144,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       addOrder,
       updateOrderStatus,
       approveOrderWithServer,
+      approveSharedHostingOrder,
       generateInvoiceForOrder,
       adminUpdateOrderDetails,
       adminTransferOrderToClient,
@@ -9302,8 +11171,12 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       updateDomainWhoisContact,
       approveDomainRegistrationAndSendVerify,
       verifyDomainContactByToken,
+      resendDomainVerificationEmail,
       requestDomainNameserverChange,
       adminApplyNameserverChange,
+      adminStartDomainTransfer,
+      clientNotifyDomainTransferApproved,
+      adminCompleteDomainTransfer,
       payClientOrderInvoice,
       requestOrderCancellation,
       adminHandleCancellation,
@@ -9311,6 +11184,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({
       adminProcessRefund,
       createSupportTicket,
       adminCreateTicketForClient,
+      adminCreateAbuseTicketAndNotify,
       replySupportTicket,
       resolveSupportTicket,
       reopenSupportTicket,

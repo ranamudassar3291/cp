@@ -440,7 +440,7 @@ export const LiveSupportChatWidget: React.FC<LiveSupportChatWidgetProps> = ({
     }
     if (session.status === 'admin_active') {
       return {
-        title: session.assignedAdminName || 'Live Support Engineer',
+        title: 'Support cpcloudhost',
         subtitle: `Live Agent Connected · Session ${session.id}`,
       };
     }
@@ -668,7 +668,11 @@ export const LiveSupportChatWidget: React.FC<LiveSupportChatWidgetProps> = ({
                   >
                     <div className="flex items-center gap-1.5 mb-1 px-1 text-[10px] text-slate-500">
                       <span className="font-semibold text-[#0F172A]">
-                        {isClient ? 'You' : msg.senderName}
+                        {isClient
+                          ? 'You'
+                          : msg.senderRole === 'admin'
+                            ? 'Support cpcloudhost'
+                            : msg.senderName}
                       </span>
                       <span>·</span>
                       <span className="font-mono tabular-nums">

@@ -76,7 +76,7 @@ const CPANEL_PLANS: CpanelPlan[] = [
     yearlyTotal: 143.88,
     features: [
       { iconKey: 'panel', label: 'Powerful Control Panel' },
-      { iconKey: 'domain', label: '1 Free .com Domain (With Yearly)' },
+      { iconKey: 'domain', label: '1 Free .com Domain (1-Yr w/ 1Y/2Y/4Y)' },
       { iconKey: 'ram', label: '1 GB RAM' },
       { iconKey: 'websites', label: 'Host 3 Websites' },
       { iconKey: 'nvme', label: '50 GB NVMe Storage' },
@@ -105,7 +105,7 @@ const CPANEL_PLANS: CpanelPlan[] = [
     highlighted: true,
     features: [
       { iconKey: 'panel', label: 'Powerful Control Panel' },
-      { iconKey: 'domain', label: '1 Free .com Domain (With Yearly)' },
+      { iconKey: 'domain', label: '1 Free .com Domain (1-Yr w/ 1Y/2Y/4Y)' },
       { iconKey: 'ram', label: '2 GB RAM' },
       { iconKey: 'websites', label: 'Host 10 Websites' },
       { iconKey: 'nvme', label: '100 GB NVMe Storage' },
@@ -133,7 +133,7 @@ const CPANEL_PLANS: CpanelPlan[] = [
     yearlyTotal: 419.88,
     features: [
       { iconKey: 'panel', label: 'Powerful Control Panel' },
-      { iconKey: 'domain', label: '1 Free .com Domain (With Yearly)' },
+      { iconKey: 'domain', label: '1 Free .com Domain (1-Yr w/ 1Y/2Y/4Y)' },
       { iconKey: 'ram', label: '4 GB RAM' },
       { iconKey: 'websites', label: 'Host Unlimited Websites' },
       { iconKey: 'nvme', label: 'Unlimited NVMe Storage' },
@@ -561,7 +561,7 @@ export const CpanelHostingPage: React.FC<CpanelHostingPageProps> = ({
             <p className="text-sm sm:text-base text-slate-600 mt-3 leading-relaxed">
               Every plan includes Powerful Control Panel, Unlimited Bandwidth, Free SSL
               Certificate, Malware Scanner, DDoS security, and Node.js &amp; Python.
-              Select Yearly billing to claim <strong>1 Free .com Domain</strong>.
+              Select 1Y, 2Y, or 4Y billing to claim <strong>1 Free .com Domain (Year 1 only)</strong> while hosting runs for your full term.
             </p>
 
             {/* Clean Segmented Monthly vs Yearly Switch */}
@@ -575,7 +575,7 @@ export const CpanelHostingPage: React.FC<CpanelHostingPageProps> = ({
                     : 'text-slate-600 hover:text-[#0F172A]'
                 }`}
               >
-                Yearly Billing (1 Free .com Domain)
+                1Y / 2Y / 4Y Billing (1 Free .com Domain · 1 Yr)
               </button>
               <button
                 type="button"
@@ -653,7 +653,7 @@ export const CpanelHostingPage: React.FC<CpanelHostingPageProps> = ({
                     </p>
 
                     <div className="mt-4 inline-block px-3 py-1.5 rounded-md bg-[#0E6B63] text-white text-xs font-semibold">
-                      1 Free .com Domain (With Yearly)
+                      1 Free .com Domain (1 Yr w/ 1Y/2Y/4Y)
                     </div>
 
                     <div
@@ -684,8 +684,8 @@ export const CpanelHostingPage: React.FC<CpanelHostingPageProps> = ({
                         }`}
                       >
                         {billingCycle === 'yearly'
-                          ? `${formatPrice(plan.yearlyTotal)} billed annually · Free .com domain included`
-                          : 'Billed monthly · Switch to Yearly for 1 Free .com Domain'}
+                          ? `${formatPrice(plan.yearlyTotal)} billed annually · Free .com domain (Year 1 only)`
+                          : 'Billed monthly · Switch to 1Y/2Y/4Y for 1 Free .com Domain (1 Yr)'}
                       </p>
 
                       <button

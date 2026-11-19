@@ -11,9 +11,7 @@ import {
   Zap,
 } from 'lucide-react';
 import aboutHeroImg from '../../assets/images/about_hero_datacenter_1794566984778.jpg';
-import arslanPortrait from '../../assets/images/leader_arslan_portrait_1794566986244.jpg';
 import mudassarPortrait from '../../assets/images/leader_mudassar_portrait_1794566986834.jpg';
-import irfanPortrait from '../../assets/images/leader_irfan_portrait_1794566987480.jpg';
 import { applyPageSeoMetadata } from '../../utils/seoManager';
 import { useCurrency } from '../../context/CurrencyContext';
 import { usePlatform } from '../../context/PlatformContext';
@@ -44,49 +42,47 @@ interface TeamMember {
   department: string;
   bio: string;
   focusAreas: string[];
-  portrait: string;
+  portrait?: string;
   initials: string;
 }
 
 const LEADERSHIP_TEAM: TeamMember[] = [
   {
-    name: 'Mr. Arslan',
-    roleTitle: 'CEO',
-    department: 'Executive Leadership & Global SLA',
-    bio: 'Leads cpcloudhost.com international expansion, carrier-grade network partnerships, transparent pricing policies, and multi-region SLA governance across North America, Europe, and APAC.',
-    focusAreas: [
-      'Global Datacenter Strategy',
-      'Enterprise Uptime SLA Governance',
-      'Client Growth & Agency Partnerships',
-    ],
-    portrait: arslanPortrait,
-    initials: 'MA',
-  },
-  {
     name: 'Mr. Mudassar',
-    roleTitle: 'Founder',
-    department: 'Cloud Architecture & Systems Engineering',
-    bio: 'Architects our autoscaling StackCP & KVM infrastructure, Gen4 NVMe storage clusters, Anycast DNS routing, and pre-tuned n8n & WordPress caching stacks engineered for sub-200ms TTFB.',
+    roleTitle: 'CEO & Founder',
+    department: 'Chief Executive Officer & Cloud Architecture',
+    bio: 'Leads cpcloudhost.com global strategy, carrier-grade network partnerships, autoscaling StackCP & KVM NVMe infrastructure, Anycast DNS routing, and multi-region SLA governance worldwide.',
     focusAreas: [
+      'Global Strategy & Enterprise SLA',
       'NVMe Storage & KVM Virtualization',
-      'Anycast DNS & Edge Cache Design',
-      'Zero-Downtime Migration Tooling',
+      'Zero-Downtime Migration Architecture',
     ],
     portrait: mudassarPortrait,
     initials: 'MM',
   },
   {
-    name: 'Irfan',
-    roleTitle: 'Support',
-    department: 'Head of 24/7 Technical Support & Migrations',
-    bio: 'Directs round-the-clock incident resolution, white-glove website transfers, SSL & DNS diagnostics, and responsive troubleshooting so startups and agencies get answers in minutes, not days.',
+    name: 'Cloud Core Engineering',
+    roleTitle: 'Infrastructure Unit',
+    department: 'Systems, Edge Network & Automation',
+    bio: 'Maintains Gen4 NVMe arrays, LiteSpeed Enterprise clusters, WHM/cPanel & StackCP provisioning automation, daily JetBackup snapshots, and sub-200ms global routing.',
+    focusAreas: [
+      '99.99% Uptime & Edge Cache Tuning',
+      'WHM / StackCP Auto-Provisioning',
+      'Automated SSL & Network DDoS Mitigation',
+    ],
+    initials: 'CC',
+  },
+  {
+    name: 'Support cpcloudhost',
+    roleTitle: '24/7 Operations Desk',
+    department: 'Technical Support, Migrations & Trust',
+    bio: 'Handles round-the-clock ticket resolution, live chat troubleshooting, zero-downtime website migrations, DNS/WHOIS verification, and Abuse compliance monitoring.',
     focusAreas: [
       '24/7 Incident & Error Diagnostics',
-      'cPanel, StackCP & WordPress Migrations',
-      'Domain, SSL & Deliverability Support',
+      'Free White-Glove Site & Mail Migrations',
+      'Domain, DNS & Compliance Operations',
     ],
-    portrait: irfanPortrait,
-    initials: 'IR',
+    initials: 'SC',
   },
 ];
 
@@ -160,7 +156,7 @@ export const AboutUsPage: React.FC<AboutUsPageProps> = ({
         'About Us — Global Cloud Infrastructure & Leadership | cpcloudhost.com',
       description:
         pageCms?.seoDescription?.trim() ||
-        'Meet the leadership and engineering team behind cpcloudhost.com — CEO Mr. Arslan, Founder Mr. Mudassar, and Support Lead Irfan — powering 99.99% uptime across global NVMe cloud hubs.',
+        'Meet Chief Executive Officer & Founder Mr. Mudassar and the cpcloudhost.com cloud engineering and Support cpcloudhost operations team — powering 99.99% uptime across global NVMe cloud hubs.',
       keywords: [
         'about cpcloudhost',
         'cpcloudhost leadership team',
@@ -181,23 +177,13 @@ export const AboutUsPage: React.FC<AboutUsPageProps> = ({
           founder: {
             '@type': 'Person',
             name: 'Mr. Mudassar',
-            jobTitle: 'Founder',
+            jobTitle: 'Chief Executive Officer & Founder',
           },
           employee: [
             {
               '@type': 'Person',
-              name: 'Mr. Arslan',
-              jobTitle: 'Chief Executive Officer',
-            },
-            {
-              '@type': 'Person',
               name: 'Mr. Mudassar',
-              jobTitle: 'Founder',
-            },
-            {
-              '@type': 'Person',
-              name: 'Irfan',
-              jobTitle: 'Head of Customer Support',
+              jobTitle: 'Chief Executive Officer & Founder',
             },
           ],
         },
@@ -389,7 +375,7 @@ export const AboutUsPage: React.FC<AboutUsPageProps> = ({
                 >
                   <div>
                     <div className="aspect-square bg-[#F4F5F7] overflow-hidden border-b border-[#E2E8F0]">
-                      {!portraitFailed ? (
+                      {member.portrait && !portraitFailed ? (
                         <img
                           src={member.portrait}
                           alt={`${member.name} — ${member.roleTitle} at cpcloudhost.com`}
@@ -403,9 +389,18 @@ export const AboutUsPage: React.FC<AboutUsPageProps> = ({
                           className="w-full h-full object-cover object-top"
                         />
                       ) : (
-                        <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#F2FAF8] to-[#E2ECE9] text-[#0E6B63]">
-                          <span className="font-display text-3xl font-bold">
-                            {member.initials}
+                        <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#F2FAF8] to-[#E2ECE9] text-[#0E6B63] p-6 text-center">
+                          {member.initials === 'CC' ? (
+                            <Server className="w-12 h-12 text-[#0E6B63] mb-3" aria-hidden="true" />
+                          ) : member.initials === 'SC' ? (
+                            <Headphones className="w-12 h-12 text-[#0E6B63] mb-3" aria-hidden="true" />
+                          ) : (
+                            <span className="font-display text-3xl font-bold">
+                              {member.initials}
+                            </span>
+                          )}
+                          <span className="font-display text-lg font-bold text-[#0F172A]">
+                            {member.name}
                           </span>
                           <span className="text-xs text-slate-600 mt-1">
                             {member.roleTitle}
@@ -571,7 +566,7 @@ export const AboutUsPage: React.FC<AboutUsPageProps> = ({
             </h2>
             <p className="text-sm text-slate-300 mt-2 leading-relaxed">
               Launch a new shared, WordPress, Windows, or KVM VPS environment in
-              seconds—or let Irfan and our migration engineers handle your move free.
+              seconds—or let Support cpcloudhost and our migration engineers handle your move free.
             </p>
           </div>
 
